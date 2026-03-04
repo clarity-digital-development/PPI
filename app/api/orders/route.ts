@@ -98,13 +98,7 @@ export async function POST(request: NextRequest) {
         promoCodeId = promoCode.id
         fuelSurchargeWaived = promoCode.waiveFuelSurcharge
 
-        // Record per-customer promo code usage
-        await prisma.promoCodeUsage.create({
-          data: {
-            userId: user.id,
-            promoCodeId: promoCode.id,
-          },
-        })
+        // NOTE: Usage is recorded AFTER order creation succeeds (below)
       }
     }
 
@@ -183,12 +177,15 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Create payment intent
-    const paymentIntent = await createPaymentIntent(
-      total,
-      stripeCustomerId,
-      orderData.payment_method_id
-    )
+    // Create payment intent (skip for $0 orders - fully discounted)
+    let paymentIntent: { id: string; status: string; client_secret: string | null } | null = null
+    if (total > 0) {
+      paymentIntent = await createPaymentIntent(
+        total,
+        stripeCustomerId,
+        orderData.payment_method_id
+      )
+    }
 
     // Get the post type (optional - orders can be for other services only)
     let postTypeId: string | null = null
@@ -254,8 +251,8 @@ export async function POST(request: NextRequest) {
         tax,
         total,
         promoCodeId,
-        paymentIntentId: paymentIntent.id,
-        paymentStatus: paymentIntent.status === 'succeeded' ? 'succeeded' : 'processing',
+        paymentIntentId: paymentIntent?.id || null,
+        paymentStatus: !paymentIntent ? 'succeeded' : paymentIntent.status === 'succeeded' ? 'succeeded' : 'processing',
         orderItems: {
           create: orderData.items.map((item) => ({
             itemType: item.item_type,
@@ -277,9 +274,20 @@ export async function POST(request: NextRequest) {
       },
     })
 
-    // Send emails if payment succeeded
-    console.log(`Order ${order.orderNumber} created, payment status: ${paymentIntent.status}`)
-    if (paymentIntent.status === 'succeeded') {
+    // Record promo code usage AFTER order is successfully created
+    if (promoCodeId) {
+      await prisma.promoCodeUsage.create({
+        data: {
+          userId: user.id,
+          promoCodeId,
+        },
+      })
+    }
+
+    // Send emails if payment succeeded (or order is free)
+    const orderPaymentStatus = !paymentIntent ? 'succeeded' : paymentIntent.status
+    console.log(`Order ${order.orderNumber} created, payment status: ${orderPaymentStatus}`)
+    if (orderPaymentStatus === 'succeeded') {
       console.log(`Payment succeeded immediately, sending emails for order ${order.orderNumber}`)
       try {
         await Promise.all([
@@ -325,13 +333,13 @@ export async function POST(request: NextRequest) {
         console.error(`Error sending emails for order ${order.orderNumber}:`, emailError)
       }
     } else {
-      console.log(`Payment not immediately succeeded (status: ${paymentIntent.status}), emails will be sent via webhook`)
+      console.log(`Payment not immediately succeeded (status: ${orderPaymentStatus}), emails will be sent via webhook`)
     }
 
     return NextResponse.json({
       order,
-      clientSecret: paymentIntent.client_secret,
-      paymentStatus: paymentIntent.status,
+      clientSecret: paymentIntent?.client_secret || null,
+      paymentStatus: orderPaymentStatus,
     })
   } catch (error) {
     console.error('Error creating order:', error)
