@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser, generateOrderNumber } from '@/lib/auth-utils'
 import { createOrderSchema } from '@/lib/validations'
-import { createPaymentIntent, createCustomer, calculateTax } from '@/lib/stripe/server'
+import { createPaymentIntent, createCustomer, calculateTax, getStripeErrorMessage } from '@/lib/stripe/server'
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 
 const FUEL_SURCHARGE = 2.47
@@ -65,6 +65,10 @@ export async function POST(request: NextRequest) {
 
     // Calculate totals
     const subtotal = orderData.items.reduce((sum, item) => sum + item.total_price, 0)
+    // Discountable subtotal excludes brochure box purchases (they should not be discounted)
+    const discountableSubtotal = orderData.items
+      .filter(item => !(item.item_type === 'brochure_box' && item.item_category === 'purchase'))
+      .reduce((sum, item) => sum + item.total_price, 0)
     const expediteFee = orderData.is_expedited ? 50 : 0
 
     // Handle promo code discount
@@ -88,11 +92,11 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ error: 'You have already used this promo code' }, { status: 400 })
         }
 
-        // Validate and calculate discount
+        // Validate and calculate discount (only on discountable items - excludes brochure box purchases)
         if (promoCode.discountType === 'percentage') {
-          discount = subtotal * (Number(promoCode.discountValue) / 100)
+          discount = discountableSubtotal * (Number(promoCode.discountValue) / 100)
         } else {
-          discount = Math.min(Number(promoCode.discountValue), subtotal)
+          discount = Math.min(Number(promoCode.discountValue), discountableSubtotal)
         }
         discount = Math.round(discount * 100) / 100
         promoCodeId = promoCode.id
@@ -168,23 +172,41 @@ export async function POST(request: NextRequest) {
     // Create or get Stripe customer
     let stripeCustomerId = user.stripeCustomerId
     if (!stripeCustomerId) {
-      const stripeCustomer = await createCustomer(user.email, user.fullName || user.name || '')
-      stripeCustomerId = stripeCustomer.id
+      try {
+        const stripeCustomer = await createCustomer(user.email, user.fullName || user.name || '')
+        stripeCustomerId = stripeCustomer.id
 
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { stripeCustomerId },
-      })
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { stripeCustomerId },
+        })
+      } catch (customerError) {
+        console.error('Error creating Stripe customer:', customerError)
+        const friendlyMessage = getStripeErrorMessage(customerError)
+        return NextResponse.json(
+          { error: friendlyMessage || 'Unable to set up payment. Please try again or contact support.' },
+          { status: 400 }
+        )
+      }
     }
 
     // Create payment intent (skip for $0 orders - fully discounted)
     let paymentIntent: { id: string; status: string; client_secret: string | null } | null = null
     if (total > 0) {
-      paymentIntent = await createPaymentIntent(
-        total,
-        stripeCustomerId,
-        orderData.payment_method_id
-      )
+      try {
+        paymentIntent = await createPaymentIntent(
+          total,
+          stripeCustomerId,
+          orderData.payment_method_id
+        )
+      } catch (paymentError) {
+        console.error('Payment intent creation failed:', paymentError)
+        const friendlyMessage = getStripeErrorMessage(paymentError)
+        return NextResponse.json(
+          { error: friendlyMessage || 'Payment failed. Please check your card details and try again.' },
+          { status: 400 }
+        )
+      }
     }
 
     // Get the post type (optional - orders can be for other services only)
@@ -274,6 +296,47 @@ export async function POST(request: NextRequest) {
       },
     })
 
+    // Mark inventory items as no longer in storage after order is created
+    const inventoryUpdates: Promise<unknown>[] = []
+    for (const item of orderData.items) {
+      if (item.customer_sign_id) {
+        inventoryUpdates.push(
+          prisma.customerSign.update({
+            where: { id: item.customer_sign_id },
+            data: { inStorage: false },
+          })
+        )
+      }
+      if (item.customer_rider_id) {
+        inventoryUpdates.push(
+          prisma.customerRider.update({
+            where: { id: item.customer_rider_id },
+            data: { inStorage: false },
+          })
+        )
+      }
+      if (item.customer_lockbox_id) {
+        inventoryUpdates.push(
+          prisma.customerLockbox.update({
+            where: { id: item.customer_lockbox_id },
+            data: { inStorage: false },
+          })
+        )
+      }
+      if (item.customer_brochure_box_id) {
+        inventoryUpdates.push(
+          prisma.customerBrochureBox.update({
+            where: { id: item.customer_brochure_box_id },
+            data: { inStorage: false },
+          })
+        )
+      }
+    }
+    if (inventoryUpdates.length > 0) {
+      await Promise.all(inventoryUpdates)
+      console.log(`Marked ${inventoryUpdates.length} inventory item(s) as out of storage for order ${order.orderNumber}`)
+    }
+
     // Record promo code usage AFTER order is successfully created
     if (promoCodeId) {
       await prisma.promoCodeUsage.create({
@@ -343,9 +406,17 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error('Error creating order:', error)
-    // Return more details in development
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error'
-    const errorDetails = process.env.NODE_ENV !== 'production' ? errorMessage : 'Internal server error'
-    return NextResponse.json({ error: errorDetails }, { status: 500 })
+
+    // Check if it's a Stripe error that slipped through
+    const stripeMessage = getStripeErrorMessage(error)
+    if (stripeMessage) {
+      return NextResponse.json({ error: stripeMessage }, { status: 400 })
+    }
+
+    // For other errors, return a helpful message
+    return NextResponse.json(
+      { error: 'Something went wrong while placing your order. Please try again or contact support if the issue persists.' },
+      { status: 500 }
+    )
   }
 }

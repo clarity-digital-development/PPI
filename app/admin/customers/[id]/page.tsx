@@ -2,8 +2,8 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { useParams } from 'next/navigation'
-import { ArrowLeft, Plus, Trash2, Package, Tag, Lock, FileBox } from 'lucide-react'
+import { useParams, useRouter } from 'next/navigation'
+import { ArrowLeft, Plus, Minus, Trash2, Package, Tag, Lock, FileBox, Pencil, UserX } from 'lucide-react'
 import { Card, CardContent, Button, Input, Badge, Modal } from '@/components/ui'
 
 interface CustomerData {
@@ -17,8 +17,8 @@ interface CustomerData {
   }
   inventory: {
     signs: Array<{ id: string; description: string; size: string | null; quantity: number }>
-    riders: Array<{ id: string; rider_type: string; quantity: number }>
-    lockboxes: Array<{ id: string; lockbox_type: string; lockbox_code: string | null; quantity: number }>
+    riders: Array<{ id: string; rider_id: string; rider_type: string; quantity: number }>
+    lockboxes: Array<{ id: string; lockbox_type_id: string; lockbox_type: string; lockbox_code: string | null; quantity: number }>
     brochureBoxes: { id: string; quantity: number } | null
   }
   orders: Array<{
@@ -40,11 +40,13 @@ interface CustomerData {
 
 export default function CustomerDetailPage() {
   const params = useParams()
+  const router = useRouter()
   const id = params.id as string
   const [data, setData] = useState<CustomerData | null>(null)
   const [loading, setLoading] = useState(true)
   const [showAddModal, setShowAddModal] = useState(false)
-  const [addType, setAddType] = useState<'sign' | 'rider' | 'lockbox' | null>(null)
+  const [showEditModal, setShowEditModal] = useState(false)
+  const [addType, setAddType] = useState<'sign' | 'rider' | 'lockbox' | 'brochure_box' | null>(null)
   const [formData, setFormData] = useState({
     description: '',
     size: '',
@@ -53,6 +55,13 @@ export default function CustomerDetailPage() {
     lockbox_type: 'sentrilock',
     lockbox_code: '',
   })
+  const [editData, setEditData] = useState({
+    full_name: '',
+    email: '',
+    phone: '',
+    company_name: '',
+  })
+  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     fetchCustomer()
@@ -64,11 +73,57 @@ export default function CustomerDetailPage() {
       if (res.ok) {
         const data = await res.json()
         setData(data)
+        setEditData({
+          full_name: data.customer.full_name || '',
+          email: data.customer.email || '',
+          phone: data.customer.phone || '',
+          company_name: data.customer.company_name || '',
+        })
       }
     } catch (error) {
       console.error('Error fetching customer:', error)
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleSaveCustomer() {
+    setSaving(true)
+    try {
+      const res = await fetch(`/api/admin/customers/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          full_name: editData.full_name,
+          email: editData.email,
+          phone: editData.phone,
+          company: editData.company_name,
+        }),
+      })
+      if (res.ok) {
+        setShowEditModal(false)
+        fetchCustomer()
+      }
+    } catch (error) {
+      console.error('Error updating customer:', error)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleDeleteCustomer() {
+    if (!confirm('Are you sure you want to delete this customer? This will also delete all their inventory, orders, and data. This cannot be undone.')) return
+
+    try {
+      const res = await fetch(`/api/admin/customers/${id}`, { method: 'DELETE' })
+      if (res.ok) {
+        router.push('/admin/customers')
+      } else {
+        const data = await res.json()
+        alert(data.error || 'Failed to delete customer')
+      }
+    } catch (error) {
+      console.error('Error deleting customer:', error)
     }
   }
 
@@ -86,6 +141,9 @@ export default function CustomerDetailPage() {
     } else if (addType === 'lockbox') {
       body.lockbox_type = formData.lockbox_type
       body.lockbox_code = formData.lockbox_code || null
+      body.quantity = formData.quantity
+    } else if (addType === 'brochure_box') {
+      body.description = formData.description || null
       body.quantity = formData.quantity
     }
 
@@ -107,6 +165,9 @@ export default function CustomerDetailPage() {
           lockbox_code: '',
         })
         fetchCustomer()
+      } else {
+        const data = await res.json()
+        alert(data.error || 'Failed to add inventory')
       }
     } catch (error) {
       console.error('Error adding inventory:', error)
@@ -127,6 +188,21 @@ export default function CustomerDetailPage() {
       }
     } catch (error) {
       console.error('Error deleting inventory:', error)
+    }
+  }
+
+  async function handleUpdateQuantity(type: 'rider' | 'lockbox', catalogId: string, newQuantity: number) {
+    try {
+      const res = await fetch(`/api/admin/customers/${id}/inventory`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type, item_id: catalogId, quantity: newQuantity }),
+      })
+      if (res.ok) {
+        fetchCustomer()
+      }
+    } catch (error) {
+      console.error('Error updating quantity:', error)
     }
   }
 
@@ -162,10 +238,29 @@ export default function CustomerDetailPage() {
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">{data.customer.full_name}</h1>
-            <p className="text-gray-600">{data.customer.email} • {data.customer.phone}</p>
+            <p className="text-gray-600">{data.customer.email} {data.customer.phone && `\u2022 ${data.customer.phone}`}</p>
             {data.customer.company_name && (
               <p className="text-sm text-gray-500">{data.customer.company_name}</p>
             )}
+          </div>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowEditModal(true)}
+            >
+              <Pencil className="w-4 h-4 mr-1" />
+              Edit Info
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleDeleteCustomer}
+              className="text-red-600 hover:text-red-700 border-red-200 hover:border-red-300 hover:bg-red-50"
+            >
+              <UserX className="w-4 h-4 mr-1" />
+              Delete
+            </Button>
           </div>
         </div>
       </div>
@@ -199,9 +294,7 @@ export default function CustomerDetailPage() {
                   >
                     <div>
                       <p className="font-medium text-gray-900">{sign.description}</p>
-                      <p className="text-sm text-gray-500">
-                        {sign.size && `${sign.size} • `}Qty: {sign.quantity}
-                      </p>
+                      {sign.size && <p className="text-sm text-gray-500">{sign.size}</p>}
                     </div>
                     <button
                       onClick={() => handleDeleteInventory('sign', sign.id)}
@@ -246,14 +339,28 @@ export default function CustomerDetailPage() {
                   >
                     <div>
                       <p className="font-medium text-gray-900">{rider.rider_type}</p>
-                      <p className="text-sm text-gray-500">Qty: {rider.quantity}</p>
                     </div>
-                    <button
-                      onClick={() => handleDeleteInventory('rider', rider.id)}
-                      className="text-gray-400 hover:text-red-500"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => handleUpdateQuantity('rider', rider.rider_id, rider.quantity - 1)}
+                        className="w-7 h-7 flex items-center justify-center rounded bg-gray-200 hover:bg-gray-300 text-gray-700"
+                      >
+                        <Minus className="w-3.5 h-3.5" />
+                      </button>
+                      <span className="w-8 text-center font-medium text-gray-900">{rider.quantity}</span>
+                      <button
+                        onClick={() => handleUpdateQuantity('rider', rider.rider_id, rider.quantity + 1)}
+                        className="w-7 h-7 flex items-center justify-center rounded bg-gray-200 hover:bg-gray-300 text-gray-700"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteInventory('rider', rider.id)}
+                        className="text-gray-400 hover:text-red-500 ml-1"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -291,17 +398,31 @@ export default function CustomerDetailPage() {
                   >
                     <div>
                       <p className="font-medium text-gray-900 capitalize">{lockbox.lockbox_type}</p>
-                      <p className="text-sm text-gray-500">
-                        {lockbox.lockbox_code && `Code: ${lockbox.lockbox_code} • `}
-                        Qty: {lockbox.quantity}
-                      </p>
+                      {lockbox.lockbox_code && (
+                        <p className="text-sm text-gray-500">Code: {lockbox.lockbox_code}</p>
+                      )}
                     </div>
-                    <button
-                      onClick={() => handleDeleteInventory('lockbox', lockbox.id)}
-                      className="text-gray-400 hover:text-red-500"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => handleUpdateQuantity('lockbox', lockbox.lockbox_type_id, lockbox.quantity - 1)}
+                        className="w-7 h-7 flex items-center justify-center rounded bg-gray-200 hover:bg-gray-300 text-gray-700"
+                      >
+                        <Minus className="w-3.5 h-3.5" />
+                      </button>
+                      <span className="w-8 text-center font-medium text-gray-900">{lockbox.quantity}</span>
+                      <button
+                        onClick={() => handleUpdateQuantity('lockbox', lockbox.lockbox_type_id, lockbox.quantity + 1)}
+                        className="w-7 h-7 flex items-center justify-center rounded bg-gray-200 hover:bg-gray-300 text-gray-700"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteInventory('lockbox', lockbox.id)}
+                        className="text-gray-400 hover:text-red-500 ml-1"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -314,9 +435,21 @@ export default function CustomerDetailPage() {
         {/* Brochure Boxes */}
         <Card>
           <CardContent className="p-6">
-            <div className="flex items-center gap-2 mb-4">
-              <FileBox className="w-5 h-5 text-pink-500" />
-              <h2 className="font-semibold text-gray-900">Brochure Boxes</h2>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <FileBox className="w-5 h-5 text-pink-500" />
+                <h2 className="font-semibold text-gray-900">Brochure Boxes</h2>
+              </div>
+              <Button
+                size="sm"
+                onClick={() => {
+                  setAddType('brochure_box')
+                  setShowAddModal(true)
+                }}
+              >
+                <Plus className="w-4 h-4 mr-1" />
+                Add
+              </Button>
             </div>
             <div className="p-3 bg-gray-50 rounded-lg">
               <p className="text-2xl font-bold text-gray-900">
@@ -369,11 +502,50 @@ export default function CustomerDetailPage() {
         </CardContent>
       </Card>
 
+      {/* Edit Customer Modal */}
+      <Modal
+        isOpen={showEditModal}
+        onClose={() => setShowEditModal(false)}
+        title="Edit Customer Info"
+      >
+        <div className="space-y-4">
+          <Input
+            label="Full Name"
+            value={editData.full_name}
+            onChange={(e) => setEditData({ ...editData, full_name: e.target.value })}
+          />
+          <Input
+            label="Email"
+            type="email"
+            value={editData.email}
+            onChange={(e) => setEditData({ ...editData, email: e.target.value })}
+          />
+          <Input
+            label="Phone"
+            value={editData.phone}
+            onChange={(e) => setEditData({ ...editData, phone: e.target.value })}
+          />
+          <Input
+            label="Company"
+            value={editData.company_name}
+            onChange={(e) => setEditData({ ...editData, company_name: e.target.value })}
+          />
+          <div className="flex justify-end gap-3 pt-4">
+            <Button variant="outline" onClick={() => setShowEditModal(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveCustomer} disabled={saving}>
+              {saving ? 'Saving...' : 'Save Changes'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
       {/* Add Inventory Modal */}
       <Modal
         isOpen={showAddModal}
         onClose={() => setShowAddModal(false)}
-        title={`Add ${addType === 'sign' ? 'Sign' : addType === 'rider' ? 'Rider' : 'Lockbox'}`}
+        title={`Add ${addType === 'sign' ? 'Sign' : addType === 'rider' ? 'Rider' : addType === 'brochure_box' ? 'Brochure Box' : 'Lockbox'}`}
       >
         <div className="space-y-4">
           {addType === 'sign' && (
@@ -420,6 +592,14 @@ export default function CustomerDetailPage() {
                 placeholder="e.g., 1234"
               />
             </>
+          )}
+          {addType === 'brochure_box' && (
+            <Input
+              label="Description (optional)"
+              value={formData.description}
+              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+              placeholder="e.g., Clear acrylic box"
+            />
           )}
           <Input
             label="Quantity"

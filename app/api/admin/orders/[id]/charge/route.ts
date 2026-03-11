@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
-import { createPaymentIntent, confirmPaymentIntent } from '@/lib/stripe/server'
+import { createPaymentIntent, confirmPaymentIntent, getStripeErrorMessage } from '@/lib/stripe/server'
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 
 export async function POST(
@@ -125,14 +125,19 @@ export async function POST(
           error: `Payment failed with status: ${paymentIntent.status}`,
         }, { status: 400 })
       }
-    } catch (stripeError: any) {
+    } catch (stripeError) {
       console.error('Stripe error:', stripeError)
+      const friendlyMessage = getStripeErrorMessage(stripeError)
       return NextResponse.json({
-        error: stripeError.message || 'Payment failed',
+        error: friendlyMessage || 'Payment failed. Please check the card details and try again.',
       }, { status: 400 })
     }
   } catch (error) {
     console.error('Error charging card:', error)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    const stripeMessage = getStripeErrorMessage(error)
+    return NextResponse.json(
+      { error: stripeMessage || 'Something went wrong while processing payment. Please try again.' },
+      { status: 500 }
+    )
   }
 }

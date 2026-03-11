@@ -34,7 +34,7 @@ export function ReviewStep({
   const [loadingTax, setLoadingTax] = useState(false)
 
   // Calculate order items and totals
-  const orderItems: Array<{ description: string; price: number }> = []
+  const orderItems: Array<{ description: string; price: number; excludeFromDiscount?: boolean }> = []
 
   // Post
   if (formData.post_type) {
@@ -86,11 +86,12 @@ export function ReviewStep({
     })
   }
 
-  // Brochure box
+  // Brochure box (purchases excluded from promo discounts)
   if (formData.brochure_option === 'purchase') {
     orderItems.push({
       description: 'Brochure Box Purchase (includes install)',
       price: PRICING.brochure_box_purchase,
+      excludeFromDiscount: true,
     })
   } else if (formData.brochure_option === 'own') {
     orderItems.push({
@@ -100,6 +101,8 @@ export function ReviewStep({
   }
 
   const subtotal = orderItems.reduce((sum, item) => sum + item.price, 0)
+  // Discountable subtotal excludes items like brochure box purchases
+  const discountableSubtotal = orderItems.filter(item => !item.excludeFromDiscount).reduce((sum, item) => sum + item.price, 0)
   const expediteFee = formData.schedule_type === 'expedited' ? PRICING.expedite_fee : 0
   const discount = formData.discount || 0
   const fuelSurchargeWaived = formData.fuel_surcharge_waived || false
@@ -214,7 +217,7 @@ export function ReviewStep({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           code: promoCodeInput.trim(),
-          subtotal,
+          subtotal: discountableSubtotal,
         }),
       })
 
@@ -231,7 +234,8 @@ export function ReviewStep({
         fuel_surcharge_waived: data.promoCode.waiveFuelSurcharge || false,
       })
       const savings = data.discount + (data.promoCode.waiveFuelSurcharge ? PRICING.fuel_surcharge : 0)
-      setPromoCodeSuccess(`Promo code "${data.promoCode.code}" applied! You save $${savings.toFixed(2)}${data.promoCode.waiveFuelSurcharge ? ' (includes fuel surcharge waiver)' : ''}`)
+      const brochureExcluded = formData.brochure_option === 'purchase'
+      setPromoCodeSuccess(`Promo code "${data.promoCode.code}" applied! You save $${savings.toFixed(2)}${data.promoCode.waiveFuelSurcharge ? ' (includes fuel surcharge waiver)' : ''}${brochureExcluded ? ' (excludes brochure box purchase)' : ''}`)
     } catch (err) {
       setPromoCodeError(err instanceof Error ? err.message : 'Failed to apply promo code')
     } finally {

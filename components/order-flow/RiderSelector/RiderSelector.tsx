@@ -86,6 +86,20 @@ export function RiderSelector({
         </div>
       </div>
 
+      {/* Inventory Status */}
+      {hasInventory ? (
+        <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+          <p className="text-sm text-green-800 font-medium">
+            You have riders in your inventory ({customerInventory.map(inv => `${inv.quantity}x ${inv.riderType.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}`).join(', ')})
+          </p>
+          <p className="text-xs text-green-700 mt-0.5">Select &ldquo;My Riders&rdquo; below to install from your inventory at ${installPrice} each.</p>
+        </div>
+      ) : (
+        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
+          <p className="text-sm text-amber-800">No riders currently in your inventory. You can rent riders below, or contact your admin to add riders to your account.</p>
+        </div>
+      )}
+
       {/* Source Toggle */}
       <RiderSourceToggle
         source={source}

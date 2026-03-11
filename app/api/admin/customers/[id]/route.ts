@@ -68,18 +68,40 @@ export async function GET(
       quantity: 1,
     }))
 
-    const riders = ridersRaw.map((r) => ({
-      id: r.id,
-      rider_type: r.rider.name,
-      quantity: 1,
-    }))
+    // Aggregate riders by type with quantity counts
+    const riderMap: Record<string, { id: string; rider_id: string; rider_type: string; quantity: number }> = {}
+    for (const r of ridersRaw) {
+      const key = r.riderId
+      if (riderMap[key]) {
+        riderMap[key].quantity += 1
+      } else {
+        riderMap[key] = {
+          id: r.id,
+          rider_id: r.riderId,
+          rider_type: r.rider.name,
+          quantity: 1,
+        }
+      }
+    }
+    const riders = Object.values(riderMap)
 
-    const lockboxes = lockboxesRaw.map((lb) => ({
-      id: lb.id,
-      lockbox_type: lb.lockboxType.name,
-      lockbox_code: lb.code,
-      quantity: 1,
-    }))
+    // Aggregate lockboxes by type with quantity counts
+    const lockboxMap: Record<string, { id: string; lockbox_type_id: string; lockbox_type: string; lockbox_code: string | null; quantity: number }> = {}
+    for (const lb of lockboxesRaw) {
+      const key = lb.lockboxTypeId
+      if (lockboxMap[key]) {
+        lockboxMap[key].quantity += 1
+      } else {
+        lockboxMap[key] = {
+          id: lb.id,
+          lockbox_type_id: lb.lockboxTypeId,
+          lockbox_type: lb.lockboxType.name,
+          lockbox_code: lb.code,
+          quantity: 1,
+        }
+      }
+    }
+    const lockboxes = Object.values(lockboxMap)
 
     // Aggregate brochure boxes into a single count
     const brochureBoxes = brochureBoxesRaw.length > 0
@@ -149,6 +171,7 @@ export async function PUT(
     const updateData: Record<string, unknown> = {}
 
     if (body.full_name !== undefined) updateData.fullName = body.full_name
+    if (body.email !== undefined) updateData.email = body.email
     if (body.phone !== undefined) updateData.phone = body.phone
     if (body.company !== undefined) updateData.company = body.company
 
@@ -168,6 +191,38 @@ export async function PUT(
     })
   } catch (error) {
     console.error('Error updating customer:', error)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params
+    const user = await getCurrentUser()
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    if (user.role !== 'admin') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+
+    // Prevent deleting yourself
+    if (id === user.id) {
+      return NextResponse.json({ error: 'Cannot delete your own account' }, { status: 400 })
+    }
+
+    await prisma.user.delete({
+      where: { id },
+    })
+
+    return NextResponse.json({ success: true })
+  } catch (error) {
+    console.error('Error deleting customer:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

@@ -16,28 +16,26 @@ export function RiderSourceToggle({
   onSourceChange,
   hasInventory,
 }: RiderSourceToggleProps) {
-  if (!hasInventory) {
-    return null
-  }
-
   return (
     <div className="flex gap-2 p-1 bg-gray-100 rounded-lg">
-      <button
-        type="button"
-        onClick={() => onSourceChange('owned')}
-        className={cn(
-          'flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-md text-sm font-medium transition-all',
-          source === 'owned'
-            ? 'bg-white text-gray-900 shadow-sm'
-            : 'text-gray-600 hover:text-gray-900'
-        )}
-      >
-        <Package className="w-4 h-4" />
-        <div className="text-left">
-          <div>My Riders</div>
-          <div className="text-xs text-gray-500">${RIDER_PRICING.install} each</div>
-        </div>
-      </button>
+      {hasInventory && (
+        <button
+          type="button"
+          onClick={() => onSourceChange('owned')}
+          className={cn(
+            'flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-md text-sm font-medium transition-all',
+            source === 'owned'
+              ? 'bg-white text-gray-900 shadow-sm'
+              : 'text-gray-600 hover:text-gray-900'
+          )}
+        >
+          <Package className="w-4 h-4" />
+          <div className="text-left">
+            <div>My Riders</div>
+            <div className="text-xs text-gray-500">${RIDER_PRICING.install} each</div>
+          </div>
+        </button>
+      )}
       <button
         type="button"
         onClick={() => onSourceChange('rental')}

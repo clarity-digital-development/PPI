@@ -3,6 +3,65 @@ import Stripe from 'stripe'
 // Lazy initialization to avoid build-time errors
 let stripeClient: Stripe | null = null
 
+/**
+ * Parse Stripe errors into user-friendly messages
+ */
+export function getStripeErrorMessage(error: unknown): string {
+  if (error instanceof Stripe.errors.StripeCardError) {
+    // Card-specific errors with decline codes
+    const declineCode = error.decline_code
+    switch (declineCode) {
+      case 'insufficient_funds':
+        return 'Your card has insufficient funds. Please try a different card.'
+      case 'lost_card':
+      case 'stolen_card':
+        return 'This card has been reported lost or stolen. Please use a different card.'
+      case 'expired_card':
+        return 'Your card has expired. Please update your card or use a different one.'
+      case 'incorrect_cvc':
+        return 'The CVC number is incorrect. Please check your card details and try again.'
+      case 'processing_error':
+        return 'There was a processing error with your card. Please try again in a moment.'
+      case 'generic_decline':
+      default:
+        // Use Stripe's message if available, otherwise generic
+        return error.message || 'Your card was declined. Please try a different card or contact your bank.'
+    }
+  }
+
+  if (error instanceof Stripe.errors.StripeInvalidRequestError) {
+    // Check for amount-related errors (e.g., amount too small)
+    if (error.message?.includes('amount')) {
+      return 'There was an issue processing the payment amount. Please contact support.'
+    }
+    return 'There was an issue with the payment request. Please try again.'
+  }
+
+  if (error instanceof Stripe.errors.StripeConnectionError) {
+    return 'Unable to connect to the payment processor. Please check your internet connection and try again.'
+  }
+
+  if (error instanceof Stripe.errors.StripeRateLimitError) {
+    return 'Too many requests. Please wait a moment and try again.'
+  }
+
+  if (error instanceof Stripe.errors.StripeAuthenticationError) {
+    // This is a server-side config issue, don't expose details
+    return 'Payment processing is temporarily unavailable. Please try again later.'
+  }
+
+  if (error instanceof Stripe.errors.StripeAPIError) {
+    return 'The payment service is experiencing issues. Please try again in a few minutes.'
+  }
+
+  // Generic Stripe error fallback
+  if (error instanceof Stripe.errors.StripeError) {
+    return error.message || 'A payment error occurred. Please try again.'
+  }
+
+  return ''
+}
+
 function getStripe(): Stripe {
   if (!stripeClient) {
     if (!process.env.STRIPE_SECRET_KEY) {
