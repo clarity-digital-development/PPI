@@ -48,6 +48,8 @@ const initialFormData: OrderFormData = {
   sign_description: '',
   // Riders
   riders: [],
+  // Wire Frame Signs
+  wire_frame_quantity: 0,
   // Lockbox
   lockbox_option: 'none',
   lockbox_type: undefined,

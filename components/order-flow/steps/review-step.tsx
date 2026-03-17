@@ -86,6 +86,14 @@ export function ReviewStep({
     })
   }
 
+  // Wire Frame Signs
+  if (formData.wire_frame_quantity > 0) {
+    orderItems.push({
+      description: `Wire Frame Sign Install × ${formData.wire_frame_quantity}`,
+      price: formData.wire_frame_quantity * PRICING.wire_frame_sign,
+    })
+  }
+
   // Brochure box (purchases excluded from promo discounts)
   if (formData.brochure_option === 'purchase') {
     orderItems.push({
@@ -134,6 +142,9 @@ export function ReviewStep({
     } else if (formData.lockbox_option === 'mechanical_rent') {
       items.push({ item_type: 'lockbox', total_price: PRICING.lockbox_rental })
     }
+    if (formData.wire_frame_quantity > 0) {
+      items.push({ item_type: 'wire_frame_sign', total_price: formData.wire_frame_quantity * PRICING.wire_frame_sign })
+    }
     if (formData.brochure_option === 'purchase') {
       items.push({ item_type: 'brochure_box', total_price: PRICING.brochure_box_purchase })
     } else if (formData.brochure_option === 'own') {
@@ -141,7 +152,7 @@ export function ReviewStep({
     }
 
     return items
-  }, [formData.post_type, formData.sign_option, formData.riders, formData.lockbox_option, formData.brochure_option])
+  }, [formData.post_type, formData.sign_option, formData.riders, formData.lockbox_option, formData.wire_frame_quantity, formData.brochure_option])
 
   // Fetch tax from Stripe Tax API
   useEffect(() => {
@@ -398,6 +409,18 @@ export function ReviewStep({
           quantity: 1,
           unit_price: PRICING.lockbox_rental,
           total_price: PRICING.lockbox_rental,
+        })
+      }
+
+      // Wire Frame Signs
+      if (formData.wire_frame_quantity > 0) {
+        items.push({
+          item_type: 'wire_frame_sign',
+          item_category: 'install',
+          description: `Wire Frame Sign Install × ${formData.wire_frame_quantity}`,
+          quantity: formData.wire_frame_quantity,
+          unit_price: PRICING.wire_frame_sign,
+          total_price: formData.wire_frame_quantity * PRICING.wire_frame_sign,
         })
       }
 

@@ -19,16 +19,16 @@ export const propertySchema = z.object({
 })
 
 export const orderItemSchema = z.object({
-  item_type: z.enum(['post', 'sign', 'rider', 'lockbox', 'brochure_box', 'trip']),
+  item_type: z.enum(['post', 'sign', 'rider', 'lockbox', 'brochure_box', 'wire_frame_sign', 'trip']),
   item_category: z.enum(['rental', 'owned', 'new', 'storage', 'purchase', 'install']).optional(),
   description: z.string(),
   quantity: z.number().min(1).default(1),
   unit_price: z.number().min(0),
   total_price: z.number().min(0),
-  customer_sign_id: z.string().uuid().optional(),
-  customer_rider_id: z.string().uuid().optional(),
-  customer_lockbox_id: z.string().uuid().optional(),
-  customer_brochure_box_id: z.string().uuid().optional(),
+  customer_sign_id: z.string().optional(),
+  customer_rider_id: z.string().optional(),
+  customer_lockbox_id: z.string().optional(),
+  customer_brochure_box_id: z.string().optional(),
   custom_value: z.string().optional(),
 })
 
@@ -58,7 +58,7 @@ export const schedulingSchema = z.object({
 
 export const signSelectionSchema = z.object({
   use_stored_sign: z.boolean().default(false),
-  stored_sign_id: z.string().uuid().optional(),
+  stored_sign_id: z.string().optional(),
   sign_at_property: z.boolean().default(false),
   sign_description: z.string().optional(),
   no_sign: z.boolean().default(false),
@@ -70,7 +70,7 @@ export const riderSelectionSchema = z.object({
     is_rental: z.boolean(),
     quantity: z.number().min(1).default(1),
     custom_value: z.string().optional(),
-    customer_rider_id: z.string().uuid().optional(),
+    customer_rider_id: z.string().optional(),
   })).optional(),
 })
 
@@ -78,12 +78,12 @@ export const lockboxSelectionSchema = z.object({
   lockbox_type: z.string().optional(),
   is_rental: z.boolean().default(false),
   lockbox_code: z.string().optional(),
-  customer_lockbox_id: z.string().uuid().optional(),
+  customer_lockbox_id: z.string().optional(),
 })
 
 export const brochureBoxSchema = z.object({
   use_stored: z.boolean().default(false),
-  customer_brochure_box_id: z.string().uuid().optional(),
+  customer_brochure_box_id: z.string().optional(),
   buy_new: z.boolean().default(false),
 })
 

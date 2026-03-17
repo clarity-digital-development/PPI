@@ -55,8 +55,27 @@ export async function POST(request: NextRequest) {
     const validationResult = createOrderSchema.safeParse(body)
 
     if (!validationResult.success) {
+      // Log the validation errors and request body for debugging
+      console.error('Order validation failed:', JSON.stringify(validationResult.error.errors, null, 2))
+      console.error('Request body keys:', Object.keys(body))
+
+      // Build a user-friendly error message from validation errors
+      const fieldErrors = validationResult.error.errors.map(e => {
+        const field = e.path.join('.')
+        if (field === 'items' && e.code === 'too_small') return 'At least one item is required'
+        if (field === 'property_address') return 'Street address is required'
+        if (field === 'property_city') return 'City is required'
+        if (field === 'property_zip') return 'ZIP code is required'
+        if (field === 'property_type') return 'Property type is required'
+        if (field.startsWith('items.')) return `Order item issue: ${e.message}`
+        return `${field}: ${e.message}`
+      })
+      const message = fieldErrors.length === 1
+        ? fieldErrors[0]
+        : `Please fix the following: ${fieldErrors.join('; ')}`
+
       return NextResponse.json(
-        { error: 'Validation failed', details: validationResult.error.errors },
+        { error: message, details: validationResult.error.errors },
         { status: 400 }
       )
     }

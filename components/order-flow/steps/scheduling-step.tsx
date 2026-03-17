@@ -1,15 +1,83 @@
 'use client'
 
-import { Zap, Calendar, Clock } from 'lucide-react'
+import { Zap, Calendar, Clock, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { StepProps } from '../types'
 import { PRICING } from '../types'
 
+/**
+ * Get the current time in EST/EDT timezone.
+ * Returns { hours, dayOfWeek } where dayOfWeek: 0=Sun, 6=Sat
+ */
+function getEasternTime() {
+  const now = new Date()
+  const eastern = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }))
+  return {
+    hours: eastern.getHours(),
+    dayOfWeek: eastern.getDay(),
+    date: eastern,
+  }
+}
+
+/**
+ * Get the next available business day (skips Sundays).
+ * If after 4pm EST, pushes one additional day.
+ */
+function getNextAvailableDate(): Date {
+  const { hours, date: easternNow } = getEasternTime()
+  const isAfter4pm = hours >= 16
+
+  // Start from tomorrow
+  const next = new Date(easternNow)
+  next.setDate(next.getDate() + 1)
+
+  // If after 4pm, push one more day
+  if (isAfter4pm) {
+    next.setDate(next.getDate() + 1)
+  }
+
+  // Skip Sunday (0)
+  if (next.getDay() === 0) {
+    next.setDate(next.getDate() + 1)
+  }
+
+  return next
+}
+
+function toDateStr(d: Date): string {
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 export function SchedulingStep({ formData, updateFormData }: StepProps) {
-  const today = new Date()
-  const minDate = new Date(today)
-  minDate.setDate(minDate.getDate() + 1)
-  const minDateStr = minDate.toISOString().split('T')[0]
+  const { hours } = getEasternTime()
+  const isAfter4pm = hours >= 16
+
+  const nextAvailable = getNextAvailableDate()
+  const minDateStr = toDateStr(nextAvailable)
+
+  // Same day only available before 4pm EST
+  const canExpedite = !isAfter4pm
+
+  // If user had expedited selected but it's now after 4pm, reset
+  if (formData.schedule_type === 'expedited' && !canExpedite) {
+    updateFormData({ schedule_type: 'next_available', requested_date: undefined })
+  }
+
+  // Validate that selected date isn't a Sunday
+  const handleDateChange = (dateStr: string) => {
+    const [year, month, day] = dateStr.split('-').map(Number)
+    const selected = new Date(year, month - 1, day)
+    if (selected.getDay() === 0) {
+      // Skip to Monday
+      selected.setDate(selected.getDate() + 1)
+      updateFormData({ requested_date: toDateStr(selected) })
+    } else {
+      updateFormData({ requested_date: dateStr })
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -45,7 +113,10 @@ export function SchedulingStep({ formData, updateFormData }: StepProps) {
           <div className="flex-1">
             <h3 className="font-semibold text-gray-900">Next available day</h3>
             <p className="text-sm text-gray-600">
-              Orders placed before 4pm are installed next day!
+              {isAfter4pm
+                ? 'Orders placed after 4pm will be installed the following business day.'
+                : 'Orders placed before 4pm are installed next business day!'
+              }
             </p>
             <p className="text-sm text-green-600 font-medium mt-1">
               No additional fee
@@ -96,43 +167,64 @@ export function SchedulingStep({ formData, updateFormData }: StepProps) {
               type="date"
               min={minDateStr}
               value={formData.requested_date || ''}
-              onChange={(e) => updateFormData({ requested_date: e.target.value })}
+              onChange={(e) => handleDateChange(e.target.value)}
               className="w-full px-4 py-2.5 rounded-lg border border-gray-200 focus:border-pink-500 focus:ring-2 focus:ring-pink-200 outline-none transition-all"
             />
+            <p className="text-xs text-gray-500 mt-2">
+              Sundays are not available for installation.
+            </p>
           </div>
         )}
 
         {/* Expedited */}
         <button
           type="button"
-          onClick={() => updateFormData({
-            schedule_type: 'expedited',
-            requested_date: undefined
-          })}
+          onClick={() => {
+            if (canExpedite) {
+              updateFormData({
+                schedule_type: 'expedited',
+                requested_date: undefined
+              })
+            }
+          }}
+          disabled={!canExpedite}
           className={cn(
             'w-full flex items-start gap-4 p-4 rounded-xl border-2 transition-all text-left',
-            formData.schedule_type === 'expedited'
+            !canExpedite
+              ? 'border-gray-200 bg-gray-50 opacity-60 cursor-not-allowed'
+              : formData.schedule_type === 'expedited'
               ? 'border-pink-500 bg-pink-50'
               : 'border-gray-200 hover:border-gray-300'
           )}
         >
           <div className={cn(
             'flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center',
-            formData.schedule_type === 'expedited' ? 'bg-pink-500' : 'bg-gray-100'
+            !canExpedite
+              ? 'bg-gray-100'
+              : formData.schedule_type === 'expedited' ? 'bg-pink-500' : 'bg-gray-100'
           )}>
             <Zap className={cn(
               'w-5 h-5',
-              formData.schedule_type === 'expedited' ? 'text-white' : 'text-gray-400'
+              !canExpedite
+                ? 'text-gray-400'
+                : formData.schedule_type === 'expedited' ? 'text-white' : 'text-gray-400'
             )} />
           </div>
           <div className="flex-1">
-            <h3 className="font-semibold text-gray-900">Same day (expedited)</h3>
-            <p className="text-sm text-gray-600">
-              Rush installation today, subject to availability
+            <h3 className={cn("font-semibold", canExpedite ? "text-gray-900" : "text-gray-400")}>
+              Same day (expedited)
+            </h3>
+            <p className={cn("text-sm", canExpedite ? "text-gray-600" : "text-gray-400")}>
+              {canExpedite
+                ? 'Rush installation today, subject to availability'
+                : 'Same day service is only available for orders placed before 4pm EST'
+              }
             </p>
-            <p className="text-sm font-medium text-pink-600 mt-1">
-              + ${PRICING.expedite_fee.toFixed(2)} expedite fee
-            </p>
+            {canExpedite && (
+              <p className="text-sm font-medium text-pink-600 mt-1">
+                + ${PRICING.expedite_fee.toFixed(2)} expedite fee
+              </p>
+            )}
           </div>
         </button>
       </div>
@@ -143,6 +235,15 @@ export function SchedulingStep({ formData, updateFormData }: StepProps) {
           We&apos;ll contact you to confirm if same day service is possible.
         </div>
       )}
+
+      {/* Scheduling disclaimer */}
+      <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800 flex gap-3">
+        <AlertTriangle className="w-5 h-5 flex-shrink-0 text-blue-600 mt-0.5" />
+        <div className="space-y-1">
+          <p>Next day install orders must be placed before 4pm EST. Orders placed after 4pm EST will be installed the following business day unless rush request is processed.</p>
+          <p>We are closed on Sunday.</p>
+        </div>
+      </div>
     </div>
   )
 }

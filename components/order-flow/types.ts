@@ -43,6 +43,9 @@ export interface OrderFormData {
   lockbox_code?: string
   customer_lockbox_id?: string
 
+  // Wire Frame Signs
+  wire_frame_quantity: number
+
   // Brochure Box
   brochure_option: 'purchase' | 'own' | 'none'
   customer_brochure_box_id?: string
@@ -94,6 +97,7 @@ export const PRICING = {
   rider_install: 2,
   lockbox_install: 5,
   lockbox_rental: 10,
+  wire_frame_sign: 5,
   brochure_box_purchase: 23,
   brochure_box_install: 2,
   fuel_surcharge: 2.47,
