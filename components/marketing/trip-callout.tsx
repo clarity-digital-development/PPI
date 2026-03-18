@@ -34,7 +34,7 @@ const TripCallout = () => {
               size="lg"
               className="bg-white text-pink-600 hover:bg-gray-100"
             >
-              Learn More
+              Sign Up to Get Started
               <ArrowRight className="ml-2 w-4 h-4" />
             </Button>
           </Link>

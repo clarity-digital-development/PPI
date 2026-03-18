@@ -30,7 +30,7 @@ const config: Config = {
         error: '#EF4444',
       },
       fontFamily: {
-        sans: ['Poppins', 'sans-serif'],
+        sans: ['var(--font-poppins)', 'Poppins', 'sans-serif'],
       },
       fontSize: {
         xs: '0.75rem',    // 12px

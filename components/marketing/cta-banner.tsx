@@ -24,7 +24,7 @@ const CTABanner = () => {
             <Link href="/sign-up">
               <Button
                 size="lg"
-                className="bg-white text-pink-600 hover:bg-pink-50 shadow-lg"
+                className="bg-white text-pink-600 hover:bg-pink-50 shadow-lg min-h-[48px]"
               >
                 Create Free Account
               </Button>

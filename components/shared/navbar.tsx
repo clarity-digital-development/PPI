@@ -60,8 +60,11 @@ const Navbar = () => {
 
           {/* Mobile Menu Button */}
           <button
-            className="md:hidden p-2 text-gray-600 hover:text-pink-500"
+            className="md:hidden p-3 min-w-[44px] min-h-[44px] flex items-center justify-center text-gray-600 hover:text-pink-500"
             onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+            aria-label={isMobileMenuOpen ? 'Close menu' : 'Open menu'}
+            aria-expanded={isMobileMenuOpen}
+            aria-controls="mobile-menu"
           >
             {isMobileMenuOpen ? (
               <X className="w-6 h-6" />
@@ -73,6 +76,7 @@ const Navbar = () => {
 
         {/* Mobile Menu */}
         <div
+          id="mobile-menu"
           className={cn(
             'md:hidden overflow-hidden transition-all duration-300',
             isMobileMenuOpen ? 'max-h-96 pb-6' : 'max-h-0'

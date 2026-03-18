@@ -38,8 +38,8 @@ const Hero = () => {
 
             {/* CTA Buttons */}
             <div className="mt-8 flex flex-col sm:flex-row gap-4 justify-center lg:justify-start">
-              <Link href="/sign-up">
-                <Button size="lg" className="w-full sm:w-auto">
+              <Link href="/sign-up" className="inline-block">
+                <Button size="lg" className="w-full sm:w-auto min-h-[48px]">
                   Get Started
                   <svg
                     className="ml-2 w-5 h-5"
@@ -94,6 +94,7 @@ const Hero = () => {
                 src="/images/posts/pink-post.png"
                 alt="Pink Post Installation"
                 fill
+                sizes="(max-width: 768px) 100vw, 400px"
                 className="object-cover"
                 style={{ objectPosition: 'center 15%' }}
                 priority
