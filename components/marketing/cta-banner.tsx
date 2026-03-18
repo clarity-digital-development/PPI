@@ -21,7 +21,7 @@ const CTABanner = () => {
             Next-day sign installation so you can focus on closing deals
           </p>
           <div className="mt-8">
-            <Link href="/sign-up">
+            <Link href="/sign-up" className="inline-flex min-h-[48px] min-w-[48px]">
               <Button
                 size="lg"
                 className="bg-white text-pink-600 hover:bg-pink-50 shadow-lg min-h-[48px]"
