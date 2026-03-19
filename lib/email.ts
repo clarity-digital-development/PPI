@@ -262,7 +262,8 @@ export async function sendPasswordResetEmail(
   email: string,
   resetToken: string
 ) {
-  const resetUrl = `${process.env.NEXTAUTH_URL}/reset-password?token=${resetToken}`
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'https://pinkposts.com'
+  const resetUrl = `${baseUrl}/reset-password?token=${resetToken}`
 
   const html = `
     <!DOCTYPE html>

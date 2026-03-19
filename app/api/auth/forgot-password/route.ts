@@ -15,9 +15,11 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    const normalizedEmail = email.toLowerCase().trim()
+
     // Check if user exists
     const user = await prisma.user.findUnique({
-      where: { email },
+      where: { email: normalizedEmail },
     })
 
     // Always return success to prevent email enumeration
@@ -29,7 +31,7 @@ export async function POST(request: NextRequest) {
 
     // Delete any existing reset tokens for this email
     await prisma.passwordResetToken.deleteMany({
-      where: { email },
+      where: { email: normalizedEmail },
     })
 
     // Generate a secure token
@@ -39,14 +41,14 @@ export async function POST(request: NextRequest) {
     // Store the token
     await prisma.passwordResetToken.create({
       data: {
-        email,
+        email: normalizedEmail,
         token,
         expires,
       },
     })
 
     // Send the email
-    await sendPasswordResetEmail(email, token)
+    await sendPasswordResetEmail(normalizedEmail, token)
 
     return NextResponse.json({
       message: 'If an account exists with this email, you will receive a password reset link.',

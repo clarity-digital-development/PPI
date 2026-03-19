@@ -27,30 +27,32 @@ export const authOptions: NextAuthOptions = {
         }
 
         // Check if account is locked due to too many failed attempts
-        if (isAccountLocked(credentials.email)) {
-          const remaining = getLockoutTimeRemaining(credentials.email)
+        const normalizedEmail = credentials.email.toLowerCase().trim()
+
+        if (isAccountLocked(normalizedEmail)) {
+          const remaining = getLockoutTimeRemaining(normalizedEmail)
           const minutes = Math.ceil(remaining / 60)
           throw new Error(`Account temporarily locked. Try again in ${minutes} minute(s).`)
         }
 
         const user = await prisma.user.findUnique({
-          where: { email: credentials.email },
+          where: { email: normalizedEmail },
         })
 
         if (!user || !user.password) {
-          trackFailedLogin(credentials.email)
+          trackFailedLogin(normalizedEmail)
           throw new Error('Invalid email or password')
         }
 
         const isValid = await bcrypt.compare(credentials.password, user.password)
 
         if (!isValid) {
-          trackFailedLogin(credentials.email)
+          trackFailedLogin(normalizedEmail)
           throw new Error('Invalid email or password')
         }
 
         // Clear failed attempts on successful login
-        clearFailedLogins(credentials.email)
+        clearFailedLogins(normalizedEmail)
 
         return {
           id: user.id,
