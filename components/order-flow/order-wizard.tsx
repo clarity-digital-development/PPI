@@ -50,6 +50,7 @@ const initialFormData: OrderFormData = {
   riders: [],
   // Wire Frame Signs
   wire_frame_quantity: 0,
+  wire_frame_notes: undefined,
   // Lockbox
   lockbox_option: 'none',
   lockbox_type: undefined,

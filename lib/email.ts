@@ -305,6 +305,43 @@ export async function sendPasswordResetEmail(
   })
 }
 
+interface AdminServiceRequestNotificationProps {
+  customerName: string
+  requestType: string
+  description?: string
+  requestedDate?: string
+  installationAddress: string
+}
+
+export async function sendAdminServiceRequestNotification({
+  customerName,
+  requestType,
+  description,
+  requestedDate,
+  installationAddress,
+}: AdminServiceRequestNotificationProps) {
+  const adminEmail = process.env.ADMIN_EMAIL
+  if (!adminEmail) {
+    console.error('ADMIN_EMAIL not configured - skipping admin service request notification')
+    return null
+  }
+
+  const text = `
+New Service Request Received!
+
+Customer: ${customerName}
+Request Type: ${requestType}
+${description ? `Description: ${description}\n` : ''}${requestedDate ? `Requested Date: ${requestedDate}\n` : ''}Installation Address: ${installationAddress}
+  `.trim()
+
+  return getResend().emails.send({
+    from: 'Pink Posts Installations <orders@pinkposts.com>',
+    to: adminEmail,
+    subject: `New Service Request: ${requestType} - ${installationAddress}`,
+    text,
+  })
+}
+
 export async function sendInstallationCompleteEmail(
   customerEmail: string,
   customerName: string,

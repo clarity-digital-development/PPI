@@ -108,6 +108,22 @@ export function RiderStep({ formData, updateFormData, inventory }: StepProps) {
             </button>
           </div>
         </div>
+
+        {formData.wire_frame_quantity > 0 && (
+          <div className="mt-3">
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Installation Instructions
+            </label>
+            <textarea
+              value={formData.wire_frame_notes || ''}
+              onChange={(e) => updateFormData({ wire_frame_notes: e.target.value })}
+              placeholder="e.g. open house address, directional sign locations..."
+              rows={3}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pink-500 focus:border-transparent resize-none"
+            />
+            <p className="text-xs text-gray-500 mt-1">Pink Posts is not responsible for any missing or removed signs.</p>
+          </div>
+        )}
       </div>
     </div>
   )

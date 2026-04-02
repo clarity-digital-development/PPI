@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
-import { ArrowLeft, Plus, Minus, Trash2, Package, Tag, Lock, FileBox, Pencil, UserX } from 'lucide-react'
+import { ArrowLeft, Plus, Minus, Trash2, Package, Tag, Lock, FileBox, Pencil, UserX, Archive } from 'lucide-react'
 import { Card, CardContent, Button, Input, Badge, Modal } from '@/components/ui'
 
 interface CustomerData {
@@ -18,8 +18,9 @@ interface CustomerData {
   inventory: {
     signs: Array<{ id: string; description: string; size: string | null; quantity: number }>
     riders: Array<{ id: string; rider_id: string; rider_type: string; quantity: number }>
-    lockboxes: Array<{ id: string; lockbox_type_id: string; lockbox_type: string; lockbox_code: string | null; quantity: number }>
+    lockboxes: Array<{ id: string; lockbox_type_id: string; lockbox_type: string; lockbox_code: string | null }>
     brochureBoxes: { id: string; quantity: number } | null
+    otherItems: Array<{ id: string; description: string }>
   }
   orders: Array<{
     id: string
@@ -46,7 +47,7 @@ export default function CustomerDetailPage() {
   const [loading, setLoading] = useState(true)
   const [showAddModal, setShowAddModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
-  const [addType, setAddType] = useState<'sign' | 'rider' | 'lockbox' | 'brochure_box' | null>(null)
+  const [addType, setAddType] = useState<'sign' | 'rider' | 'lockbox' | 'brochure_box' | 'other' | null>(null)
   const [formData, setFormData] = useState({
     description: '',
     size: '',
@@ -145,6 +146,8 @@ export default function CustomerDetailPage() {
     } else if (addType === 'brochure_box') {
       body.description = formData.description || null
       body.quantity = formData.quantity
+    } else if (addType === 'other') {
+      body.description = formData.description
     }
 
     try {
@@ -293,7 +296,9 @@ export default function CustomerDetailPage() {
                     className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
                   >
                     <div>
-                      <p className="font-medium text-gray-900">{sign.description}</p>
+                      <p className="font-medium text-gray-900">
+                        {sign.description}{sign.quantity > 1 ? ` (\u00d7${sign.quantity})` : ''}
+                      </p>
                       {sign.size && <p className="text-sm text-gray-500">{sign.size}</p>}
                     </div>
                     <button
@@ -402,27 +407,12 @@ export default function CustomerDetailPage() {
                         <p className="text-sm text-gray-500">Code: {lockbox.lockbox_code}</p>
                       )}
                     </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => handleUpdateQuantity('lockbox', lockbox.lockbox_type_id, lockbox.quantity - 1)}
-                        className="w-7 h-7 flex items-center justify-center rounded bg-gray-200 hover:bg-gray-300 text-gray-700"
-                      >
-                        <Minus className="w-3.5 h-3.5" />
-                      </button>
-                      <span className="w-8 text-center font-medium text-gray-900">{lockbox.quantity}</span>
-                      <button
-                        onClick={() => handleUpdateQuantity('lockbox', lockbox.lockbox_type_id, lockbox.quantity + 1)}
-                        className="w-7 h-7 flex items-center justify-center rounded bg-gray-200 hover:bg-gray-300 text-gray-700"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => handleDeleteInventory('lockbox', lockbox.id)}
-                        className="text-gray-400 hover:text-red-500 ml-1"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
+                    <button
+                      onClick={() => handleDeleteInventory('lockbox', lockbox.id)}
+                      className="text-gray-400 hover:text-red-500"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
                   </div>
                 ))}
               </div>
@@ -457,6 +447,46 @@ export default function CustomerDetailPage() {
               </p>
               <p className="text-sm text-gray-500">in storage</p>
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Other Items */}
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Archive className="w-5 h-5 text-pink-500" />
+                <h2 className="font-semibold text-gray-900">Other</h2>
+              </div>
+              <Button
+                size="sm"
+                onClick={() => {
+                  setAddType('other')
+                  setFormData({ ...formData, description: '' })
+                  setShowAddModal(true)
+                }}
+              >
+                <Plus className="w-4 h-4 mr-1" />
+                Add
+              </Button>
+            </div>
+            {data.inventory.otherItems && data.inventory.otherItems.length > 0 ? (
+              <div className="space-y-2">
+                {data.inventory.otherItems.map((item) => (
+                  <div key={item.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                    <p className="font-medium text-gray-900">{item.description}</p>
+                    <button
+                      onClick={() => handleDeleteInventory('other', item.id)}
+                      className="text-gray-400 hover:text-red-500"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-gray-500 text-sm">No other items</p>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -545,7 +575,7 @@ export default function CustomerDetailPage() {
       <Modal
         isOpen={showAddModal}
         onClose={() => setShowAddModal(false)}
-        title={`Add ${addType === 'sign' ? 'Sign' : addType === 'rider' ? 'Rider' : addType === 'brochure_box' ? 'Brochure Box' : 'Lockbox'}`}
+        title={`Add ${addType === 'sign' ? 'Sign' : addType === 'rider' ? 'Rider' : addType === 'brochure_box' ? 'Brochure Box' : addType === 'other' ? 'Other Item' : 'Lockbox'}`}
       >
         <div className="space-y-4">
           {addType === 'sign' && (
@@ -601,13 +631,23 @@ export default function CustomerDetailPage() {
               placeholder="e.g., Clear acrylic box"
             />
           )}
-          <Input
-            label="Quantity"
-            type="number"
-            min={1}
-            value={formData.quantity}
-            onChange={(e) => setFormData({ ...formData, quantity: parseInt(e.target.value) || 1 })}
-          />
+          {addType === 'other' && (
+            <Input
+              label="Description *"
+              value={formData.description}
+              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+              placeholder="e.g., Metal frame sign"
+            />
+          )}
+          {addType !== 'other' && (
+            <Input
+              label="Quantity"
+              type="number"
+              min={1}
+              value={formData.quantity}
+              onChange={(e) => setFormData({ ...formData, quantity: parseInt(e.target.value) || 1 })}
+            />
+          )}
           <div className="flex justify-end gap-3 pt-4">
             <Button variant="outline" onClick={() => setShowAddModal(false)}>
               Cancel

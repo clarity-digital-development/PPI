@@ -27,7 +27,7 @@ export interface OrderFormData {
   sign_orientation_other?: string
 
   // Post Selection
-  post_type: 'White Vinyl Post' | 'Black Vinyl Post' | 'Signature Pink Post' | 'Metal Frame Sign' | undefined
+  post_type: 'White Vinyl Post' | 'Black Vinyl Post' | 'Signature Pink Post' | 'Metal Frame Sign' | 'open_house' | undefined
 
   // Sign Selection
   sign_option: 'stored' | 'at_property' | 'none'
@@ -45,6 +45,7 @@ export interface OrderFormData {
 
   // Wire Frame Signs
   wire_frame_quantity: number
+  wire_frame_notes?: string
 
   // Brochure Box
   brochure_option: 'purchase' | 'own' | 'none'

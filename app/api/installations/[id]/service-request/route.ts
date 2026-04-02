@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
+import { sendAdminServiceRequestNotification } from '@/lib/email'
 
 export async function POST(
   request: NextRequest,
@@ -60,6 +61,31 @@ export async function POST(
         notes,
       },
     })
+
+    // Send admin email notification
+    try {
+      const userInfo = await prisma.user.findUnique({
+        where: { id: user.id },
+        select: { fullName: true, name: true, email: true },
+      })
+      const customerName = userInfo?.fullName || userInfo?.name || userInfo?.email || 'Unknown'
+      const installationAddress = [
+        installation.propertyAddress,
+        installation.propertyCity,
+        installation.propertyState,
+        installation.propertyZip,
+      ].filter(Boolean).join(', ')
+
+      await sendAdminServiceRequestNotification({
+        customerName,
+        requestType: type,
+        description: description || undefined,
+        requestedDate: requested_date || undefined,
+        installationAddress,
+      })
+    } catch (emailError) {
+      console.error('Failed to send admin service request notification:', emailError)
+    }
 
     // If it's a removal request, also update the installation status
     if (type === 'removal' && requested_date) {

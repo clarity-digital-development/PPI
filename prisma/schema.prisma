@@ -95,6 +95,7 @@ model User {
   customerRiders  CustomerRider[]
   customerLockboxes CustomerLockbox[]
   customerBrochureBoxes CustomerBrochureBox[]
+  customerOtherItems    CustomerOtherItem[]
   paymentMethods  PaymentMethod[]
   serviceRequests ServiceRequest[]
   notifications   Notification[]
@@ -248,6 +249,17 @@ model CustomerBrochureBox {
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("customer_brochure_boxes")
+}
+
+model CustomerOtherItem {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  description String
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("customer_other_items")
 }
 
 // ============================================

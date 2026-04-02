@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { Package, MapPin, X, AlertCircle } from 'lucide-react'
-import { Input, Select } from '@/components/ui'
+import { Select } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import type { StepProps } from '../types'
 import { PRICING } from '../types'
@@ -110,23 +110,10 @@ export function SignStep({ formData, updateFormData, inventory }: StepProps) {
             )} />
           </div>
           <div className="flex-1">
-            <h3 className="font-semibold text-gray-900">Sign will be at the property</h3>
-            <p className="text-sm text-gray-600">Leave the sign on-site and we&apos;ll install it</p>
+            <h3 className="font-semibold text-gray-900">Sign will be at the property or pickup from another location</h3>
             <p className="text-sm font-medium text-pink-600 mt-1">Install fee: ${PRICING.sign_install.toFixed(2)}</p>
           </div>
         </button>
-
-        {formData.sign_option === 'at_property' && (
-          <div className="ml-14 p-4 bg-gray-50 rounded-lg">
-            <Input
-              label="Sign description"
-              value={formData.sign_description || ''}
-              onChange={(e) => updateFormData({ sign_description: e.target.value })}
-              placeholder="e.g., Blue sign with my photo"
-              helperText="Describe the sign so we can identify it"
-            />
-          </div>
-        )}
 
         {/* No sign */}
         <button

@@ -13,6 +13,7 @@ interface CustomRiderInputProps {
   onChange: (value: number | null) => void
   price: number
   source: RiderSource
+  isRiderAvailable: (rider: RiderOption) => boolean
 }
 
 const ICONS: Record<string, typeof Mountain> = {
@@ -26,9 +27,12 @@ export function CustomRiderInput({
   value,
   onChange,
   price,
+  source,
+  isRiderAvailable,
 }: CustomRiderInputProps) {
   const [inputValue, setInputValue] = useState(value?.toString() || '')
   const Icon = ICONS[rider.icon || 'Mountain'] || Mountain
+  const isDisabled = source === 'owned' && !isRiderAvailable(rider)
 
   // Sync input value when external value changes
   useEffect(() => {
@@ -65,7 +69,9 @@ export function CustomRiderInput({
   return (
     <div className={cn(
       'border-2 rounded-lg p-4 transition-all',
-      isSelected ? 'border-pink-500 bg-pink-50' : 'border-gray-200 hover:border-gray-300'
+      isDisabled
+        ? 'border-gray-200 bg-gray-50 opacity-50 cursor-not-allowed'
+        : isSelected ? 'border-pink-500 bg-pink-50' : 'border-gray-200 hover:border-gray-300'
     )}>
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-start gap-3 flex-1">
@@ -99,6 +105,7 @@ export function CustomRiderInput({
                 onChange={handleInputChange}
                 placeholder={rider.id === 'custom-car-garage' ? 'Enter # of cars' : 'Enter acres'}
                 className="flex-1 max-w-[150px]"
+                disabled={isDisabled}
               />
               <span className="text-sm text-gray-500">{rider.inputSuffix}</span>
             </div>

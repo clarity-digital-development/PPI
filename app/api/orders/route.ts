@@ -229,8 +229,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Get the post type (optional - orders can be for other services only)
+    // open_house is handled as no-post (wire frames are the service)
     let postTypeId: string | null = null
-    if (orderData.post_type) {
+    if (orderData.post_type && orderData.post_type !== 'open_house') {
       console.log('Looking up post type:', orderData.post_type)
       const postType = await prisma.postType.findFirst({
         where: { name: orderData.post_type },
@@ -246,7 +247,7 @@ export async function POST(request: NextRequest) {
       console.log('Found post type:', postType.name, postType.id)
       postTypeId = postType.id
     } else {
-      console.log('No post type selected - order is for other services only')
+      console.log('No post type selected (or open house) - order is for other services only')
     }
 
     // Validate property type before creating order

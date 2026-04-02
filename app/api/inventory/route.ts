@@ -39,7 +39,7 @@ export async function GET(request: NextRequest) {
     // Aggregate riders by type with quantity counts
     const riderCounts: Record<string, { id: string; rider_type: string; quantity: number }> = {}
     for (const rider of rawRiders) {
-      const riderType = rider.rider.name.toLowerCase().replace(/\s+/g, '-')
+      const riderType = rider.rider.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/, '')
       if (riderCounts[riderType]) {
         riderCounts[riderType].quantity += 1
       } else {

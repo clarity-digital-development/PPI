@@ -158,6 +158,7 @@ export function RiderSelector({
                   onChange={(value) => updateAcres(rider.id, value)}
                   price={price}
                   source={source}
+                  isRiderAvailable={isRiderAvailable}
                 />
               )
             })}

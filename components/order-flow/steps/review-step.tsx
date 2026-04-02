@@ -37,14 +37,15 @@ export function ReviewStep({
   const orderItems: Array<{ description: string; price: number; excludeFromDiscount?: boolean }> = []
 
   // Post
-  if (formData.post_type) {
+  if (formData.post_type && formData.post_type !== 'open_house') {
     orderItems.push({
       description: `${formData.post_type} (install & pickup)`,
       price: PRICING.posts[formData.post_type],
     })
   }
+  // open_house: no charge for the post itself — wire frames charged separately
 
-  // No-post surcharge (service trip fee when no post is selected)
+  // No-post surcharge (service trip fee when no post is selected; open_house is its own service so no surcharge)
   const noPostSurcharge = !formData.post_type ? PRICING.no_post_surcharge : 0
 
   // Sign
@@ -89,7 +90,7 @@ export function ReviewStep({
   // Wire Frame Signs
   if (formData.wire_frame_quantity > 0) {
     orderItems.push({
-      description: `Wire Frame Sign Install × ${formData.wire_frame_quantity}`,
+      description: `Wire Frame Sign Install \u00d7 ${formData.wire_frame_quantity}${formData.wire_frame_notes ? ` \u2014 ${formData.wire_frame_notes}` : ''}`,
       price: formData.wire_frame_quantity * PRICING.wire_frame_sign,
     })
   }
@@ -127,7 +128,7 @@ export function ReviewStep({
   const buildTaxItems = useCallback(() => {
     const items: Array<{ item_type: string; total_price: number }> = []
 
-    if (formData.post_type) {
+    if (formData.post_type && formData.post_type !== 'open_house') {
       items.push({ item_type: 'post', total_price: PRICING.posts[formData.post_type] })
     }
     if (formData.sign_option === 'stored' || formData.sign_option === 'at_property') {
@@ -325,7 +326,7 @@ export function ReviewStep({
       }> = []
 
       // Post
-      if (formData.post_type) {
+      if (formData.post_type && formData.post_type !== 'open_house') {
         items.push({
           item_type: 'post',
           item_category: 'new',
@@ -417,7 +418,7 @@ export function ReviewStep({
         items.push({
           item_type: 'wire_frame_sign',
           item_category: 'install',
-          description: `Wire Frame Sign Install × ${formData.wire_frame_quantity}`,
+          description: `Wire Frame Sign Install \u00d7 ${formData.wire_frame_quantity}${formData.wire_frame_notes ? ` \u2014 ${formData.wire_frame_notes}` : ''}`,
           quantity: formData.wire_frame_quantity,
           unit_price: PRICING.wire_frame_sign,
           total_price: formData.wire_frame_quantity * PRICING.wire_frame_sign,

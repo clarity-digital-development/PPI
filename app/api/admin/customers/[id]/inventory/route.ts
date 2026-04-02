@@ -141,6 +141,15 @@ export async function POST(
         }
         break
       }
+      case 'other': {
+        if (!data.description) {
+          return NextResponse.json({ error: 'Description is required' }, { status: 400 })
+        }
+        result = await prisma.customerOtherItem.create({
+          data: { userId: customerId, description: data.description },
+        })
+        break
+      }
       default:
         return NextResponse.json({ error: 'Invalid type' }, { status: 400 })
     }
@@ -289,6 +298,11 @@ export async function DELETE(
         break
       case 'brochure_box':
         await prisma.customerBrochureBox.delete({
+          where: { id: itemId, userId: customerId },
+        })
+        break
+      case 'other':
+        await prisma.customerOtherItem.delete({
           where: { id: itemId, userId: customerId },
         })
         break

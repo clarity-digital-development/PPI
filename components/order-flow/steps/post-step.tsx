@@ -1,6 +1,7 @@
 'use client'
 
 import Image from 'next/image'
+import { Flag } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { StepProps } from '../types'
 import { PRICING } from '../types'
@@ -131,6 +132,44 @@ export function PostStep({ formData, updateFormData }: StepProps) {
             <p className="text-xs text-gray-500">install & pickup</p>
           </div>
           {formData.post_type === 'Metal Frame Sign' && (
+            <div className="w-6 h-6 bg-pink-500 rounded-full flex items-center justify-center flex-shrink-0">
+              <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+          )}
+        </button>
+      </div>
+
+      {/* Open House / Wire Frame Only */}
+      <div>
+        <button
+          type="button"
+          onClick={() => updateFormData({ post_type: 'open_house' })}
+          className={cn(
+            'w-full flex items-center gap-4 p-4 rounded-xl border-2 transition-all text-left',
+            formData.post_type === 'open_house'
+              ? 'border-pink-500 ring-2 ring-pink-200 bg-pink-50'
+              : 'border-gray-200 hover:border-gray-300 bg-gray-50'
+          )}
+        >
+          <div className={cn(
+            'w-12 h-12 rounded-full flex items-center justify-center flex-shrink-0',
+            formData.post_type === 'open_house' ? 'bg-pink-500 text-white' : 'bg-gray-100 text-gray-500'
+          )}>
+            <Flag className="w-6 h-6" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="font-semibold text-gray-900">Open House/Wire Frame Only</h3>
+            <p className="text-xs text-gray-500 mt-1">
+              Min $40 order. Signs must be in inventory prior to installation. Will be installed after 5pm on Friday. If pickup is desired, another order must be placed for an additional $5 per sign and will be picked up after 5pm on Sunday. Any missing or removed signs will not be the responsibility of Pink Posts. Select install quantity in the wire frame section under &quot;Riders&quot; (step 4) of your order form.
+            </p>
+          </div>
+          <div className="text-right flex-shrink-0">
+            <span className="text-xl font-bold text-gray-700">$0</span>
+            <p className="text-xs text-gray-500">post fee</p>
+          </div>
+          {formData.post_type === 'open_house' && (
             <div className="w-6 h-6 bg-pink-500 rounded-full flex items-center justify-center flex-shrink-0">
               <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />

@@ -28,7 +28,7 @@ export async function GET(
     }
 
     // Get all inventory and related data
-    const [signsRaw, ridersRaw, lockboxesRaw, brochureBoxesRaw, ordersRaw, installationsRaw] =
+    const [signsRaw, ridersRaw, lockboxesRaw, brochureBoxesRaw, otherItemsRaw, ordersRaw, installationsRaw] =
       await Promise.all([
         prisma.customerSign.findMany({
           where: { userId: id },
@@ -44,6 +44,10 @@ export async function GET(
         }),
         prisma.customerBrochureBox.findMany({
           where: { userId: id },
+        }),
+        prisma.customerOtherItem.findMany({
+          where: { userId: id },
+          orderBy: { createdAt: 'desc' },
         }),
         prisma.order.findMany({
           where: { userId: id },
@@ -61,12 +65,16 @@ export async function GET(
       ])
 
     // Transform data to match frontend expectations
-    const signs = signsRaw.map((sign) => ({
-      id: sign.id,
-      description: sign.description,
-      size: null,
-      quantity: 1,
-    }))
+    // Aggregate signs by description with quantity counts
+    const signMap: Record<string, { id: string; description: string; size: null; quantity: number }> = {}
+    for (const sign of signsRaw) {
+      if (signMap[sign.description]) {
+        signMap[sign.description].quantity += 1
+      } else {
+        signMap[sign.description] = { id: sign.id, description: sign.description, size: null, quantity: 1 }
+      }
+    }
+    const signs = Object.values(signMap)
 
     // Aggregate riders by type with quantity counts
     const riderMap: Record<string, { id: string; rider_id: string; rider_type: string; quantity: number }> = {}
@@ -85,23 +93,13 @@ export async function GET(
     }
     const riders = Object.values(riderMap)
 
-    // Aggregate lockboxes by type with quantity counts
-    const lockboxMap: Record<string, { id: string; lockbox_type_id: string; lockbox_type: string; lockbox_code: string | null; quantity: number }> = {}
-    for (const lb of lockboxesRaw) {
-      const key = lb.lockboxTypeId
-      if (lockboxMap[key]) {
-        lockboxMap[key].quantity += 1
-      } else {
-        lockboxMap[key] = {
-          id: lb.id,
-          lockbox_type_id: lb.lockboxTypeId,
-          lockbox_type: lb.lockboxType.name,
-          lockbox_code: lb.code,
-          quantity: 1,
-        }
-      }
-    }
-    const lockboxes = Object.values(lockboxMap)
+    // Return each lockbox individually (each has a different code)
+    const lockboxes = lockboxesRaw.map((lb) => ({
+      id: lb.id,
+      lockbox_type_id: lb.lockboxTypeId,
+      lockbox_type: lb.lockboxType.name,
+      lockbox_code: lb.code,
+    }))
 
     // Aggregate brochure boxes into a single count
     const brochureBoxes = brochureBoxesRaw.length > 0
@@ -141,6 +139,7 @@ export async function GET(
         riders,
         lockboxes,
         brochureBoxes,
+        otherItems: otherItemsRaw.map((item) => ({ id: item.id, description: item.description })),
       },
       orders,
       installations,
