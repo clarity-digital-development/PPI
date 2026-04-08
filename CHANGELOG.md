@@ -5,6 +5,22 @@ Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 
 ---
 
+## [4.3.0] — 2026-04-06 (`1d20d30`)
+
+### Fixed
+- **Date off-by-one bug** — orders scheduled for Monday were showing as Sunday in admin; dates now stored as noon UTC and displayed with UTC timezone to prevent EST shift
+- **Rider inventory display** — "My Riders" now shows a simple flat list of the customer's actual inventory riders instead of the category grid; fixes riders like "Love It, Buy It" that didn't appear in any standard category (Popular, Status, etc.)
+- **Sign dropdown duplicates** — if a customer has 4x "FOR SALE" signs, the dropdown now shows one entry instead of four; removed redundant "Choose a sign..." placeholder
+- **Sign description missing from orders** — orders now include the specific sign selected (e.g., "Sign Install: PVC Hard (from storage)") instead of generic "Sign Install (from storage)"
+
+### Changed
+- **Post step default** — Signature Pink Post is now pre-selected instead of "No Post Needed"
+- **Sign step default** — "Sign will be at the property" is now pre-selected instead of "No sign needed"
+- **"No sign needed" warning** — now displays: "Attention: No sign will be attached and only the post will be installed at your property."
+- **Admin orders table** — first column changed from order creation date to requested install date for easier scheduling
+
+---
+
 ## [4.2.0] — 2026-04-03 (`0759655`)
 
 ### Added
