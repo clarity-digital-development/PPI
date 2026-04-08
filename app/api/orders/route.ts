@@ -283,7 +283,7 @@ export async function POST(request: NextRequest) {
         signOrientation: orderData.sign_orientation,
         signOrientationOther: orderData.sign_orientation_other,
         installationLocation: orderData.installation_location,
-        scheduledDate: orderData.requested_date ? new Date(orderData.requested_date) : null,
+        scheduledDate: orderData.requested_date ? new Date(orderData.requested_date + 'T12:00:00Z') : null,
         isExpedited: orderData.is_expedited,
         subtotal,
         fuelSurcharge: actualFuelSurcharge,

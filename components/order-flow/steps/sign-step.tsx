@@ -75,13 +75,17 @@ export function SignStep({ formData, updateFormData, inventory }: StepProps) {
               label="Select sign"
               value={formData.stored_sign_id || ''}
               onChange={(e) => updateFormData({ stored_sign_id: e.target.value })}
-              options={[
-                { value: '', label: 'Choose a sign...' },
-                ...inventory!.signs.map((sign) => ({
-                  value: sign.id,
-                  label: `${sign.description}${sign.size ? ` (${sign.size})` : ''}`,
-                })),
-              ]}
+              options={(() => {
+                // Group signs by description so duplicates only appear once
+                const grouped: Record<string, { id: string; label: string }> = {}
+                for (const sign of inventory!.signs) {
+                  const label = `${sign.description}${sign.size ? ` (${sign.size})` : ''}`
+                  if (!grouped[label]) {
+                    grouped[label] = { id: sign.id, label }
+                  }
+                }
+                return Object.values(grouped).map(g => ({ value: g.id, label: g.label }))
+              })()}
             />
           </div>
         )}
@@ -140,7 +144,7 @@ export function SignStep({ formData, updateFormData, inventory }: StepProps) {
           </div>
           <div className="flex-1">
             <h3 className="font-semibold text-gray-900">No sign needed</h3>
-            <p className="text-sm text-gray-600">Post only installation</p>
+            <p className="text-sm text-amber-600">Attention: No sign will be attached and only the post will be installed at your property.</p>
           </div>
         </button>
       </div>

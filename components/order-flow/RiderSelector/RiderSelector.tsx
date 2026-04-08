@@ -11,8 +11,8 @@ import {
   SelectedRidersList,
 } from './components'
 import { useRiderSelection } from './hooks/useRiderSelection'
-import { RIDER_CATEGORIES, RIDERS, getRidersByCategory, RIDER_PRICING } from './constants'
-import type { RiderSelectorProps } from './types'
+import { RIDER_CATEGORIES, RIDERS, getRidersByCategory, getRiderBySlug, RIDER_PRICING } from './constants'
+import type { RiderSelectorProps, RiderOption } from './types'
 
 export function RiderSelector({
   selectedRiders: externalRiders,
@@ -107,63 +107,116 @@ export function RiderSelector({
         hasInventory={hasInventory}
       />
 
-      {/* Popular Riders */}
-      <PopularRiders
-        source={source}
-        price={price}
-        isSelected={isRiderSelected}
-        isAvailable={isRiderAvailable}
-        onToggle={toggleRider}
-      />
-
-      {/* Category Accordions */}
-      <div className="space-y-2">
-        {categoriesToShow.map(category => {
-          const riders = getRidersByCategory(category.id)
-          if (riders.length === 0) return null
-
-          return (
-            <RiderCategoryAccordion
-              key={category.id}
-              category={category}
-              riders={riders}
-              isExpanded={expandedCategories.has(category.id)}
-              onToggleExpand={() => toggleCategory(category.id)}
-              source={source}
-              price={price}
-              isSelected={isRiderSelected}
-              isAvailable={isRiderAvailable}
-              onToggle={toggleRider}
-              selectedCount={getSelectedCount(category.id)}
-            />
-          )
-        })}
-      </div>
-
-      {/* Custom Riders Section */}
-      {customRiders.length > 0 && (
+      {/* Rider Selection: flat list for owned, category grid for rental */}
+      {source === 'owned' ? (
         <div className="space-y-3">
-          <h3 className="text-sm font-medium text-gray-700">Custom Riders</h3>
-          <div className="space-y-3">
-            {customRiders.map(rider => {
-              const isSelected = isRiderSelected(rider.id)
-              const customValue = selectedRiders.find(r => r.riderId === rider.id)?.customValue as number | undefined
+          <h3 className="text-sm font-medium text-gray-700">Your Inventory</h3>
+          {customerInventory.length === 0 ? (
+            <p className="text-sm text-gray-500">No riders in your inventory.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {customerInventory.map(inv => {
+                const knownRider = getRiderBySlug(inv.riderType)
+                const displayName = knownRider
+                  ? knownRider.name
+                  : inv.riderType
+                      .split('-')
+                      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+                      .join(' ')
+                const riderId = knownRider ? knownRider.id : inv.riderType
+                const selected = isRiderSelected(riderId)
+
+                const riderOption: RiderOption = knownRider ?? {
+                  id: inv.riderType,
+                  name: displayName,
+                  slug: inv.riderType,
+                  category: 'special',
+                }
+
+                return (
+                  <button
+                    key={inv.id}
+                    type="button"
+                    onClick={() => toggleRider(riderOption)}
+                    className={`
+                      inline-flex items-center gap-2 px-4 py-2 rounded-full border text-sm font-medium
+                      transition-colors cursor-pointer
+                      ${selected
+                        ? 'border-pink-500 bg-pink-50 text-pink-700'
+                        : 'border-gray-300 bg-white text-gray-700 hover:border-pink-300 hover:bg-pink-50/50'
+                      }
+                    `}
+                  >
+                    <span>{displayName}</span>
+                    <span className="text-xs text-gray-500">(&times;{inv.quantity})</span>
+                    <span className="text-xs font-semibold text-green-700">${installPrice}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      ) : (
+        <>
+          {/* Popular Riders */}
+          <PopularRiders
+            source={source}
+            price={price}
+            isSelected={isRiderSelected}
+            isAvailable={isRiderAvailable}
+            onToggle={toggleRider}
+          />
+
+          {/* Category Accordions */}
+          <div className="space-y-2">
+            {categoriesToShow.map(category => {
+              const riders = getRidersByCategory(category.id)
+              if (riders.length === 0) return null
 
               return (
-                <CustomRiderInput
-                  key={rider.id}
-                  rider={rider}
-                  isSelected={isSelected}
-                  value={customValue || null}
-                  onChange={(value) => updateAcres(rider.id, value)}
-                  price={price}
+                <RiderCategoryAccordion
+                  key={category.id}
+                  category={category}
+                  riders={riders}
+                  isExpanded={expandedCategories.has(category.id)}
+                  onToggleExpand={() => toggleCategory(category.id)}
                   source={source}
-                  isRiderAvailable={isRiderAvailable}
+                  price={price}
+                  isSelected={isRiderSelected}
+                  isAvailable={isRiderAvailable}
+                  onToggle={toggleRider}
+                  selectedCount={getSelectedCount(category.id)}
                 />
               )
             })}
           </div>
-        </div>
+
+          {/* Custom Riders Section */}
+          {customRiders.length > 0 && (
+            <div className="space-y-3">
+              <h3 className="text-sm font-medium text-gray-700">Custom Riders</h3>
+              <div className="space-y-3">
+                {customRiders.map(rider => {
+                  const isSelected = isRiderSelected(rider.id)
+                  const customValue = selectedRiders.find(r => r.riderId === rider.id)?.customValue as number | undefined
+
+                  return (
+                    <CustomRiderInput
+                      key={rider.id}
+                      rider={rider}
+                      isSelected={isSelected}
+                      value={customValue || null}
+                      onChange={(value) => updateAcres(rider.id, value)}
+                      price={price}
+                      source={source}
+                      isRiderAvailable={isRiderAvailable}
+                    />
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {/* Selected Riders Summary */}

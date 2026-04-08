@@ -50,8 +50,9 @@ export function ReviewStep({
 
   // Sign
   if (formData.sign_option === 'stored') {
+    const selectedSign = inventory?.signs.find(s => s.id === formData.stored_sign_id)
     orderItems.push({
-      description: 'Sign Install (from storage)',
+      description: selectedSign ? `Sign Install: ${selectedSign.description} (from storage)` : 'Sign Install (from storage)',
       price: PRICING.sign_install,
     })
   } else if (formData.sign_option === 'at_property') {
@@ -339,10 +340,11 @@ export function ReviewStep({
 
       // Sign
       if (formData.sign_option === 'stored') {
+        const storedSign = inventory?.signs.find(s => s.id === formData.stored_sign_id)
         items.push({
           item_type: 'sign',
           item_category: 'storage',
-          description: 'Sign Install (from storage)',
+          description: storedSign ? `Sign Install: ${storedSign.description} (from storage)` : 'Sign Install (from storage)',
           quantity: 1,
           unit_price: PRICING.sign_install,
           total_price: PRICING.sign_install,

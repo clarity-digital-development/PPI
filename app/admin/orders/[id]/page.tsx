@@ -338,7 +338,7 @@ export default function AdminOrderDetailPage() {
                     <p className="text-sm text-gray-500">Requested Date</p>
                     <p className="font-medium text-gray-900">
                       {order.scheduledDate
-                        ? new Date(order.scheduledDate).toLocaleDateString()
+                        ? new Date(order.scheduledDate).toLocaleDateString('en-US', { timeZone: 'UTC' })
                         : 'Next Available'}
                     </p>
                   </div>

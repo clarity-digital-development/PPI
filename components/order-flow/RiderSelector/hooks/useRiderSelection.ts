@@ -60,7 +60,8 @@ export function useRiderSelection({
       // Check if this rider (by slug) is already selected
       const existingIndex = prev.findIndex(r => {
         const riderData = RIDERS.find(rd => rd.id === r.riderId)
-        return riderData?.slug === rider.slug
+        // For riders not in RIDERS constants, match by riderId directly against slug
+        return riderData ? riderData.slug === rider.slug : r.riderId === rider.id
       })
 
       if (existingIndex >= 0) {
@@ -125,7 +126,10 @@ export function useRiderSelection({
         const availableSlugs = customerInventory.map(inv => inv.riderType)
         updated = updated.filter(rider => {
           const riderData = RIDERS.find(r => r.id === rider.riderId)
-          return riderData && availableSlugs.includes(riderData.slug)
+          // For riders in RIDERS constants, check slug; for inventory-only riders, check riderId
+          return riderData
+            ? availableSlugs.includes(riderData.slug)
+            : availableSlugs.includes(rider.riderId)
         })
       }
 
@@ -149,7 +153,10 @@ export function useRiderSelection({
 
   const isRiderSelected = useCallback((riderId: string) => {
     const rider = RIDERS.find(r => r.id === riderId)
-    if (!rider) return false
+    if (!rider) {
+      // For riders not in RIDERS constants (inventory-only), check by riderId directly
+      return selectedRiders.some(selected => selected.riderId === riderId)
+    }
 
     return selectedRiders.some(selected => {
       const selectedRider = RIDERS.find(r => r.id === selected.riderId)

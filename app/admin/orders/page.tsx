@@ -14,6 +14,7 @@ interface Order {
   property_city: string
   total: number
   created_at: string
+  scheduled_date: string | null
   profiles: {
     full_name: string
     email: string
@@ -140,7 +141,7 @@ export default function AdminOrdersPage() {
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
                   <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Order
+                    Install Date
                   </th>
                   <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Customer
@@ -167,10 +168,12 @@ export default function AdminOrdersPage() {
                   <tr key={order.id} className="hover:bg-gray-50">
                     <td className="px-6 py-4">
                       <div>
-                        <p className="font-medium text-gray-900">{order.order_number}</p>
-                        <p className="text-sm text-gray-500">
-                          {new Date(order.created_at).toLocaleDateString()}
+                        <p className="font-medium text-gray-900">
+                          {order.scheduled_date
+                            ? new Date(order.scheduled_date).toLocaleDateString('en-US', { timeZone: 'UTC' })
+                            : 'Next Available'}
                         </p>
+                        <p className="text-sm text-gray-500">{order.order_number}</p>
                       </div>
                     </td>
                     <td className="px-6 py-4">

@@ -41,9 +41,9 @@ const initialFormData: OrderFormData = {
   sign_orientation: 'installer_decides',
   sign_orientation_other: '',
   // Post
-  post_type: undefined,
+  post_type: 'Signature Pink Post',
   // Sign
-  sign_option: 'none',
+  sign_option: 'at_property',
   stored_sign_id: undefined,
   sign_description: '',
   // Riders
