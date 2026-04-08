@@ -12,6 +12,7 @@ Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 - **Rider inventory display** — "My Riders" now shows a simple flat list of the customer's actual inventory riders instead of the category grid; fixes riders like "Love It, Buy It" that didn't appear in any standard category (Popular, Status, etc.)
 - **Sign dropdown duplicates** — if a customer has 4x "FOR SALE" signs, the dropdown now shows one entry instead of four; removed redundant "Choose a sign..." placeholder
 - **Sign description missing from orders** — orders now include the specific sign selected (e.g., "Sign Install: PVC Hard (from storage)") instead of generic "Sign Install (from storage)"
+- **Inventory not removing on order** — inventory removal was working (marking `inStorage: false`) but wasn't visible because orders didn't specify which sign was selected; now the sign description flows through the order so admin can confirm the correct item was pulled from inventory
 
 ### Changed
 - **Post step default** — Signature Pink Post is now pre-selected instead of "No Post Needed"
