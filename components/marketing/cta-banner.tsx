@@ -1,37 +1,129 @@
 'use client'
 
 import Link from 'next/link'
-import { motion } from 'framer-motion'
+import { motion, useReducedMotion } from 'framer-motion'
+import { ArrowRight, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui'
 
 const CTABanner = () => {
+  const shouldReduceMotion = useReducedMotion()
+
   return (
-    <section className="py-16 md:py-24 bg-pink-600">
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+    <section className="relative py-20 md:py-28 overflow-hidden bg-pink-600">
+      {/* Animated gradient background */}
+      <motion.div
+        aria-hidden
+        className="absolute inset-0 bg-gradient-to-br from-pink-500 via-pink-600 to-pink-700"
+        animate={
+          shouldReduceMotion
+            ? undefined
+            : {
+                backgroundPosition: ['0% 0%', '100% 100%', '0% 0%'],
+              }
+        }
+        transition={
+          shouldReduceMotion
+            ? { duration: 0 }
+            : { duration: 12, repeat: Infinity, ease: 'easeInOut' }
+        }
+        style={{ backgroundSize: '200% 200%' }}
+      />
+
+      {/* Soft floating blobs */}
+      <motion.div
+        aria-hidden
+        className="absolute -top-20 -left-20 w-80 h-80 rounded-full bg-pink-300/30 blur-3xl"
+        animate={shouldReduceMotion ? undefined : { y: [0, 20, 0], x: [0, 15, 0] }}
+        transition={
+          shouldReduceMotion
+            ? { duration: 0 }
+            : {
+                duration: 8,
+                repeat: Infinity,
+                ease: 'easeInOut',
+                repeatType: 'reverse',
+              }
+        }
+      />
+      <motion.div
+        aria-hidden
+        className="absolute -bottom-20 -right-10 w-96 h-96 rounded-full bg-pink-400/30 blur-3xl"
+        animate={shouldReduceMotion ? undefined : { y: [0, -20, 0], x: [0, -15, 0] }}
+        transition={
+          shouldReduceMotion
+            ? { duration: 0 }
+            : {
+                duration: 10,
+                repeat: Infinity,
+                ease: 'easeInOut',
+                repeatType: 'reverse',
+                delay: 1,
+              }
+        }
+      />
+
+      {/* Subtle dot pattern overlay */}
+      <div
+        aria-hidden
+        className="absolute inset-0 opacity-20 pointer-events-none"
+        style={{
+          backgroundImage:
+            'radial-gradient(circle, rgba(255, 255, 255, 0.4) 1px, transparent 1px)',
+          backgroundSize: '24px 24px',
+        }}
+      />
+
+      <div className="relative max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
+          viewport={{ once: true, margin: '-80px' }}
           transition={{ duration: 0.5 }}
         >
-          <h2 className="text-3xl md:text-4xl font-bold text-white">
-            Ready to Simplify Your Sign Installations?
+          {/* Eyebrow */}
+          <div className="inline-flex items-center gap-2 rounded-full bg-white/15 backdrop-blur-sm border border-white/25 px-4 py-1.5 text-sm font-semibold text-white mb-6">
+            <Sparkles className="w-4 h-4" />
+            No credit card required
+          </div>
+
+          <h2 className="text-3xl md:text-4xl lg:text-5xl font-bold text-white tracking-tight leading-tight text-balance">
+            Ready to Simplify Your{' '}
+            <span className="relative inline-block">
+              Sign Installations?
+              <motion.span
+                aria-hidden
+                initial={{ scaleX: 0 }}
+                whileInView={{ scaleX: 1 }}
+                viewport={{ once: true }}
+                transition={{ duration: 0.7, delay: 0.5, ease: 'easeOut' }}
+                className="absolute bottom-1 left-0 right-0 h-2 bg-white/30 origin-left rounded-sm"
+              />
+            </span>
           </h2>
-          <p className="mt-4 text-lg text-pink-100 max-w-2xl mx-auto">
-            Next-day sign installation so you can focus on closing deals
+          <p className="mt-5 text-lg md:text-xl text-pink-100 max-w-2xl mx-auto">
+            Next-day sign installation so you can focus on closing deals.
           </p>
-          <div className="mt-8">
-            <Link href="/sign-up" className="inline-flex min-h-[48px] min-w-[48px]">
-              <Button
-                size="lg"
-                className="bg-white text-pink-600 hover:bg-pink-50 shadow-lg min-h-[48px]"
+
+          <div className="mt-10 flex justify-center">
+            <Link href="/sign-up" className="inline-flex">
+              <motion.div
+                whileHover={shouldReduceMotion ? undefined : { y: -2 }}
+                whileTap={shouldReduceMotion ? undefined : { y: 0, scale: 0.98 }}
+                transition={{ type: 'spring', stiffness: 400, damping: 17 }}
               >
-                Create Free Account
-              </Button>
+                <Button
+                  size="lg"
+                  className="group bg-white text-pink-600 hover:bg-pink-50 shadow-2xl min-h-[48px] px-10 text-base font-bold"
+                >
+                  Create Free Account
+                  <ArrowRight className="ml-2 w-5 h-5 transition-transform duration-300 group-hover:translate-x-1" />
+                </Button>
+              </motion.div>
             </Link>
           </div>
-          <p className="mt-4 text-sm text-pink-200">
-            No credit card required. Start scheduling today.
+
+          <p className="mt-5 text-sm text-pink-100/90">
+            Start scheduling today. Cancel anytime.
           </p>
         </motion.div>
       </div>

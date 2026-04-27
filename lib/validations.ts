@@ -19,8 +19,8 @@ export const propertySchema = z.object({
 })
 
 export const orderItemSchema = z.object({
-  item_type: z.enum(['post', 'sign', 'rider', 'lockbox', 'brochure_box', 'wire_frame_sign', 'trip']),
-  item_category: z.enum(['rental', 'owned', 'new', 'storage', 'purchase', 'install']).optional(),
+  item_type: z.enum(['post', 'sign', 'rider', 'lockbox', 'brochure_box', 'wire_frame_sign', 'solar_lighting', 'second_post', 'trip']),
+  item_category: z.enum(['rental', 'owned', 'new', 'storage', 'purchase', 'install', 'second']).optional(),
   description: z.string(),
   quantity: z.number().min(1).default(1),
   unit_price: z.number().min(0),

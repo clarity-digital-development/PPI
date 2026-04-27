@@ -1,7 +1,8 @@
 'use client'
 
 import { useCallback, useMemo } from 'react'
-import { Minus, Plus, MapPin } from 'lucide-react'
+import Image from 'next/image'
+import { Minus, Plus, MapPin, Sun } from 'lucide-react'
 import { RiderSelector, RIDERS, type SelectedRider } from '../RiderSelector'
 import type { StepProps, RiderSelection } from '../types'
 import { PRICING } from '../types'
@@ -124,6 +125,60 @@ export function RiderStep({ formData, updateFormData, inventory }: StepProps) {
             <p className="text-xs text-gray-500 mt-1">Pink Posts is not responsible for any missing or removed signs.</p>
           </div>
         )}
+      </div>
+
+      {/* Solar Lighting */}
+      <div className="border-t border-gray-200 pt-6">
+        <div className="flex items-center gap-2 mb-2">
+          <Sun className="w-5 h-5 text-pink-500" />
+          <h3 className="text-lg font-semibold text-gray-900">Solar Lighting</h3>
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-4 mb-4">
+          <div className="relative w-full sm:w-32 h-40 sm:h-32 rounded-lg overflow-hidden flex-shrink-0 bg-gray-100">
+            <Image
+              src="/images/posts/solar-light.jpg"
+              alt="Solar lighting installed at sign"
+              fill
+              className="object-cover"
+              sizes="(max-width: 640px) 100vw, 128px"
+            />
+          </div>
+          <p className="text-sm text-gray-600 flex-1">
+            ${PRICING.solar_lighting} per light. If one is chosen, it will be placed for the most directional traffic. If you want both directions, select two lights.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-4 bg-gray-50 rounded-xl p-4">
+          <div className="flex-1">
+            <p className="font-medium text-gray-900">Quantity</p>
+            {formData.solar_lighting_quantity > 0 && (
+              <p className="text-sm text-pink-600 font-medium">
+                ${(formData.solar_lighting_quantity * PRICING.solar_lighting).toFixed(2)} total
+              </p>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => updateFormData({ solar_lighting_quantity: Math.max(0, formData.solar_lighting_quantity - 1) })}
+              disabled={formData.solar_lighting_quantity === 0}
+              className="w-9 h-9 rounded-lg border border-gray-300 flex items-center justify-center text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <Minus className="w-4 h-4" />
+            </button>
+            <span className="w-8 text-center text-lg font-semibold text-gray-900">
+              {formData.solar_lighting_quantity}
+            </span>
+            <button
+              type="button"
+              onClick={() => updateFormData({ solar_lighting_quantity: formData.solar_lighting_quantity + 1 })}
+              className="w-9 h-9 rounded-lg border border-pink-300 bg-pink-50 flex items-center justify-center text-pink-600 hover:bg-pink-100 transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   )

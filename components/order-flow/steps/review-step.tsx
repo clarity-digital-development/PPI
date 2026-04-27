@@ -96,6 +96,52 @@ export function ReviewStep({
     })
   }
 
+  // Solar Lighting
+  if (formData.solar_lighting_quantity > 0) {
+    orderItems.push({
+      description: `Solar Lighting \u00d7 ${formData.solar_lighting_quantity}`,
+      price: formData.solar_lighting_quantity * PRICING.solar_lighting,
+    })
+  }
+
+  // Second Post
+  if (formData.second_post_enabled) {
+    orderItems.push({
+      description: `Second Post${formData.second_post_install_location ? ` \u2014 ${formData.second_post_install_location}` : ''}`,
+      price: PRICING.second_post,
+    })
+    if (formData.second_post_sign_option !== 'none') {
+      const storedSign2 = formData.second_post_sign_option === 'stored'
+        ? inventory?.signs.find(s => s.id === formData.second_post_stored_sign_id)
+        : null
+      orderItems.push({
+        description: storedSign2
+          ? `Second Post Sign Install: ${storedSign2.description} (from storage)`
+          : 'Second Post Sign Install',
+        price: PRICING.sign_install,
+      })
+    }
+    if (formData.second_post_riders.length > 0) {
+      const ridersTotal = formData.second_post_riders.reduce((sum, r) => sum + (r.is_rental ? PRICING.rider_rental : PRICING.rider_install), 0)
+      orderItems.push({
+        description: `Second Post Riders \u00d7 ${formData.second_post_riders.length}`,
+        price: ridersTotal,
+      })
+    }
+    if (formData.second_post_wire_frame_quantity > 0) {
+      orderItems.push({
+        description: `Second Post Wire Frame Signs \u00d7 ${formData.second_post_wire_frame_quantity}`,
+        price: formData.second_post_wire_frame_quantity * PRICING.wire_frame_sign,
+      })
+    }
+    if (formData.second_post_solar_lighting_quantity > 0) {
+      orderItems.push({
+        description: `Second Post Solar Lighting \u00d7 ${formData.second_post_solar_lighting_quantity}`,
+        price: formData.second_post_solar_lighting_quantity * PRICING.solar_lighting,
+      })
+    }
+  }
+
   // Brochure box (purchases excluded from promo discounts)
   if (formData.brochure_option === 'purchase') {
     orderItems.push({
@@ -147,6 +193,24 @@ export function ReviewStep({
     if (formData.wire_frame_quantity > 0) {
       items.push({ item_type: 'wire_frame_sign', total_price: formData.wire_frame_quantity * PRICING.wire_frame_sign })
     }
+    if (formData.solar_lighting_quantity > 0) {
+      items.push({ item_type: 'solar_lighting', total_price: formData.solar_lighting_quantity * PRICING.solar_lighting })
+    }
+    if (formData.second_post_enabled) {
+      items.push({ item_type: 'second_post', total_price: PRICING.second_post })
+      if (formData.second_post_sign_option !== 'none') {
+        items.push({ item_type: 'sign', total_price: PRICING.sign_install })
+      }
+      formData.second_post_riders.forEach(rider => {
+        items.push({ item_type: 'rider', total_price: rider.is_rental ? PRICING.rider_rental : PRICING.rider_install })
+      })
+      if (formData.second_post_wire_frame_quantity > 0) {
+        items.push({ item_type: 'wire_frame_sign', total_price: formData.second_post_wire_frame_quantity * PRICING.wire_frame_sign })
+      }
+      if (formData.second_post_solar_lighting_quantity > 0) {
+        items.push({ item_type: 'solar_lighting', total_price: formData.second_post_solar_lighting_quantity * PRICING.solar_lighting })
+      }
+    }
     if (formData.brochure_option === 'purchase') {
       items.push({ item_type: 'brochure_box', total_price: PRICING.brochure_box_purchase })
     } else if (formData.brochure_option === 'own') {
@@ -154,7 +218,7 @@ export function ReviewStep({
     }
 
     return items
-  }, [formData.post_type, formData.sign_option, formData.riders, formData.lockbox_option, formData.wire_frame_quantity, formData.brochure_option])
+  }, [formData.post_type, formData.sign_option, formData.riders, formData.lockbox_option, formData.wire_frame_quantity, formData.solar_lighting_quantity, formData.second_post_enabled, formData.second_post_sign_option, formData.second_post_riders, formData.second_post_wire_frame_quantity, formData.second_post_solar_lighting_quantity, formData.brochure_option])
 
   // Fetch tax from Stripe Tax API
   useEffect(() => {
@@ -425,6 +489,87 @@ export function ReviewStep({
           unit_price: PRICING.wire_frame_sign,
           total_price: formData.wire_frame_quantity * PRICING.wire_frame_sign,
         })
+      }
+
+      // Solar Lighting
+      if (formData.solar_lighting_quantity > 0) {
+        items.push({
+          item_type: 'solar_lighting',
+          item_category: 'install',
+          description: `Solar Lighting \u00d7 ${formData.solar_lighting_quantity}`,
+          quantity: formData.solar_lighting_quantity,
+          unit_price: PRICING.solar_lighting,
+          total_price: formData.solar_lighting_quantity * PRICING.solar_lighting,
+        })
+      }
+
+      // Second Post + add-ons
+      if (formData.second_post_enabled) {
+        items.push({
+          item_type: 'second_post',
+          item_category: 'second',
+          description: `Second Post${formData.second_post_install_location ? ` \u2014 ${formData.second_post_install_location}` : ''}`,
+          quantity: 1,
+          unit_price: PRICING.second_post,
+          total_price: PRICING.second_post,
+        })
+
+        if (formData.second_post_sign_option === 'stored') {
+          const storedSign2 = inventory?.signs.find(s => s.id === formData.second_post_stored_sign_id)
+          items.push({
+            item_type: 'sign',
+            item_category: 'storage',
+            description: storedSign2 ? `Second Post Sign Install: ${storedSign2.description} (from storage)` : 'Second Post Sign Install (from storage)',
+            quantity: 1,
+            unit_price: PRICING.sign_install,
+            total_price: PRICING.sign_install,
+            customer_sign_id: formData.second_post_stored_sign_id,
+          })
+        } else if (formData.second_post_sign_option === 'at_property') {
+          items.push({
+            item_type: 'sign',
+            item_category: 'install',
+            description: 'Second Post Sign Install (at property)',
+            quantity: 1,
+            unit_price: PRICING.sign_install,
+            total_price: PRICING.sign_install,
+          })
+        }
+
+        for (const rider of formData.second_post_riders) {
+          const price = rider.is_rental ? PRICING.rider_rental : PRICING.rider_install
+          items.push({
+            item_type: 'rider',
+            item_category: rider.is_rental ? 'rental' : 'owned',
+            description: `Second Post Rider: ${rider.rider_type}${rider.custom_value ? ` (${rider.custom_value})` : ''}`,
+            quantity: 1,
+            unit_price: price,
+            total_price: price,
+            custom_value: rider.custom_value,
+          })
+        }
+
+        if (formData.second_post_wire_frame_quantity > 0) {
+          items.push({
+            item_type: 'wire_frame_sign',
+            item_category: 'install',
+            description: `Second Post Wire Frame Signs \u00d7 ${formData.second_post_wire_frame_quantity}`,
+            quantity: formData.second_post_wire_frame_quantity,
+            unit_price: PRICING.wire_frame_sign,
+            total_price: formData.second_post_wire_frame_quantity * PRICING.wire_frame_sign,
+          })
+        }
+
+        if (formData.second_post_solar_lighting_quantity > 0) {
+          items.push({
+            item_type: 'solar_lighting',
+            item_category: 'install',
+            description: `Second Post Solar Lighting \u00d7 ${formData.second_post_solar_lighting_quantity}`,
+            quantity: formData.second_post_solar_lighting_quantity,
+            unit_price: PRICING.solar_lighting,
+            total_price: formData.second_post_solar_lighting_quantity * PRICING.solar_lighting,
+          })
+        }
       }
 
       // Brochure box

@@ -86,7 +86,9 @@ export async function POST(
           // Map common frontend values to DB names
           const typeNameMap: Record<string, string> = {
             sentrilock: 'SentriLock',
-            mechanical: 'Mechanical',
+            mechanical: 'Mechanical (Customer Owned)',
+            mechanical_own: 'Mechanical (Customer Owned)',
+            mechanical_rent: 'Mechanical (Rental)',
           }
           const dbName = typeNameMap[data.lockbox_type.toLowerCase()] || data.lockbox_type
 

@@ -61,9 +61,9 @@ export function RiderSelector({
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">Add Riders</h2>
+        <h2 className="text-2xl font-bold text-gray-900 mb-2">Riders & Extras</h2>
         <p className="text-gray-600">
-          Optional - Select any riders you&apos;d like to add to your installation.
+          Optional - Select any riders or extras you&apos;d like to add to your installation.
         </p>
       </div>
 

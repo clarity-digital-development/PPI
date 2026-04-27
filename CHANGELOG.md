@@ -5,6 +5,22 @@ Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 
 ---
 
+## [4.4.0] — 2026-04-26
+
+### Added
+- **Solar Lighting** add-on in Riders & Extras step — $5 per light with photo of installed product; description explains directional placement vs both-sides
+- **Second Post step** — new step inserted after Riders, asking "Do you need a second post?" at +$25; if yes, expands collapsible sections for the second post's sign, riders, wire frame signs, and solar lighting (each pulling from the same customer inventory)
+- **Second Post install location** — notes textarea for placement instructions on the second post
+
+### Fixed
+- **Mechanical lockbox add error** — admin couldn't add Mechanical lockboxes because frontend sent `"mechanical"` while DB had `"Mechanical (Customer Owned)"` and `"Mechanical (Rental)"`; added explicit type mapping and split the dropdown into both options
+
+### Changed
+- **"Add Riders" → "Riders & Extras"** — heading on step 4 renamed to reflect new add-ons (stepper indicator stays "Riders" for compactness)
+- **Homepage modernized** — Hero, PostShowcase, ValueProposition, and CTABanner refreshed with framer-motion micro-interactions, animated gradients, floating decorative blobs, glass-morphism stat cards, and tighter typography. Respects `prefers-reduced-motion`. New social-proof strip in hero ("Next-day install", "KY/OH coverage", "Loved by agents") and floating "500+ installs" badge
+
+---
+
 ## [4.3.0] — 2026-04-06 (`1d20d30`)
 
 ### Fixed

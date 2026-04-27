@@ -612,7 +612,8 @@ export default function CustomerDetailPage() {
                   className="w-full px-4 py-2.5 rounded-lg border border-gray-200 focus:border-pink-500 focus:ring-2 focus:ring-pink-200 outline-none"
                 >
                   <option value="sentrilock">SentriLock</option>
-                  <option value="mechanical">Mechanical</option>
+                  <option value="mechanical_own">Mechanical (Customer Owned)</option>
+                  <option value="mechanical_rent">Mechanical (Rental)</option>
                 </select>
               </div>
               <Input

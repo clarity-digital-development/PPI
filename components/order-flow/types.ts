@@ -47,6 +47,18 @@ export interface OrderFormData {
   wire_frame_quantity: number
   wire_frame_notes?: string
 
+  // Solar Lighting
+  solar_lighting_quantity: number
+
+  // Second Post (optional add-on after Riders step)
+  second_post_enabled: boolean
+  second_post_install_location?: string
+  second_post_sign_option: 'stored' | 'at_property' | 'none'
+  second_post_stored_sign_id?: string
+  second_post_riders: RiderSelection[]
+  second_post_wire_frame_quantity: number
+  second_post_solar_lighting_quantity: number
+
   // Brochure Box
   brochure_option: 'purchase' | 'own' | 'none'
   customer_brochure_box_id?: string
@@ -99,6 +111,8 @@ export const PRICING = {
   lockbox_install: 5,
   lockbox_rental: 10,
   wire_frame_sign: 5,
+  solar_lighting: 5,
+  second_post: 25,
   brochure_box_purchase: 23,
   brochure_box_install: 2,
   fuel_surcharge: 2.47,

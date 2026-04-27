@@ -8,6 +8,7 @@ import { PropertyStep } from './steps/property-step'
 import { PostStep } from './steps/post-step'
 import { SignStep } from './steps/sign-step'
 import { RiderStep } from './steps/rider-step'
+import { SecondPostStep } from './steps/second-post-step'
 import { LockboxStep } from './steps/lockbox-step'
 import { BrochureBoxStep } from './steps/brochure-box-step'
 import { SchedulingStep } from './steps/scheduling-step'
@@ -18,7 +19,8 @@ const steps = [
   { id: 'property', title: 'Property Info', component: PropertyStep },
   { id: 'post', title: 'Post Selection', component: PostStep },
   { id: 'sign', title: 'Sign', component: SignStep },
-  { id: 'rider', title: 'Riders', component: RiderStep },
+  { id: 'rider', title: 'Riders', component: RiderStep }, // step header stays "Riders" for compact stepper
+  { id: 'second-post', title: 'Second Post', component: SecondPostStep },
   { id: 'lockbox', title: 'Lockbox', component: LockboxStep },
   { id: 'brochure', title: 'Brochure Box', component: BrochureBoxStep },
   { id: 'scheduling', title: 'Scheduling', component: SchedulingStep },
@@ -51,6 +53,16 @@ const initialFormData: OrderFormData = {
   // Wire Frame Signs
   wire_frame_quantity: 0,
   wire_frame_notes: undefined,
+  // Solar Lighting
+  solar_lighting_quantity: 0,
+  // Second Post
+  second_post_enabled: false,
+  second_post_install_location: '',
+  second_post_sign_option: 'none',
+  second_post_stored_sign_id: undefined,
+  second_post_riders: [],
+  second_post_wire_frame_quantity: 0,
+  second_post_solar_lighting_quantity: 0,
   // Lockbox
   lockbox_option: 'none',
   lockbox_type: undefined,
@@ -130,6 +142,7 @@ export function OrderWizard({ inventory, paymentMethods }: OrderWizardProps) {
         return true // Post is now optional
       case 'sign':
       case 'rider':
+      case 'second-post':
       case 'lockbox':
       case 'brochure':
         return true // Optional steps
