@@ -3,14 +3,8 @@
 import Link from 'next/link'
 import Image from 'next/image'
 import { motion, useReducedMotion } from 'framer-motion'
-import { CheckCircle, Zap, Package, DollarSign, Sparkles, ArrowRight, MapPin, Clock, Heart } from 'lucide-react'
+import { Zap, Sparkles, ArrowRight, MapPin, Clock, Heart } from 'lucide-react'
 import { Button } from '@/components/ui'
-
-const keyPoints = [
-  { icon: Zap, text: 'Next Day Installation' },
-  { icon: DollarSign, text: 'One Low Fee — includes install AND pickup' },
-  { icon: Package, text: 'We Store Your Inventory' },
-]
 
 const socialProof = [
   { icon: Clock, label: 'Next-day install' },
@@ -133,31 +127,14 @@ const Hero = () => {
               ))}
             </motion.div>
 
-            {/* Key Points */}
-            <div className="mt-10 space-y-3">
-              {keyPoints.map((point, index) => (
-                <motion.div
-                  key={point.text}
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ duration: 0.4, delay: 0.4 + index * 0.1 }}
-                  className="flex items-center gap-3 justify-center lg:justify-start"
-                >
-                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-pink-100 flex items-center justify-center ring-1 ring-pink-200">
-                    <CheckCircle className="w-5 h-5 text-pink-500" />
-                  </div>
-                  <span className="text-gray-700 font-medium">{point.text}</span>
-                </motion.div>
-              ))}
-            </div>
           </motion.div>
 
-          {/* Hero Image */}
+          {/* Hero Image — desktop only; takes too much space on mobile */}
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ duration: 0.7, delay: 0.2, ease: 'easeOut' }}
-            className="relative"
+            className="relative hidden lg:block"
           >
             {/* Soft glow behind */}
             <div
