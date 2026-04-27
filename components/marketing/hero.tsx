@@ -73,29 +73,9 @@ const Hero = () => {
             transition={{ duration: 0.6 }}
             className="text-center lg:text-left"
           >
-            {/* Eyebrow badge */}
-            <motion.div
-              initial={{ opacity: 0, y: -10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5, delay: 0.1 }}
-              className="inline-flex items-center gap-2 rounded-full bg-white/70 backdrop-blur-sm border border-pink-200 px-4 py-1.5 text-sm font-medium text-pink-700 shadow-sm"
-            >
-              <Sparkles className="w-4 h-4" />
-              Lexington · Louisville · Cincinnati
-            </motion.div>
-
-            <h1 className="mt-5 text-4xl sm:text-5xl lg:text-6xl xl:text-7xl font-bold text-gray-900 leading-[1.05] tracking-tight text-balance">
+            <h1 className="text-4xl sm:text-5xl lg:text-6xl xl:text-7xl font-bold text-gray-900 leading-[1.05] tracking-tight text-balance">
               We do the dirty work,{' '}
-              <span className="relative inline-block">
-                <span className="relative z-10 text-pink-500">so you can close more deals.</span>
-                <motion.span
-                  aria-hidden
-                  initial={{ scaleX: 0 }}
-                  animate={{ scaleX: 1 }}
-                  transition={{ duration: 0.8, delay: 0.6, ease: 'easeOut' }}
-                  className="absolute bottom-1 left-0 right-0 h-3 bg-pink-200/70 origin-left -z-0 rounded-sm"
-                />
-              </span>
+              <span className="text-pink-500">so you can close more deals.</span>
             </h1>
 
             <p className="mt-6 text-xl md:text-2xl text-pink-600 font-semibold tracking-tight">
@@ -217,7 +197,7 @@ const Hero = () => {
                   <Sparkles className="w-5 h-5" />
                 </div>
                 <div className="text-left">
-                  <div className="text-2xl font-bold text-gray-900 leading-none tracking-tight">500+</div>
+                  <div className="text-2xl font-bold text-gray-900 leading-none tracking-tight">100+</div>
                   <div className="text-xs text-gray-600 font-medium">installs &amp; counting</div>
                 </div>
               </div>

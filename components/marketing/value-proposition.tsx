@@ -8,7 +8,6 @@ import {
   Calendar,
   UserCheck,
   FileX,
-  Heart,
 } from 'lucide-react'
 
 const features = [
@@ -75,11 +74,6 @@ const ValueProposition = () => {
           transition={{ duration: 0.5 }}
           className="text-center mb-14"
         >
-          {/* Fun callout badge */}
-          <div className="inline-flex items-center gap-2 rounded-full bg-pink-100 border border-pink-200 px-4 py-1.5 text-sm font-semibold text-pink-700 mb-4">
-            <Heart className="w-4 h-4" fill="currentColor" />
-            Built by an agent, for agents
-          </div>
           <h2 className="text-3xl md:text-4xl lg:text-5xl font-bold text-gray-900 tracking-tight">
             Why Realtors Choose{' '}
             <span className="text-pink-500">Pink Posts</span>

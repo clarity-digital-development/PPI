@@ -14,14 +14,6 @@ const posts = [
     headerText: 'Classic',
   },
   {
-    name: 'Black Vinyl',
-    price: 55,
-    image: '/images/posts/black-post.png',
-    description: 'Installation & Pickup',
-    accent: 'from-gray-100 to-white',
-    headerText: 'Sleek',
-  },
-  {
     name: 'Signature Pink',
     price: 65,
     image: '/images/posts/pink-post.png',
@@ -29,6 +21,14 @@ const posts = [
     accent: 'from-pink-100 to-pink-50',
     headerText: 'Most Popular',
     featured: true,
+  },
+  {
+    name: 'Black Vinyl',
+    price: 55,
+    image: '/images/posts/black-post.png',
+    description: 'Installation & Pickup',
+    accent: 'from-gray-100 to-white',
+    headerText: 'Sleek',
   },
 ]
 
@@ -65,7 +65,7 @@ const PostShowcase = () => {
           </p>
         </motion.div>
 
-        <div className="grid md:grid-cols-3 gap-6 lg:gap-8">
+        <div className="grid md:grid-cols-[1fr_1.25fr_1fr] gap-6 lg:gap-8 items-center">
           {posts.map((post, index) => (
             <motion.div
               key={post.name}
@@ -78,25 +78,24 @@ const PostShowcase = () => {
               }
               className={`group relative bg-white rounded-3xl shadow-md overflow-hidden border-2 transition-shadow duration-300 hover:shadow-2xl ${
                 post.featured
-                  ? 'border-pink-500 hover:shadow-pink-200/60'
+                  ? 'border-pink-500 hover:shadow-pink-200/60 md:scale-105'
                   : 'border-gray-100 hover:border-pink-200'
               }`}
             >
-              {/* Featured ribbon */}
-              {post.featured && (
-                <div className="absolute top-0 left-0 right-0 bg-gradient-to-r from-pink-500 to-pink-600 text-white text-xs font-bold tracking-wider py-2 text-center z-10 inline-flex items-center justify-center gap-1.5">
-                  <Star className="w-3.5 h-3.5" fill="currentColor" />
-                  MOST POPULAR
-                  <Star className="w-3.5 h-3.5" fill="currentColor" />
-                </div>
-              )}
-
               {/* Image area with soft gradient backdrop */}
               <div
-                className={`relative h-64 bg-gradient-to-br ${post.accent} ${
-                  post.featured ? 'mt-9' : ''
+                className={`relative bg-gradient-to-br ${post.accent} ${
+                  post.featured ? 'h-72 md:h-80' : 'h-64'
                 }`}
               >
+                {/* Featured ribbon overlays the top of the image */}
+                {post.featured && (
+                  <div className="absolute top-0 left-0 right-0 bg-gradient-to-r from-pink-500 to-pink-600 text-white text-xs font-bold tracking-wider py-2 text-center z-10 inline-flex items-center justify-center gap-1.5">
+                    <Star className="w-3.5 h-3.5" fill="currentColor" />
+                    MOST POPULAR
+                    <Star className="w-3.5 h-3.5" fill="currentColor" />
+                  </div>
+                )}
                 <Image
                   src={post.image}
                   alt={post.name}
@@ -108,7 +107,7 @@ const PostShowcase = () => {
               </div>
 
               {/* Content */}
-              <div className="p-6 text-center">
+              <div className={`text-center ${post.featured ? 'p-7' : 'p-6'}`}>
                 <span
                   className={`inline-block text-[11px] font-semibold tracking-[0.15em] uppercase mb-2 ${
                     post.featured ? 'text-pink-600' : 'text-gray-400'
@@ -116,12 +115,12 @@ const PostShowcase = () => {
                 >
                   {post.headerText}
                 </span>
-                <h3 className="text-xl font-bold text-gray-900 tracking-tight">
+                <h3 className={`font-bold text-gray-900 tracking-tight ${post.featured ? 'text-2xl' : 'text-xl'}`}>
                   {post.name}
                 </h3>
                 <div className="mt-4 flex items-baseline justify-center gap-1">
                   <span className="text-sm font-semibold text-gray-400">$</span>
-                  <span className="text-5xl font-extrabold text-pink-600 tracking-tight leading-none">
+                  <span className={`font-extrabold text-pink-600 tracking-tight leading-none ${post.featured ? 'text-6xl' : 'text-5xl'}`}>
                     {post.price}
                   </span>
                 </div>

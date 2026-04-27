@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { motion, useReducedMotion } from 'framer-motion'
-import { ArrowRight, Sparkles } from 'lucide-react'
+import { ArrowRight } from 'lucide-react'
 import { Button } from '@/components/ui'
 
 const CTABanner = () => {
@@ -80,25 +80,8 @@ const CTABanner = () => {
           viewport={{ once: true, margin: '-80px' }}
           transition={{ duration: 0.5 }}
         >
-          {/* Eyebrow */}
-          <div className="inline-flex items-center gap-2 rounded-full bg-white/15 backdrop-blur-sm border border-white/25 px-4 py-1.5 text-sm font-semibold text-white mb-6">
-            <Sparkles className="w-4 h-4" />
-            No credit card required
-          </div>
-
           <h2 className="text-3xl md:text-4xl lg:text-5xl font-bold text-white tracking-tight leading-tight text-balance">
-            Ready to Simplify Your{' '}
-            <span className="relative inline-block">
-              Sign Installations?
-              <motion.span
-                aria-hidden
-                initial={{ scaleX: 0 }}
-                whileInView={{ scaleX: 1 }}
-                viewport={{ once: true }}
-                transition={{ duration: 0.7, delay: 0.5, ease: 'easeOut' }}
-                className="absolute bottom-1 left-0 right-0 h-2 bg-white/30 origin-left rounded-sm"
-              />
-            </span>
+            Ready to Simplify Your Sign Installations?
           </h2>
           <p className="mt-5 text-lg md:text-xl text-pink-100 max-w-2xl mx-auto">
             Next-day sign installation so you can focus on closing deals.
