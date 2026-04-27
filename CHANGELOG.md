@@ -5,6 +5,28 @@ Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 
 ---
 
+## [4.4.1] — 2026-04-27
+
+### Fixed
+
+- **Sign inventory mismatch (Ashley Barreto bug)** — Admin customer detail showed "1 sign in storage" but the customer's order form correctly showed "no signs in inventory."
+  - **Why it was broken:** Once a sign is used in an order, it's marked `inStorage: false`. The customer-facing inventory API correctly filtered on that flag, but the admin's GET endpoint pulled all sign records regardless of status, so deployed signs incorrectly appeared as available stock.
+  - **How it's fixed:** Admin "in Storage" sections now filter by `inStorage: true` so admin and customer views always agree. A new "Currently Deployed" panel below the inventory grid lists out-of-storage items with a per-item "Return to inventory" button — admin can click it the moment the customer physically returns the sign/rider/lockbox/brochure box, and it goes back into rotation. Backed by a new `action: 'return_to_storage'` on the inventory PATCH endpoint.
+
+- **Admin customers list cut off** — Owner couldn't find Oxana in the customers list, but search returned her instantly.
+  - **Why it was broken:** The `/api/admin/customers` GET endpoint capped results at 50 by default. Pink Posts has 60+ customers, so anyone past row 50 was silently hidden, and the UI gave no indication the list was truncated.
+  - **How it's fixed:** Default limit raised to 500 (well clear of current customer count), and the API now returns a `total` count. The customers page header shows "60 total" or "Showing X of Y" so any future cutoff is immediately visible.
+
+- **Hero looked cramped on mobile** — On phones the landing page showed three overlapping value strips (social proof, key points checklist, hero image with floating badges) plus the next section peeking up below.
+  - **Why it was broken:** The bottom key-points list ("Next Day Installation", "One Low Fee", "We Store Your Inventory") repeated content from the social-proof strip ("Next-day install · KY & OH coverage · Loved by agents"); the right-column hero image stacked below the content on mobile and ate vertical space; and the section had no minimum height, so the next section sat directly below the CTAs.
+  - **How it's fixed:** Removed the redundant key-points list (also kills the misaligned check-mark layout when the second item wrapped). Hid the hero image on mobile (`hidden lg:block`) — desktop still gets it. Added `min-h-[calc(100svh-5rem)]` and vertical centering on mobile so the hero fills the viewport on initial load and the next section reveals only on scroll.
+
+### Added
+
+- **Click-to-expand solar lighting image** — The night photo of solar lighting in the Riders & Extras step (and Second Post step) now expands inline when tapped and collapses again on tap, with a subtle zoom-in cursor and hover affordance. New reusable `<ExpandableImage>` component.
+
+---
+
 ## [4.4.0] — 2026-04-26
 
 ### Added

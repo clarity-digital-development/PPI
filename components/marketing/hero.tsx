@@ -28,7 +28,7 @@ const Hero = () => {
         }
 
   return (
-    <section className="relative overflow-hidden bg-gradient-to-br from-pink-50 via-white to-pink-100 grain-overlay">
+    <section className="relative overflow-hidden bg-gradient-to-br from-pink-50 via-white to-pink-100 grain-overlay min-h-[calc(100svh-5rem)] lg:min-h-0 flex items-center">
       {/* Subtle dot grid background */}
       <div
         aria-hidden
@@ -58,7 +58,7 @@ const Hero = () => {
         transition={floatTransition(1.5)}
       />
 
-      <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 md:py-24 lg:py-28">
+      <div className="relative w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 md:py-24 lg:py-28">
         <div className="grid lg:grid-cols-[1.1fr_1fr] gap-12 lg:gap-16 items-center">
           {/* Content */}
           <motion.div
