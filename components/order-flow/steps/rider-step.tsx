@@ -1,9 +1,9 @@
 'use client'
 
 import { useCallback, useMemo } from 'react'
-import Image from 'next/image'
 import { Minus, Plus, MapPin, Sun } from 'lucide-react'
 import { RiderSelector, RIDERS, type SelectedRider } from '../RiderSelector'
+import { ExpandableImage } from '../ExpandableImage'
 import type { StepProps, RiderSelection } from '../types'
 import { PRICING } from '../types'
 
@@ -135,15 +135,10 @@ export function RiderStep({ formData, updateFormData, inventory }: StepProps) {
         </div>
 
         <div className="flex flex-col sm:flex-row gap-4 mb-4">
-          <div className="relative w-full sm:w-32 h-40 sm:h-32 rounded-lg overflow-hidden flex-shrink-0 bg-gray-100">
-            <Image
-              src="/images/posts/solar-light.jpg"
-              alt="Solar lighting installed at sign"
-              fill
-              className="object-cover"
-              sizes="(max-width: 640px) 100vw, 128px"
-            />
-          </div>
+          <ExpandableImage
+            src="/images/posts/solar-light.jpg"
+            alt="Solar lighting installed at sign"
+          />
           <p className="text-sm text-gray-600 flex-1">
             ${PRICING.solar_lighting} per light. If one is chosen, it will be placed for the most directional traffic. If you want both directions, select two lights.
           </p>

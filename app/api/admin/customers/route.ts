@@ -16,36 +16,41 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url)
     const search = searchParams.get('search')
-    const limit = parseInt(searchParams.get('limit') || '50')
+    const limit = parseInt(searchParams.get('limit') || '500')
     const offset = parseInt(searchParams.get('offset') || '0')
 
-    const customers = await prisma.user.findMany({
-      where: {
-        role: 'customer',
-        ...(search
-          ? {
-              OR: [
-                { fullName: { contains: search, mode: 'insensitive' } },
-                { email: { contains: search, mode: 'insensitive' } },
-                { company: { contains: search, mode: 'insensitive' } },
-              ],
-            }
-          : {}),
-      },
-      include: {
-        _count: {
-          select: {
-            customerSigns: true,
-            customerRiders: true,
-            customerLockboxes: true,
-            orders: true,
+    const where = {
+      role: 'customer' as const,
+      ...(search
+        ? {
+            OR: [
+              { fullName: { contains: search, mode: 'insensitive' as const } },
+              { email: { contains: search, mode: 'insensitive' as const } },
+              { company: { contains: search, mode: 'insensitive' as const } },
+            ],
+          }
+        : {}),
+    }
+
+    const [customers, total] = await Promise.all([
+      prisma.user.findMany({
+        where,
+        include: {
+          _count: {
+            select: {
+              customerSigns: true,
+              customerRiders: true,
+              customerLockboxes: true,
+              orders: true,
+            },
           },
         },
-      },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-      skip: offset,
-    })
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        skip: offset,
+      }),
+      prisma.user.count({ where }),
+    ])
 
     const customersWithCounts = customers.map((customer) => ({
       id: customer.id,
@@ -60,7 +65,7 @@ export async function GET(request: NextRequest) {
       order_count: customer._count.orders,
     }))
 
-    return NextResponse.json({ customers: customersWithCounts })
+    return NextResponse.json({ customers: customersWithCounts, total })
   } catch (error) {
     console.error('Error fetching customers:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

@@ -20,6 +20,7 @@ interface Customer {
 
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
+  const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
 
@@ -33,6 +34,7 @@ export default function CustomersPage() {
         if (res.ok) {
           const data = await res.json()
           setCustomers(data.customers)
+          setTotal(data.total ?? data.customers.length)
         }
       } catch (error) {
         console.error('Error fetching customers:', error)
@@ -50,7 +52,14 @@ export default function CustomersPage() {
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Customers</h1>
-          <p className="text-gray-600">Manage customer accounts and inventory</p>
+          <p className="text-gray-600">
+            Manage customer accounts and inventory
+            {!loading && customers.length > 0 && (
+              <span className="ml-2 text-gray-500">
+                · {customers.length === total ? `${total} total` : `Showing ${customers.length} of ${total}`}
+              </span>
+            )}
+          </p>
         </div>
         <div className="w-full md:w-72">
           <div className="relative">

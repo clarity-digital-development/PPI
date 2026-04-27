@@ -180,12 +180,34 @@ export async function PATCH(
     }
 
     const body = await request.json()
-    const { type, item_id, quantity } = body
-    const newQuantity = Math.max(0, parseInt(quantity) || 0)
+    const { type, item_id, quantity, action } = body
 
     if (!type || !item_id) {
       return NextResponse.json({ error: 'Type and item_id are required' }, { status: 400 })
     }
+
+    // Return a previously-deployed item back to storage (item_id is the specific record id)
+    if (action === 'return_to_storage') {
+      switch (type) {
+        case 'sign':
+          await prisma.customerSign.update({ where: { id: item_id, userId: customerId }, data: { inStorage: true } })
+          break
+        case 'rider':
+          await prisma.customerRider.update({ where: { id: item_id, userId: customerId }, data: { inStorage: true } })
+          break
+        case 'lockbox':
+          await prisma.customerLockbox.update({ where: { id: item_id, userId: customerId }, data: { inStorage: true } })
+          break
+        case 'brochure_box':
+          await prisma.customerBrochureBox.update({ where: { id: item_id, userId: customerId }, data: { inStorage: true } })
+          break
+        default:
+          return NextResponse.json({ error: 'Invalid type for return_to_storage' }, { status: 400 })
+      }
+      return NextResponse.json({ success: true })
+    }
+
+    const newQuantity = Math.max(0, parseInt(quantity) || 0)
 
     // For riders: item_id is the riderId (catalog), adjust record count
     // For signs: item_id is the specific sign record (signs are unique, so quantity doesn't apply the same way)

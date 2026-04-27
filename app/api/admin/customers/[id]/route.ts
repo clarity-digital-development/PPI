@@ -28,7 +28,7 @@ export async function GET(
     }
 
     // Get all inventory and related data
-    const [signsRaw, ridersRaw, lockboxesRaw, brochureBoxesRaw, otherItemsRaw, ordersRaw, installationsRaw] =
+    const [signsAll, ridersAll, lockboxesAll, brochureBoxesAll, otherItemsRaw, ordersRaw, installationsRaw] =
       await Promise.all([
         prisma.customerSign.findMany({
           where: { userId: id },
@@ -63,6 +63,17 @@ export async function GET(
           orderBy: { installedAt: 'desc' },
         }),
       ])
+
+    // Split items by inStorage status — only in-storage items appear in main inventory,
+    // out-of-storage items appear in a separate "deployed" section so admin can return them
+    const signsRaw = signsAll.filter(s => s.inStorage)
+    const signsOutOfStorage = signsAll.filter(s => !s.inStorage)
+    const ridersRaw = ridersAll.filter(r => r.inStorage)
+    const ridersOutOfStorage = ridersAll.filter(r => !r.inStorage)
+    const lockboxesRaw = lockboxesAll.filter(lb => lb.inStorage)
+    const lockboxesOutOfStorage = lockboxesAll.filter(lb => !lb.inStorage)
+    const brochureBoxesRaw = brochureBoxesAll.filter(b => b.inStorage)
+    const brochureBoxesOutOfStorage = brochureBoxesAll.filter(b => !b.inStorage)
 
     // Transform data to match frontend expectations
     // Aggregate signs by description with quantity counts
@@ -106,6 +117,14 @@ export async function GET(
       ? { id: brochureBoxesRaw[0].id, quantity: brochureBoxesRaw.length }
       : null
 
+    // Build deployed list — flat per-item so admin can mark each one back to storage
+    const deployed = {
+      signs: signsOutOfStorage.map(s => ({ id: s.id, description: s.description })),
+      riders: ridersOutOfStorage.map(r => ({ id: r.id, rider_type: r.rider.name })),
+      lockboxes: lockboxesOutOfStorage.map(lb => ({ id: lb.id, lockbox_type: lb.lockboxType.name, lockbox_code: lb.code })),
+      brochureBoxes: brochureBoxesOutOfStorage.map(b => ({ id: b.id, description: b.description })),
+    }
+
     // Transform orders to match frontend expectations
     const orders = ordersRaw.map((order) => ({
       id: order.id,
@@ -140,6 +159,7 @@ export async function GET(
         lockboxes,
         brochureBoxes,
         otherItems: otherItemsRaw.map((item) => ({ id: item.id, description: item.description })),
+        deployed,
       },
       orders,
       installations,

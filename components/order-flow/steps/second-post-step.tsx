@@ -1,11 +1,11 @@
 'use client'
 
 import { useCallback, useMemo, useState } from 'react'
-import Image from 'next/image'
 import { Minus, Plus, MapPin, Sun, ChevronDown, ChevronUp, Package } from 'lucide-react'
 import { Select } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { RiderSelector, RIDERS, type SelectedRider } from '../RiderSelector'
+import { ExpandableImage } from '../ExpandableImage'
 import type { StepProps, RiderSelection } from '../types'
 import { PRICING } from '../types'
 
@@ -275,15 +275,10 @@ export function SecondPostStep({ formData, updateFormData, inventory }: StepProp
           <Collapsible title="Solar Lighting" defaultOpen={solarCount > 0} badge={solarCount > 0 ? `×${solarCount}` : undefined}>
             <div className="space-y-3">
               <div className="flex flex-col sm:flex-row gap-4">
-                <div className="relative w-full sm:w-32 h-40 sm:h-32 rounded-lg overflow-hidden flex-shrink-0 bg-gray-100">
-                  <Image
-                    src="/images/posts/solar-light.jpg"
-                    alt="Solar lighting"
-                    fill
-                    className="object-cover"
-                    sizes="(max-width: 640px) 100vw, 128px"
-                  />
-                </div>
+                <ExpandableImage
+                  src="/images/posts/solar-light.jpg"
+                  alt="Solar lighting"
+                />
                 <p className="text-sm text-gray-600 flex-1">
                   ${PRICING.solar_lighting} per light. If one is chosen, it will be placed for the most directional traffic. Select two for both directions.
                 </p>

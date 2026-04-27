@@ -21,6 +21,12 @@ interface CustomerData {
     lockboxes: Array<{ id: string; lockbox_type_id: string; lockbox_type: string; lockbox_code: string | null }>
     brochureBoxes: { id: string; quantity: number } | null
     otherItems: Array<{ id: string; description: string }>
+    deployed?: {
+      signs: Array<{ id: string; description: string }>
+      riders: Array<{ id: string; rider_type: string }>
+      lockboxes: Array<{ id: string; lockbox_type: string; lockbox_code: string | null }>
+      brochureBoxes: Array<{ id: string; description: string | null }>
+    }
   }
   orders: Array<{
     id: string
@@ -206,6 +212,24 @@ export default function CustomerDetailPage() {
       }
     } catch (error) {
       console.error('Error updating quantity:', error)
+    }
+  }
+
+  async function handleReturnToStorage(type: 'sign' | 'rider' | 'lockbox' | 'brochure_box', itemId: string) {
+    try {
+      const res = await fetch(`/api/admin/customers/${id}/inventory`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type, item_id: itemId, action: 'return_to_storage' }),
+      })
+      if (res.ok) {
+        fetchCustomer()
+      } else {
+        const data = await res.json()
+        alert(data.error || 'Failed to return item to storage')
+      }
+    } catch (error) {
+      console.error('Error returning item to storage:', error)
     }
   }
 
@@ -490,6 +514,76 @@ export default function CustomerDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Deployed (out of storage) inventory */}
+      {data.inventory.deployed && (
+        (data.inventory.deployed.signs.length +
+         data.inventory.deployed.riders.length +
+         data.inventory.deployed.lockboxes.length +
+         data.inventory.deployed.brochureBoxes.length) > 0
+      ) && (
+        <Card className="mt-6 border-amber-200 bg-amber-50/40">
+          <CardContent className="p-6">
+            <div className="flex items-center gap-2 mb-3">
+              <h2 className="font-semibold text-gray-900">Currently Deployed</h2>
+              <span className="text-xs text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full font-medium">
+                Out of inventory
+              </span>
+            </div>
+            <p className="text-sm text-gray-600 mb-4">
+              These items are out on a property. Click &quot;Return to inventory&quot; once the customer has them back.
+            </p>
+            <div className="space-y-2">
+              {data.inventory.deployed.signs.map(item => (
+                <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-lg border border-amber-200">
+                  <div className="text-sm">
+                    <span className="text-xs text-amber-700 font-medium uppercase mr-2">Sign</span>
+                    <span className="text-gray-900">{item.description}</span>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={() => handleReturnToStorage('sign', item.id)}>
+                    Return to inventory
+                  </Button>
+                </div>
+              ))}
+              {data.inventory.deployed.riders.map(item => (
+                <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-lg border border-amber-200">
+                  <div className="text-sm">
+                    <span className="text-xs text-amber-700 font-medium uppercase mr-2">Rider</span>
+                    <span className="text-gray-900">{item.rider_type}</span>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={() => handleReturnToStorage('rider', item.id)}>
+                    Return to inventory
+                  </Button>
+                </div>
+              ))}
+              {data.inventory.deployed.lockboxes.map(item => (
+                <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-lg border border-amber-200">
+                  <div className="text-sm">
+                    <span className="text-xs text-amber-700 font-medium uppercase mr-2">Lockbox</span>
+                    <span className="text-gray-900">
+                      {item.lockbox_type}{item.lockbox_code ? ` — code ${item.lockbox_code}` : ''}
+                    </span>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={() => handleReturnToStorage('lockbox', item.id)}>
+                    Return to inventory
+                  </Button>
+                </div>
+              ))}
+              {data.inventory.deployed.brochureBoxes.map(item => (
+                <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-lg border border-amber-200">
+                  <div className="text-sm">
+                    <span className="text-xs text-amber-700 font-medium uppercase mr-2">Brochure Box</span>
+                    <span className="text-gray-900">{item.description || 'Brochure box'}</span>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={() => handleReturnToStorage('brochure_box', item.id)}>
+                    Return to inventory
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Recent Orders */}
       <Card className="mt-6">
