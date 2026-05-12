@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
-import { Header } from '@/components/dashboard'
+import { Header, CompletePaymentButton } from '@/components/dashboard'
 import { Card, CardContent, Button, Badge } from '@/components/ui'
 import {
   MapPin,
@@ -179,6 +179,11 @@ export default function OrderDetailsPage() {
           <ArrowLeft className="w-4 h-4 mr-1" />
           Back to Order History
         </Link>
+
+        {/* Complete Payment banner — only renders if order has unresolved payment intent */}
+        {order.paymentStatus !== 'succeeded' && order.status !== 'cancelled' && (
+          <CompletePaymentButton orderId={order.id} amount={Number(order.total)} />
+        )}
 
         {/* Order Header */}
         <Card variant="bordered" className="mb-6">
