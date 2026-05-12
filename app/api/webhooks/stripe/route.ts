@@ -5,6 +5,44 @@ import { stripe } from '@/lib/stripe/server'
 import { prisma } from '@/lib/prisma'
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 
+/**
+ * Restore inventory items linked to an order whose payment failed/cancelled,
+ * so a stuck 3DS or declined card doesn't leave the customer's signs locked
+ * out of their inventory forever. Idempotent — safe to call multiple times.
+ */
+async function restoreOrderInventory(paymentIntentId: string, reason: string) {
+  try {
+    const order = await prisma.order.findFirst({
+      where: { paymentIntentId },
+      include: { orderItems: true },
+    })
+    if (!order) return
+
+    const restores: Promise<unknown>[] = []
+    for (const item of order.orderItems) {
+      if (item.customerSignId) {
+        restores.push(prisma.customerSign.update({ where: { id: item.customerSignId }, data: { inStorage: true } }))
+      }
+      if (item.customerRiderId) {
+        restores.push(prisma.customerRider.update({ where: { id: item.customerRiderId }, data: { inStorage: true } }))
+      }
+      if (item.customerLockboxId) {
+        restores.push(prisma.customerLockbox.update({ where: { id: item.customerLockboxId }, data: { inStorage: true } }))
+      }
+      if (item.customerBrochureBoxId) {
+        restores.push(prisma.customerBrochureBox.update({ where: { id: item.customerBrochureBoxId }, data: { inStorage: true } }))
+      }
+    }
+    if (restores.length > 0) {
+      await Promise.all(restores)
+      console.log(`Webhook (${reason}): restored ${restores.length} inventory item(s) for order ${order.orderNumber}`)
+    }
+  } catch (err) {
+    console.error(`Webhook (${reason}): failed to restore inventory for ${paymentIntentId}:`, err)
+    // Don't fail the webhook — admin can manually restore via the customer detail page
+  }
+}
+
 export async function POST(request: NextRequest) {
   const body = await request.text()
   const headersList = await headers()
@@ -56,6 +94,7 @@ export async function POST(request: NextRequest) {
         })
 
         if (order) {
+
           // Send confirmation emails
           console.log(`Webhook: Sending emails for order ${order.orderNumber}`)
           try {
@@ -105,6 +144,9 @@ export async function POST(request: NextRequest) {
           data: { paymentStatus: 'failed' },
         })
 
+        // Restore any inventory that was marked out-of-storage at order creation
+        // so a failed payment doesn't leave the customer's signs/riders locked
+        await restoreOrderInventory(paymentIntent.id, 'payment_failed')
         break
       }
 
@@ -119,6 +161,7 @@ export async function POST(request: NextRequest) {
           },
         })
 
+        await restoreOrderInventory(paymentIntent.id, 'canceled')
         break
       }
 

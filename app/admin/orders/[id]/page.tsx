@@ -193,6 +193,31 @@ export default function AdminOrderDetailPage() {
     }
   }
 
+  async function handleCancelOrder() {
+    if (!order) return
+    const confirmMsg = `Cancel order ${order.orderNumber}?\n\nThis will:\n• Cancel the Stripe payment attempt\n• Restore any inventory items linked to this order\n• Mark the order as cancelled\n\nThis cannot be undone.`
+    if (!confirm(confirmMsg)) return
+
+    try {
+      const res = await fetch(`/api/admin/orders/${orderId}/cancel`, { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) {
+        alert(data.error || 'Failed to cancel order')
+        return
+      }
+      setOrder(prev => prev ? { ...prev, status: 'cancelled', paymentStatus: 'failed' } : null)
+      const msg = [
+        'Order cancelled.',
+        data.stripe_cancelled ? 'Stripe payment intent cancelled.' : null,
+        data.inventory_restored > 0 ? `${data.inventory_restored} inventory item(s) restored to storage.` : null,
+      ].filter(Boolean).join(' ')
+      alert(msg)
+    } catch (err) {
+      console.error('Error cancelling order:', err)
+      alert('Could not cancel order — see console for details.')
+    }
+  }
+
   if (loading) {
     return (
       <div className="p-6">
@@ -254,19 +279,33 @@ export default function AdminOrderDetailPage() {
           </div>
         </div>
 
-        {/* Status dropdown */}
-        <select
-          value={order.status}
-          onChange={(e) => updateOrderStatus(e.target.value)}
-          className="border border-gray-200 rounded-lg px-3 py-2 text-sm"
-        >
-          <option value="pending">Pending</option>
-          <option value="confirmed">Confirmed</option>
-          <option value="scheduled">Scheduled</option>
-          <option value="in_progress">In Progress</option>
-          <option value="completed">Completed</option>
-          <option value="cancelled">Cancelled</option>
-        </select>
+        <div className="flex items-center gap-3">
+          {/* Cancel button — only for unpaid, non-cancelled orders */}
+          {order.paymentStatus !== 'succeeded' && order.status !== 'cancelled' && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCancelOrder}
+              className="text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300"
+            >
+              Cancel Order
+            </Button>
+          )}
+
+          {/* Status dropdown */}
+          <select
+            value={order.status}
+            onChange={(e) => updateOrderStatus(e.target.value)}
+            className="border border-gray-200 rounded-lg px-3 py-2 text-sm"
+          >
+            <option value="pending">Pending</option>
+            <option value="confirmed">Confirmed</option>
+            <option value="scheduled">Scheduled</option>
+            <option value="in_progress">In Progress</option>
+            <option value="completed">Completed</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

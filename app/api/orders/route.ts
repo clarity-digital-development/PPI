@@ -316,7 +316,10 @@ export async function POST(request: NextRequest) {
       },
     })
 
-    // Mark inventory items as no longer in storage after order is created
+    // Mark inventory items as no longer in storage after order is created.
+    // If payment later fails (3DS abandoned, card declined, etc.), the webhook
+    // for payment_intent.payment_failed / canceled restores these items —
+    // see app/api/webhooks/stripe/route.ts.
     const inventoryUpdates: Promise<unknown>[] = []
     for (const item of orderData.items) {
       if (item.customer_sign_id) {

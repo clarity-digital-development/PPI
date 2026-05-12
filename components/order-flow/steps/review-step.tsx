@@ -644,12 +644,23 @@ export function ReviewStep({
         const { paymentIntent, error: stripeError } = await stripe.handleNextAction({
           clientSecret: data.clientSecret,
         })
+
         if (stripeError) {
+          // Bank or browser threw an error (popup blocked, card declined during
+          // 3DS, etc.) — stay on review step so the customer can pick a different
+          // card and retry without re-entering the whole order
           throw new Error(stripeError.message || 'Payment verification failed. Please try again.')
         }
-        if (paymentIntent?.status !== 'succeeded' && paymentIntent?.status !== 'processing') {
-          throw new Error('Your bank did not approve the payment. Please try a different card or contact your bank.')
+
+        if (paymentIntent?.status === 'requires_action' || paymentIntent?.status === 'requires_payment_method') {
+          // Customer closed the popup, the bank timed out, or 3DS failed — but
+          // the order already exists. Send them to the order detail page where
+          // the Complete Payment / failed-payment banner takes over so they
+          // never see a dead end here.
+          router.push(`/dashboard/orders/${data.order.id}`)
+          return
         }
+        // status is succeeded or processing — fall through to the confirmation page
       }
 
       // Redirect to confirmation page
