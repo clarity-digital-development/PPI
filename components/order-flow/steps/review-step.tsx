@@ -6,6 +6,7 @@ import { CreditCard, Lock, AlertCircle, Tag, CheckCircle, Loader2, Plus } from '
 import { Button, Input } from '@/components/ui'
 import { AddCardModal } from '@/components/billing'
 import { cn } from '@/lib/utils'
+import { getStripe } from '@/lib/stripe/client'
 import type { StepProps } from '../types'
 import { PRICING } from '../types'
 
@@ -627,6 +628,28 @@ export function ReviewStep({
 
       if (!response.ok) {
         throw new Error(data.error || 'Failed to create order')
+      }
+
+      // If the bank required 3D Secure, Stripe parks the PaymentIntent in
+      // 'requires_action' until the customer completes the challenge. Trigger
+      // the bank's verification popup here so the order doesn't get stuck.
+      if (
+        data.paymentStatus === 'requires_action' &&
+        data.clientSecret
+      ) {
+        const stripe = await getStripe()
+        if (!stripe) {
+          throw new Error('Could not load payment service. Please try again.')
+        }
+        const { paymentIntent, error: stripeError } = await stripe.handleNextAction({
+          clientSecret: data.clientSecret,
+        })
+        if (stripeError) {
+          throw new Error(stripeError.message || 'Payment verification failed. Please try again.')
+        }
+        if (paymentIntent?.status !== 'succeeded' && paymentIntent?.status !== 'processing') {
+          throw new Error('Your bank did not approve the payment. Please try a different card or contact your bank.')
+        }
       }
 
       // Redirect to confirmation page
