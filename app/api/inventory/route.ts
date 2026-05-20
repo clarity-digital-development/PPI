@@ -52,12 +52,24 @@ export async function GET(request: NextRequest) {
     }
     const riders = Object.values(riderCounts)
 
-    // Transform lockboxes to expected format
-    const lockboxes = rawLockboxes.map(lockbox => ({
-      id: lockbox.id,
-      lockbox_type: lockbox.lockboxType.name.toLowerCase().replace(/\s+/g, '-'),
-      lockbox_code: lockbox.code,
-    }))
+    // Transform lockboxes — include both raw name and a 'family' tag so the UI
+    // can group "SentriLock" vs "Mechanical (Customer Owned)" vs "Mechanical
+    // (Rental)" without depending on punctuation matching
+    const lockboxes = rawLockboxes.map(lockbox => {
+      const dbName = lockbox.lockboxType.name
+      const lowered = dbName.toLowerCase()
+      const family = lowered.includes('sentri')
+        ? 'sentrilock'
+        : lowered.includes('mechanical')
+          ? 'mechanical'
+          : lowered.replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+      return {
+        id: lockbox.id,
+        lockbox_type: family, // 'sentrilock' | 'mechanical' — used by the order form
+        lockbox_type_name: dbName, // human-readable for display
+        lockbox_code: lockbox.code,
+      }
+    })
 
     // Aggregate brochure boxes into quantity
     const brochureBoxes = rawBrochureBoxes.length > 0

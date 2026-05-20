@@ -237,7 +237,7 @@ export function PropertyStep({ formData, updateFormData }: StepProps) {
         </label>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {[
-            { value: 'perpendicular', label: 'Perpendicular', description: 'Sign faces the street directly' },
+            { value: 'perpendicular', label: 'Perpendicular', description: '90 degree angle to the street' },
             { value: 'parallel', label: 'Parallel', description: 'Sign runs along the street' },
             { value: 'corner', label: 'Corner Angle', description: 'Angled toward intersection center' },
             { value: 'installer_decides', label: 'Let Installer Decide', description: 'Best placement for visibility' },

@@ -109,7 +109,8 @@ export async function PUT(
     }
 
     if (scheduled_date) {
-      updateData.requestedDate = new Date(scheduled_date)
+      // Noon UTC to keep the calendar date stable across timezones
+      updateData.requestedDate = new Date(scheduled_date + 'T12:00:00Z')
       if (!status) {
         updateData.status = 'scheduled'
       }
@@ -138,8 +139,10 @@ export async function PUT(
       },
     })
 
-    // If it's a removal request being completed, update the installation status
-    if (status === 'completed' && serviceRequest.type === 'removal') {
+    // If it's a removal request being completed AND it's tied to an existing
+    // installation, mark that installation as removed. Unlisted-address
+    // requests have no installationId, so we skip.
+    if (status === 'completed' && serviceRequest.type === 'removal' && serviceRequest.installationId) {
       await prisma.installation.update({
         where: { id: serviceRequest.installationId },
         data: {
@@ -153,7 +156,11 @@ export async function PUT(
     const notifiableStatuses = ['acknowledged', 'scheduled', 'completed']
     if (status && notifiableStatuses.includes(status)) {
       try {
-        const address = `${updated.installation.propertyAddress}, ${updated.installation.propertyCity}`
+        const address = updated.installation
+          ? `${updated.installation.propertyAddress}, ${updated.installation.propertyCity}`
+          : updated.unlistedAddress
+            ? `${updated.unlistedAddress}, ${updated.unlistedCity}`
+            : '(unlisted address)'
         await createServiceRequestNotification(updated.userId, address, status)
       } catch (notifError) {
         console.error('Error creating notification:', notifError)

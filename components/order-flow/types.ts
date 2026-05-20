@@ -3,6 +3,7 @@ import type { PropertyType } from '@/types/database'
 export interface RiderSelection {
   rider_type: string
   is_rental: boolean
+  source?: 'rental' | 'owned' | 'at_property' // tri-state; is_rental kept for back-compat
   quantity: number
   custom_value?: string
   customer_rider_id?: string
@@ -27,7 +28,11 @@ export interface OrderFormData {
   sign_orientation_other?: string
 
   // Post Selection
-  post_type: 'White Vinyl Post' | 'Black Vinyl Post' | 'Signature Pink Post' | 'Metal Frame Sign' | 'open_house' | undefined
+  post_type: 'White Vinyl Post' | 'Black Vinyl Post' | 'Signature Pink Post' | 'Metal Frame Sign' | 'Wood Panel Post' | 'open_house' | undefined
+
+  // Wood Panel Post add-ons (only used when post_type === 'Wood Panel Post')
+  wood_panel_sign_build: boolean // +$55 if Pink Posts builds the sign
+  wood_panel_materials: boolean  // +$55 if Pink Posts supplies materials (4x4 posts, screws, washers)
 
   // Sign Selection
   sign_option: 'stored' | 'at_property' | 'none'
@@ -84,7 +89,7 @@ export interface StepProps {
   inventory?: {
     signs: Array<{ id: string; description: string; size: string | null }>
     riders: Array<{ id: string; rider_type: string; quantity: number }>
-    lockboxes: Array<{ id: string; lockbox_type: string; lockbox_code: string | null }>
+    lockboxes: Array<{ id: string; lockbox_type: string; lockbox_type_name?: string; lockbox_code: string | null }>
     brochureBoxes: { quantity: number } | null
   }
   paymentMethods?: Array<{
@@ -103,7 +108,10 @@ export const PRICING = {
     'Black Vinyl Post': 55,
     'Signature Pink Post': 65,
     'Metal Frame Sign': 40,
+    'Wood Panel Post': 95,
   },
+  wood_panel_sign_build: 55,
+  wood_panel_materials: 55,
   no_post_surcharge: 40,
   sign_install: 3,
   rider_rental: 5,
@@ -113,8 +121,8 @@ export const PRICING = {
   wire_frame_sign: 5,
   solar_lighting: 5,
   second_post: 25,
-  brochure_box_purchase: 23,
-  brochure_box_install: 2,
+  brochure_box_purchase: 24,
+  brochure_box_install: 3,
   fuel_surcharge: 2.47,
   expedite_fee: 50,
   tax_rate: 0.06, // Kentucky 6% sales tax

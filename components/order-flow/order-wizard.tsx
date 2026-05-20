@@ -44,6 +44,8 @@ const initialFormData: OrderFormData = {
   sign_orientation_other: '',
   // Post
   post_type: 'Signature Pink Post',
+  wood_panel_sign_build: false,
+  wood_panel_materials: false,
   // Sign
   sign_option: 'at_property',
   stored_sign_id: undefined,
@@ -81,7 +83,7 @@ interface OrderWizardProps {
   inventory?: {
     signs: Array<{ id: string; description: string; size: string | null }>
     riders: Array<{ id: string; rider_type: string; quantity: number }>
-    lockboxes: Array<{ id: string; lockbox_type: string; lockbox_code: string | null }>
+    lockboxes: Array<{ id: string; lockbox_type: string; lockbox_type_name?: string; lockbox_code: string | null }>
     brochureBoxes: { quantity: number } | null
   }
   paymentMethods?: Array<{

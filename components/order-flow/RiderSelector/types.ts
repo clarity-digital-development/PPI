@@ -1,4 +1,4 @@
-export type RiderSource = 'rental' | 'owned'
+export type RiderSource = 'rental' | 'owned' | 'at_property'
 
 export interface RiderOption {
   id: string

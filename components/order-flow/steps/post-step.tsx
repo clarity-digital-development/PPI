@@ -141,6 +141,127 @@ export function PostStep({ formData, updateFormData }: StepProps) {
         </button>
       </div>
 
+      {/* Wood Panel Post — commercial-style with tiered build/materials options */}
+      <div>
+        <div className="flex items-center gap-2 mb-3">
+          <span className="text-xs font-semibold uppercase tracking-wider text-amber-700 bg-amber-100 px-3 py-1 rounded-full">
+            Commercial
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => updateFormData({ post_type: 'Wood Panel Post' })}
+          className={cn(
+            'w-full flex items-center gap-4 p-4 rounded-xl border-2 transition-all text-left',
+            formData.post_type === 'Wood Panel Post'
+              ? 'border-pink-500 ring-2 ring-pink-200 bg-pink-50'
+              : 'border-gray-200 hover:border-gray-300 bg-gray-50'
+          )}
+        >
+          <div className="w-16 h-16 rounded-lg overflow-hidden flex-shrink-0 relative bg-gray-100">
+            <Image
+              src="/images/posts/wood-panel-post.jpg"
+              alt="Wood Panel Post"
+              fill
+              className="object-cover"
+            />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="font-semibold text-gray-900">Wood Panel Post</h3>
+            <p className="text-sm text-gray-500 mt-0.5">
+              4ft x 6ft commercial panel post with two beams.
+            </p>
+          </div>
+          <div className="text-right flex-shrink-0">
+            <span className="text-xl font-bold text-gray-700">${PRICING.posts['Wood Panel Post']}</span>
+            <p className="text-xs text-gray-500">install & pickup</p>
+          </div>
+          {formData.post_type === 'Wood Panel Post' && (
+            <div className="w-6 h-6 bg-pink-500 rounded-full flex items-center justify-center flex-shrink-0">
+              <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+          )}
+        </button>
+
+        {/* Tiered build options — only shown when Wood Panel is selected */}
+        {formData.post_type === 'Wood Panel Post' && (
+          <div className="ml-4 mt-3 space-y-2 p-4 bg-amber-50/50 border border-amber-200 rounded-xl">
+            <div>
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={formData.wood_panel_sign_build}
+                  onChange={(e) => updateFormData({
+                    wood_panel_sign_build: e.target.checked,
+                    // If they don't need a sign built, they don't need materials either
+                    ...(e.target.checked ? {} : { wood_panel_materials: false }),
+                  })}
+                  className="mt-1 w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
+                />
+                <div className="flex-1">
+                  <div className="flex items-center justify-between">
+                    <p className="font-medium text-gray-900">I need my sign built</p>
+                    <span className="text-sm font-semibold text-pink-600">+${PRICING.wood_panel_sign_build}</span>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-0.5">We&apos;ll build the sign panel for you.</p>
+                </div>
+              </label>
+            </div>
+
+            {/* Materials option — only when sign-build is checked */}
+            {formData.wood_panel_sign_build && (
+              <div className="ml-7 pl-3 border-l-2 border-amber-300 space-y-2">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="wood_panel_materials"
+                    checked={!formData.wood_panel_materials}
+                    onChange={() => updateFormData({ wood_panel_materials: false })}
+                    className="mt-1 w-4 h-4 border-gray-300 text-pink-600 focus:ring-pink-500"
+                  />
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between">
+                      <p className="font-medium text-gray-900">I have all needed materials</p>
+                      <span className="text-sm font-semibold text-gray-600">$0</span>
+                    </div>
+                  </div>
+                </label>
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="wood_panel_materials"
+                    checked={formData.wood_panel_materials}
+                    onChange={() => updateFormData({ wood_panel_materials: true })}
+                    className="mt-1 w-4 h-4 border-gray-300 text-pink-600 focus:ring-pink-500"
+                  />
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between">
+                      <p className="font-medium text-gray-900">I need materials</p>
+                      <span className="text-sm font-semibold text-pink-600">+${PRICING.wood_panel_materials}</span>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-0.5">Includes 4x4 posts, screws, and washers.</p>
+                  </div>
+                </label>
+              </div>
+            )}
+
+            {/* Live total */}
+            <div className="flex items-center justify-between pt-2 mt-2 border-t border-amber-300">
+              <p className="text-sm font-semibold text-gray-900">Wood panel total</p>
+              <p className="text-sm font-bold text-pink-700">
+                ${(
+                  PRICING.posts['Wood Panel Post'] +
+                  (formData.wood_panel_sign_build ? PRICING.wood_panel_sign_build : 0) +
+                  (formData.wood_panel_sign_build && formData.wood_panel_materials ? PRICING.wood_panel_materials : 0)
+                ).toFixed(2)}
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Open House / Wire Frame Only */}
       <div>
         <button

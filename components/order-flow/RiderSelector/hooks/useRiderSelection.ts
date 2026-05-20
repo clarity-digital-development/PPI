@@ -165,7 +165,10 @@ export function useRiderSelection({
   }, [selectedRiders])
 
   const isRiderAvailable = useCallback((rider: RiderOption) => {
-    if (source === 'rental') return true
+    // 'rental' = we provide it, always available
+    // 'at_property' = customer brings it to the property, always available
+    // 'owned' = must be in the customer's inventory
+    if (source === 'rental' || source === 'at_property') return true
     if (customerInventory.length === 0) return false
     return customerInventory.some(inv => inv.riderType === rider.slug && inv.quantity > 0)
   }, [source, customerInventory])

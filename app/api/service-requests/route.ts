@@ -23,8 +23,11 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // For unlisted addresses, we need to find or create an installation placeholder
-    // First, check if user has any existing installations at this address
+    // Try to attach this request to an existing installation at the same address.
+    // If we can't find one and the customer supplied an address, we create a
+    // standalone (unlisted-address) request — admin sees the address fields
+    // directly on the request. This is how same-day pickups from places we've
+    // never been to get scheduled.
     let installation = null
     if (address) {
       installation = await prisma.installation.findFirst({
@@ -36,39 +39,38 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // If no installation found and we have address info, check if user has ANY installation
-    // and include address info in the notes
-    if (!installation) {
-      // Get user's first installation to link to (if any)
-      installation = await prisma.installation.findFirst({
-        where: { userId: user.id },
-        orderBy: { createdAt: 'desc' },
-      })
-    }
-
-    if (!installation) {
-      // User has no installations at all - they need to place an order first
-      // or contact support directly
+    if (!installation && !address) {
+      // No address provided AND no installation — we'd have nowhere to send anyone.
       return NextResponse.json(
-        { error: 'No installations found. Please contact support for assistance with unlisted addresses.' },
+        { error: 'Please provide an address for this trip.' },
         { status: 400 }
       )
     }
 
-    // Create the service request
-    // Include address info in description/notes if it's an unlisted address
-    const fullDescription = address
-      ? `${description}\n\n[Unlisted Address: ${address.street}, ${address.city}, ${address.state} ${address.zip}]`
+    // Build a readable description including the address for admin's reference
+    const addressLine = address
+      ? `${address.street}, ${address.city}, ${address.state} ${address.zip}`
+      : null
+    const fullDescription = addressLine && !installation
+      ? `${description}\n\n[Unlisted Address: ${addressLine}]`
       : description
 
     const serviceRequest = await prisma.serviceRequest.create({
       data: {
-        installationId: installation.id,
+        installationId: installation?.id ?? null,
         userId: user.id,
         type: type as any,
         description: fullDescription,
-        requestedDate: requested_date ? new Date(requested_date) : null,
+        // Store at noon UTC so admin sees the same calendar date the customer picked,
+        // regardless of timezone (matches the order-creation fix in /api/orders)
+        requestedDate: requested_date ? new Date(requested_date + 'T12:00:00Z') : null,
         notes: notes || null,
+        // Persist the unlisted address on the request itself so admin can see
+        // and act on it without parsing it out of the description string
+        unlistedAddress: !installation && address ? address.street : null,
+        unlistedCity:    !installation && address ? address.city : null,
+        unlistedState:   !installation && address ? address.state : null,
+        unlistedZip:     !installation && address ? address.zip : null,
       },
       include: {
         installation: {
@@ -179,6 +181,12 @@ export async function GET(request: NextRequest) {
               id: sr.installation.id,
               address: `${sr.installation.propertyAddress}, ${sr.installation.propertyCity}, ${sr.installation.propertyState} ${sr.installation.propertyZip}`,
               status: sr.installation.status,
+            }
+          : sr.unlistedAddress
+          ? {
+              id: null as unknown as string,
+              address: `${sr.unlistedAddress}, ${sr.unlistedCity}, ${sr.unlistedState} ${sr.unlistedZip} (unlisted)`,
+              status: 'unlisted',
             }
           : null,
       })),

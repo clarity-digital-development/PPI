@@ -13,6 +13,7 @@ function toRiderSelection(selected: SelectedRider): RiderSelection {
   return {
     rider_type: rider?.slug || selected.riderId,
     is_rental: selected.source === 'rental',
+    source: selected.source,
     quantity: 1,
     custom_value: selected.customValue?.toString(),
   }
@@ -28,10 +29,14 @@ function toSelectedRider(selection: RiderSelection): SelectedRider | null {
 
   if (!rider) return null
 
+  // Prefer the explicit source field; fall back to is_rental for older saved data
+  const source = selection.source ?? (selection.is_rental ? 'rental' : 'owned')
+  const price = source === 'rental' ? PRICING.rider_rental : PRICING.rider_install
+
   return {
     riderId: rider.id,
-    source: selection.is_rental ? 'rental' : 'owned',
-    price: selection.is_rental ? PRICING.rider_rental : PRICING.rider_install,
+    source,
+    price,
     customValue: selection.custom_value ? parseFloat(selection.custom_value) || selection.custom_value : undefined,
   }
 }

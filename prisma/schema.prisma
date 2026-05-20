@@ -448,7 +448,7 @@ enum InstallationStatus {
 
 model ServiceRequest {
   id              String              @id @default(cuid())
-  installationId  String              @map("installation_id")
+  installationId  String?             @map("installation_id")
   userId          String              @map("user_id")
   type            ServiceRequestType
   status          ServiceRequestStatus @default(pending)
@@ -457,10 +457,16 @@ model ServiceRequest {
   notes           String?
   adminNotes      String?             @map("admin_notes")
   completedAt     DateTime?           @map("completed_at")
+  // Unlisted-address fields — populated when a service trip is requested for
+  // an address Pink Posts hasn't installed at (no Installation row exists).
+  unlistedAddress String?             @map("unlisted_address")
+  unlistedCity    String?             @map("unlisted_city")
+  unlistedState   String?             @map("unlisted_state")
+  unlistedZip     String?             @map("unlisted_zip")
   createdAt       DateTime            @default(now()) @map("created_at")
   updatedAt       DateTime            @updatedAt @map("updated_at")
 
-  installation    Installation        @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  installation    Installation?       @relation(fields: [installationId], references: [id], onDelete: Cascade)
   user            User                @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("service_requests")

@@ -48,7 +48,12 @@ interface ServiceRequest {
     propertyState: string
     propertyZip: string
     status: string
-  }
+  } | null
+  // For unlisted-address service requests (no existing installation)
+  unlistedAddress?: string | null
+  unlistedCity?: string | null
+  unlistedState?: string | null
+  unlistedZip?: string | null
 }
 
 interface Counts {
@@ -158,8 +163,15 @@ export default function ServiceRequestsPage() {
     }
   }
 
-  const getFullAddress = (installation: ServiceRequest['installation']) => {
-    return `${installation.propertyAddress}, ${installation.propertyCity}, ${installation.propertyState} ${installation.propertyZip}`
+  const getFullAddress = (request: ServiceRequest) => {
+    if (request.installation) {
+      const i = request.installation
+      return `${i.propertyAddress}, ${i.propertyCity}, ${i.propertyState} ${i.propertyZip}`
+    }
+    if (request.unlistedAddress) {
+      return `${request.unlistedAddress}, ${request.unlistedCity}, ${request.unlistedState} ${request.unlistedZip} (unlisted — trip fee applies)`
+    }
+    return '(no address)'
   }
 
   return (
@@ -291,7 +303,7 @@ export default function ServiceRequestsPage() {
 
                     <div className="flex items-start gap-2 text-sm text-gray-600 mb-2">
                       <MapPin className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                      <span>{getFullAddress(request.installation)}</span>
+                      <span>{getFullAddress(request)}</span>
                     </div>
 
                     <div className="flex items-center gap-2 text-sm text-gray-600">
@@ -367,7 +379,7 @@ export default function ServiceRequestsPage() {
             {/* Installation Address */}
             <div className="p-4 bg-gray-50 rounded-lg">
               <h4 className="font-medium text-gray-900 mb-2">Installation</h4>
-              <p className="text-sm text-gray-700">{getFullAddress(selectedRequest.installation)}</p>
+              <p className="text-sm text-gray-700">{getFullAddress(selectedRequest)}</p>
             </div>
 
             {/* Request Details */}

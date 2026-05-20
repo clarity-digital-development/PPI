@@ -43,6 +43,19 @@ export function ReviewStep({
       description: `${formData.post_type} (install & pickup)`,
       price: PRICING.posts[formData.post_type],
     })
+    // Wood Panel Post add-ons (only when Wood Panel is selected)
+    if (formData.post_type === 'Wood Panel Post' && formData.wood_panel_sign_build) {
+      orderItems.push({
+        description: 'Wood Panel: sign build',
+        price: PRICING.wood_panel_sign_build,
+      })
+      if (formData.wood_panel_materials) {
+        orderItems.push({
+          description: 'Wood Panel: materials (4x4 posts, screws, washers)',
+          price: PRICING.wood_panel_materials,
+        })
+      }
+    }
   }
   // open_house: no charge for the post itself — wire frames charged separately
 
@@ -65,11 +78,14 @@ export function ReviewStep({
 
   // Riders
   formData.riders.forEach((rider) => {
-    const price = rider.is_rental ? PRICING.rider_rental : PRICING.rider_install
+    const source = rider.source ?? (rider.is_rental ? 'rental' : 'owned')
+    const price = source === 'rental' ? PRICING.rider_rental : PRICING.rider_install
     const name = rider.custom_value ? `${rider.custom_value} Acres` : rider.rider_type.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
-    const description = rider.is_rental
+    const description = source === 'rental'
       ? `Rider Rental: ${name}`
-      : `Rider Install: ${name} (from storage)`
+      : source === 'at_property'
+        ? `Rider Install: ${name} (at property)`
+        : `Rider Install: ${name} (from storage)`
     orderItems.push({
       description,
       price,
@@ -178,6 +194,13 @@ export function ReviewStep({
 
     if (formData.post_type && formData.post_type !== 'open_house') {
       items.push({ item_type: 'post', total_price: PRICING.posts[formData.post_type] })
+      // Wood panel add-ons count as taxable items too
+      if (formData.post_type === 'Wood Panel Post' && formData.wood_panel_sign_build) {
+        items.push({ item_type: 'post', total_price: PRICING.wood_panel_sign_build })
+        if (formData.wood_panel_materials) {
+          items.push({ item_type: 'post', total_price: PRICING.wood_panel_materials })
+        }
+      }
     }
     if (formData.sign_option === 'stored' || formData.sign_option === 'at_property') {
       items.push({ item_type: 'sign', total_price: PRICING.sign_install })
@@ -401,6 +424,28 @@ export function ReviewStep({
           unit_price: PRICING.posts[formData.post_type],
           total_price: PRICING.posts[formData.post_type],
         })
+
+        // Wood Panel Post add-ons
+        if (formData.post_type === 'Wood Panel Post' && formData.wood_panel_sign_build) {
+          items.push({
+            item_type: 'post',
+            item_category: 'new',
+            description: 'Wood Panel: sign build',
+            quantity: 1,
+            unit_price: PRICING.wood_panel_sign_build,
+            total_price: PRICING.wood_panel_sign_build,
+          })
+          if (formData.wood_panel_materials) {
+            items.push({
+              item_type: 'post',
+              item_category: 'new',
+              description: 'Wood Panel: materials (4x4 posts, screws, washers)',
+              quantity: 1,
+              unit_price: PRICING.wood_panel_materials,
+              total_price: PRICING.wood_panel_materials,
+            })
+          }
+        }
       }
 
       // Sign
@@ -428,17 +473,25 @@ export function ReviewStep({
 
       // Riders
       formData.riders.forEach((rider) => {
-        const price = rider.is_rental ? PRICING.rider_rental : PRICING.rider_install
+        const source = rider.source ?? (rider.is_rental ? 'rental' : 'owned')
+        const price = source === 'rental' ? PRICING.rider_rental : PRICING.rider_install
         const name = rider.custom_value
           ? `${rider.custom_value} Acres`
           : rider.rider_type.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
-        const description = rider.is_rental
+        const description = source === 'rental'
           ? `Rider Rental: ${name}`
-          : `Rider Install: ${name} (from storage)`
+          : source === 'at_property'
+            ? `Rider Install: ${name} (at property)`
+            : `Rider Install: ${name} (from storage)`
+        const itemCategory: 'rental' | 'owned' | 'storage' = source === 'rental'
+          ? 'rental'
+          : source === 'at_property'
+            ? 'owned'
+            : 'storage'
 
         items.push({
           item_type: 'rider',
-          item_category: rider.is_rental ? 'rental' : 'storage',
+          item_category: itemCategory,
           description,
           quantity: 1,
           unit_price: price,
@@ -538,11 +591,13 @@ export function ReviewStep({
         }
 
         for (const rider of formData.second_post_riders) {
-          const price = rider.is_rental ? PRICING.rider_rental : PRICING.rider_install
+          const source = rider.source ?? (rider.is_rental ? 'rental' : 'owned')
+          const price = source === 'rental' ? PRICING.rider_rental : PRICING.rider_install
+          const suffix = source === 'rental' ? '' : source === 'at_property' ? ' (at property)' : ' (from storage)'
           items.push({
             item_type: 'rider',
-            item_category: rider.is_rental ? 'rental' : 'owned',
-            description: `Second Post Rider: ${rider.rider_type}${rider.custom_value ? ` (${rider.custom_value})` : ''}`,
+            item_category: source === 'rental' ? 'rental' : 'owned',
+            description: `Second Post Rider: ${rider.rider_type}${rider.custom_value ? ` (${rider.custom_value})` : ''}${suffix}`,
             quantity: 1,
             unit_price: price,
             total_price: price,

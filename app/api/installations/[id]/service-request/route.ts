@@ -57,7 +57,7 @@ export async function POST(
         userId: user.id,
         type,
         description,
-        requestedDate: requested_date ? new Date(requested_date) : null,
+        requestedDate: requested_date ? new Date(requested_date + 'T12:00:00Z') : null,
         notes,
       },
     })
@@ -93,7 +93,7 @@ export async function POST(
         where: { id },
         data: {
           status: 'removal_scheduled',
-          removalDate: new Date(requested_date),
+          removalDate: new Date(requested_date + 'T12:00:00Z'),
         },
       })
     }

@@ -44,7 +44,7 @@ export async function POST(
       where: { id },
       data: {
         status: 'removal_scheduled',
-        removalDate: new Date(removal_date),
+        removalDate: new Date(removal_date + 'T12:00:00Z'),
       },
     })
 

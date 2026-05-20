@@ -1,6 +1,6 @@
 'use client'
 
-import { Package, Tag } from 'lucide-react'
+import { Package, Tag, MapPin } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { RiderSource } from '../types'
 import { RIDER_PRICING } from '../constants'
@@ -38,9 +38,25 @@ export function RiderSourceToggle({
       )}
       <button
         type="button"
+        onClick={() => onSourceChange('at_property')}
+        className={cn(
+          'flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-md text-sm font-medium transition-all',
+          source === 'at_property'
+            ? 'bg-white text-gray-900 shadow-sm'
+            : 'text-gray-600 hover:text-gray-900'
+        )}
+      >
+        <MapPin className="w-4 h-4" />
+        <div className="text-left">
+          <div>At Property</div>
+          <div className="text-xs text-gray-500">${RIDER_PRICING.install} install</div>
+        </div>
+      </button>
+      <button
+        type="button"
         onClick={() => onSourceChange('rental')}
         className={cn(
-          'flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-md text-sm font-medium transition-all',
+          'flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-md text-sm font-medium transition-all',
           source === 'rental'
             ? 'bg-white text-gray-900 shadow-sm'
             : 'text-gray-600 hover:text-gray-900'
