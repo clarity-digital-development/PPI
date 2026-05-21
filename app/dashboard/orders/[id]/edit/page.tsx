@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { Header } from '@/components/dashboard'
@@ -84,13 +84,18 @@ function extractRiderSlug(description: string): string {
   return ''
 }
 
-function selectedRiderToItem(selected: SelectedRider): {
+function selectedRiderToItem(
+  selected: SelectedRider,
+  origRiderItems: OrderItem[] = [],
+  customerRiderInventory: Array<{ id: string; riderType: string }> = [],
+): {
   item_type: 'rider'
   item_category: string
   description: string
   quantity: number
   unit_price: number
   total_price: number
+  customer_rider_id?: string
   custom_value?: string
 } {
   const rider = RIDERS.find(r => r.id === selected.riderId)
@@ -104,6 +109,19 @@ function selectedRiderToItem(selected: SelectedRider): {
     ? `Rider Rental: ${name}`
     : `Rider Install: ${name} (from storage)`
 
+  // Preserve the customer_rider_id from the matching original line item, or
+  // look one up from the customer's current inventory by slug, so inventory
+  // tracking survives an edit
+  let customer_rider_id: string | undefined
+  if (!isRental) {
+    const matchingOrig = origRiderItems.find(i => extractRiderSlug(i.description) === slug)
+    customer_rider_id = matchingOrig?.customerRiderId || undefined
+    if (!customer_rider_id) {
+      const inv = customerRiderInventory.find(inv => inv.riderType === slug)
+      customer_rider_id = inv?.id
+    }
+  }
+
   return {
     item_type: 'rider',
     item_category: isRental ? 'rental' : 'storage',
@@ -111,6 +129,7 @@ function selectedRiderToItem(selected: SelectedRider): {
     quantity: 1,
     unit_price: price,
     total_price: price,
+    customer_rider_id,
     custom_value: selected.customValue?.toString(),
   }
 }
@@ -240,6 +259,17 @@ export default function EditOrderPage() {
     }
   }
 
+  // Customer rider inventory derived from /api/inventory (needs to be in scope
+  // before calculateNewItems uses it for inventory linking on edit)
+  const customerRiderInventory = useMemo(
+    () => inventory?.riders?.map(rider => ({
+      id: rider.id,
+      riderType: rider.rider_type,
+      quantity: rider.quantity,
+    })) || [],
+    [inventory?.riders]
+  )
+
   // Calculate the price for the current edited selections
   const calculateNewItems = useCallback(() => {
     const items: Array<{
@@ -256,12 +286,21 @@ export default function EditOrderPage() {
       custom_value?: string
     }> = []
 
+    // Preserve inventory links from the original order so editing doesn't
+    // strip the customer_xxx_id off line items (which is what caused the
+    // "inventory not auto-removing" bug for edited orders)
+    const origSignItem = order?.orderItems.find(i => i.itemType === 'sign')
+    const origLockboxItem = order?.orderItems.find(i => i.itemType === 'lockbox')
+    const origBrochureItem = order?.orderItems.find(i => i.itemType === 'brochure_box')
+    const origRiderItems = order?.orderItems.filter(i => i.itemType === 'rider') || []
+
     // Sign
     if (signOption === 'stored') {
       items.push({
         item_type: 'sign',
         item_category: 'storage',
         description: 'Sign Install (from storage)',
+        customer_sign_id: origSignItem?.customerSignId || undefined,
         quantity: 1,
         unit_price: PRICING.sign_install,
         total_price: PRICING.sign_install,
@@ -279,15 +318,16 @@ export default function EditOrderPage() {
 
     // Riders
     selectedRiders.forEach((selected) => {
-      items.push(selectedRiderToItem(selected))
+      items.push(selectedRiderToItem(selected, origRiderItems, customerRiderInventory))
     })
 
-    // Lockbox
+    // Lockbox — preserve the customer_lockbox_id if the option matches
     if (lockboxOption === 'sentrilock') {
       items.push({
         item_type: 'lockbox',
         item_category: 'owned',
         description: 'SentriLock Install',
+        customer_lockbox_id: origLockboxItem?.customerLockboxId || undefined,
         quantity: 1,
         unit_price: PRICING.lockbox_install,
         total_price: PRICING.lockbox_install,
@@ -297,6 +337,7 @@ export default function EditOrderPage() {
         item_type: 'lockbox',
         item_category: 'owned',
         description: 'Mechanical Lockbox Install',
+        customer_lockbox_id: origLockboxItem?.customerLockboxId || undefined,
         quantity: 1,
         unit_price: PRICING.lockbox_install,
         total_price: PRICING.lockbox_install,
@@ -312,7 +353,8 @@ export default function EditOrderPage() {
       })
     }
 
-    // Brochure box
+    // Brochure box — preserve the customer_brochure_box_id when the customer
+    // is using their own (purchase always creates a fresh one)
     if (brochureOption === 'purchase') {
       items.push({
         item_type: 'brochure_box',
@@ -327,6 +369,7 @@ export default function EditOrderPage() {
         item_type: 'brochure_box',
         item_category: 'install',
         description: 'Brochure Box Install (your own)',
+        customer_brochure_box_id: origBrochureItem?.customerBrochureBoxId || undefined,
         quantity: 1,
         unit_price: PRICING.brochure_box_install,
         total_price: PRICING.brochure_box_install,
@@ -334,7 +377,8 @@ export default function EditOrderPage() {
     }
 
     return items
-  }, [signOption, selectedRiders, lockboxOption, brochureOption])
+  // origRiderItems intentionally unused here — riders preserve their IDs via riderToSelectedRider
+  }, [signOption, selectedRiders, lockboxOption, brochureOption, order])
 
   const newItems = calculateNewItems()
   const postItem = order?.orderItems.find(i => i.itemType === 'post')
@@ -395,13 +439,6 @@ export default function EditOrderPage() {
       setSaving(false)
     }
   }
-
-  // Customer inventory for rider selector
-  const customerRiderInventory = inventory?.riders?.map(rider => ({
-    id: rider.id,
-    riderType: rider.rider_type,
-    quantity: rider.quantity,
-  })) || []
 
   if (loading) {
     return (

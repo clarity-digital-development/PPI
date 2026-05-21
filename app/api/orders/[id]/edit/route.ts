@@ -10,10 +10,11 @@ const editOrderItemSchema = z.object({
   quantity: z.number().min(1).default(1),
   unit_price: z.number().min(0),
   total_price: z.number().min(0),
-  customer_sign_id: z.string().uuid().optional(),
-  customer_rider_id: z.string().uuid().optional(),
-  customer_lockbox_id: z.string().uuid().optional(),
-  customer_brochure_box_id: z.string().uuid().optional(),
+  // IDs are Prisma CUIDs (not UUIDs) — accept any non-empty string
+  customer_sign_id: z.string().optional(),
+  customer_rider_id: z.string().optional(),
+  customer_lockbox_id: z.string().optional(),
+  customer_brochure_box_id: z.string().optional(),
   custom_value: z.string().optional(),
 })
 
@@ -117,7 +118,23 @@ export async function PATCH(
     const tax = Math.round(taxableAmount * FALLBACK_TAX_RATE * 100) / 100
     const total = discountedSubtotal + fuelSurcharge + expediteFee + noPostSurcharge + tax
 
-    // Update order in a transaction
+    // Collect inventory IDs from the OLD line items (about to be deleted) so we
+    // can restore those records back to inStorage:true — unless they're also
+    // referenced in the NEW items (in which case they should stay out).
+    const oldNonPostItems = existingOrder.orderItems.filter(i => i.itemType !== 'post')
+    const newSignIds = new Set(editData.items.map(i => i.customer_sign_id).filter(Boolean) as string[])
+    const newRiderIds = new Set(editData.items.map(i => i.customer_rider_id).filter(Boolean) as string[])
+    const newLockboxIds = new Set(editData.items.map(i => i.customer_lockbox_id).filter(Boolean) as string[])
+    const newBrochureIds = new Set(editData.items.map(i => i.customer_brochure_box_id).filter(Boolean) as string[])
+
+    const idsToRestore = {
+      signs: oldNonPostItems.map(i => i.customerSignId).filter((id): id is string => !!id && !newSignIds.has(id)),
+      riders: oldNonPostItems.map(i => i.customerRiderId).filter((id): id is string => !!id && !newRiderIds.has(id)),
+      lockboxes: oldNonPostItems.map(i => i.customerLockboxId).filter((id): id is string => !!id && !newLockboxIds.has(id)),
+      brochureBoxes: oldNonPostItems.map(i => i.customerBrochureBoxId).filter((id): id is string => !!id && !newBrochureIds.has(id)),
+    }
+
+    // Update order in a transaction (atomic: items + inventory both update or neither)
     const updatedOrder = await prisma.$transaction(async (tx) => {
       // Delete non-post items (we keep the post item untouched)
       await tx.orderItem.deleteMany({
@@ -147,6 +164,28 @@ export async function PATCH(
         })
       }
 
+      // Restore inventory items that were on the OLD order but not the NEW order
+      // (back to inStorage:true so they can be selected again)
+      if (idsToRestore.signs.length)
+        await tx.customerSign.updateMany({ where: { id: { in: idsToRestore.signs } }, data: { inStorage: true } })
+      if (idsToRestore.riders.length)
+        await tx.customerRider.updateMany({ where: { id: { in: idsToRestore.riders } }, data: { inStorage: true } })
+      if (idsToRestore.lockboxes.length)
+        await tx.customerLockbox.updateMany({ where: { id: { in: idsToRestore.lockboxes } }, data: { inStorage: true } })
+      if (idsToRestore.brochureBoxes.length)
+        await tx.customerBrochureBox.updateMany({ where: { id: { in: idsToRestore.brochureBoxes } }, data: { inStorage: true } })
+
+      // Mark inventory items referenced by the NEW order as inStorage:false
+      // (idempotent — already-out items just stay out)
+      if (newSignIds.size)
+        await tx.customerSign.updateMany({ where: { id: { in: Array.from(newSignIds) } }, data: { inStorage: false } })
+      if (newRiderIds.size)
+        await tx.customerRider.updateMany({ where: { id: { in: Array.from(newRiderIds) } }, data: { inStorage: false } })
+      if (newLockboxIds.size)
+        await tx.customerLockbox.updateMany({ where: { id: { in: Array.from(newLockboxIds) } }, data: { inStorage: false } })
+      if (newBrochureIds.size)
+        await tx.customerBrochureBox.updateMany({ where: { id: { in: Array.from(newBrochureIds) } }, data: { inStorage: false } })
+
       // Update order totals and notes
       const order = await tx.order.update({
         where: { id },
@@ -167,6 +206,10 @@ export async function PATCH(
 
       return order
     })
+
+    console.log(
+      `Edited order ${updatedOrder.orderNumber}: restored ${idsToRestore.signs.length} signs, ${idsToRestore.riders.length} riders, ${idsToRestore.lockboxes.length} lockboxes, ${idsToRestore.brochureBoxes.length} brochures; locked ${newSignIds.size} signs, ${newRiderIds.size} riders, ${newLockboxIds.size} lockboxes, ${newBrochureIds.size} brochures`
+    )
 
     return NextResponse.json({ order: updatedOrder })
   } catch (error) {
