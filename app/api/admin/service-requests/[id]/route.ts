@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { createServiceRequestNotification } from '@/lib/notifications'
+import { sendServiceRequestCompletedEmail } from '@/lib/email'
 
 export async function GET(
   request: NextRequest,
@@ -162,6 +163,28 @@ export async function PUT(
             ? `${updated.unlistedAddress}, ${updated.unlistedCity}`
             : '(unlisted address)'
         await createServiceRequestNotification(updated.userId, address, status)
+
+        // For completed requests, also send the customer an email — most
+        // important for removals so the agent knows their stuff was picked up
+        if (status === 'completed') {
+          const customer = await prisma.user.findUnique({
+            where: { id: updated.userId },
+            select: { email: true, fullName: true, name: true },
+          })
+          if (customer?.email) {
+            const fullAddress = updated.installation
+              ? `${updated.installation.propertyAddress}, ${updated.installation.propertyCity}, ${updated.installation.propertyState} ${updated.installation.propertyZip}`
+              : updated.unlistedAddress
+                ? `${updated.unlistedAddress}, ${updated.unlistedCity}, ${updated.unlistedState} ${updated.unlistedZip}`
+                : address
+            await sendServiceRequestCompletedEmail({
+              customerEmail: customer.email,
+              customerName: customer.fullName || customer.name || 'there',
+              requestType: updated.type,
+              address: fullAddress,
+            }).catch(err => console.error('completion email failed:', err))
+          }
+        }
       } catch (notifError) {
         console.error('Error creating notification:', notifError)
       }

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { createNotification } from '@/lib/notifications'
+import { sendAdminServiceRequestNotification } from '@/lib/email'
 
 // POST - Create a service request for an unlisted address
 // This is used when the system doesn't show an existing installation
@@ -90,6 +91,48 @@ export async function POST(request: NextRequest) {
       message: `Your ${type} request has been submitted and will be reviewed.`,
       link: '/dashboard/service-requests',
     })
+
+    // Send admin email notification
+    try {
+      const userInfo = await prisma.user.findUnique({
+        where: { id: user.id },
+        select: { fullName: true, name: true, email: true, phone: true },
+      })
+      const customerName = userInfo?.fullName || userInfo?.name || userInfo?.email || 'Unknown'
+      const emailAddress = installation
+        ? `${installation.propertyAddress}, ${installation.propertyCity}, ${installation.propertyState} ${installation.propertyZip}`
+        : addressLine
+          ? `${addressLine} (unlisted)`
+          : '(no address)'
+
+      // For removal at an existing installation, include what was originally installed
+      let installedItems: string | undefined
+      if (type === 'removal' && installation) {
+        const originalOrder = await prisma.order.findFirst({
+          where: { id: installation.orderId },
+          include: { orderItems: { select: { description: true, quantity: true } } },
+        })
+        if (originalOrder?.orderItems?.length) {
+          installedItems = originalOrder.orderItems
+            .map(i => `  - ${i.description}${i.quantity > 1 ? ` (×${i.quantity})` : ''}`)
+            .join('\n')
+        }
+      }
+
+      await sendAdminServiceRequestNotification({
+        customerName,
+        customerEmail: userInfo?.email,
+        customerPhone: userInfo?.phone ?? undefined,
+        requestType: type,
+        description: description || undefined,
+        requestedDate: requested_date || undefined,
+        notes: notes || undefined,
+        installationAddress: emailAddress,
+        installedItems,
+      })
+    } catch (emailError) {
+      console.error('Failed to send admin service request notification:', emailError)
+    }
 
     return NextResponse.json({
       serviceRequest: {

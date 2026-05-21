@@ -48,6 +48,16 @@ export async function GET(request: NextRequest) {
               propertyState: true,
               propertyZip: true,
               status: true,
+              // Pull the originating order so removal requests can show what's
+              // being picked up
+              order: {
+                select: {
+                  orderNumber: true,
+                  orderItems: {
+                    select: { description: true, quantity: true, itemType: true },
+                  },
+                },
+              },
             },
           },
         },

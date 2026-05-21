@@ -114,8 +114,8 @@ export function SchedulingStep({ formData, updateFormData }: StepProps) {
             <h3 className="font-semibold text-gray-900">Next available day</h3>
             <p className="text-sm text-gray-600">
               {isAfter4pm
-                ? 'Orders placed after 4pm will be installed the following business day.'
-                : 'Orders placed before 4pm are installed next business day!'
+                ? `Since it's after 4pm EST, the earliest install date is ${nextAvailable.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}. (We're closed Sundays.)`
+                : `Orders placed before 4pm EST are installed the next business day (${nextAvailable.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}).`
               }
             </p>
             <p className="text-sm text-green-600 font-medium mt-1">

@@ -87,6 +87,11 @@ export function SignStep({ formData, updateFormData, inventory }: StepProps) {
                 return Object.values(grouped).map(g => ({ value: g.id, label: g.label }))
               })()}
             />
+            {!formData.stored_sign_id && (
+              <p className="mt-2 text-xs text-amber-700">
+                Please pick which sign you want installed before continuing.
+              </p>
+            )}
           </div>
         )}
 

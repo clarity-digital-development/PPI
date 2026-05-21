@@ -20,7 +20,7 @@ interface CustomerData {
     riders: Array<{ id: string; rider_id: string; rider_type: string; quantity: number }>
     lockboxes: Array<{ id: string; lockbox_type_id: string; lockbox_type: string; lockbox_code: string | null }>
     brochureBoxes: { id: string; quantity: number } | null
-    otherItems: Array<{ id: string; description: string }>
+    otherItems: Array<{ id: string; description: string; quantity?: number }>
     deployed?: {
       signs: Array<{ id: string; description: string }>
       riders: Array<{ id: string; rider_type: string }>
@@ -498,10 +498,16 @@ export default function CustomerDetailPage() {
               <div className="space-y-2">
                 {data.inventory.otherItems.map((item) => (
                   <div key={item.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                    <p className="font-medium text-gray-900">{item.description}</p>
+                    <p className="font-medium text-gray-900">
+                      {item.description}
+                      {item.quantity && item.quantity > 1 && (
+                        <span className="ml-2 text-sm font-normal text-gray-500">×{item.quantity}</span>
+                      )}
+                    </p>
                     <button
                       onClick={() => handleDeleteInventory('other', item.id)}
                       className="text-gray-400 hover:text-red-500"
+                      title={item.quantity && item.quantity > 1 ? 'Removes one of these items' : 'Delete'}
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -674,6 +680,21 @@ export default function CustomerDetailPage() {
         <div className="space-y-4">
           {addType === 'sign' && (
             <>
+              <div>
+                <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">Quick presets</p>
+                <div className="flex flex-wrap gap-2">
+                  {['For Sale Sign', 'Coming Soon', 'SOLD', 'Pending', 'Open House', 'Under Contract'].map(preset => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setFormData({ ...formData, description: preset })}
+                      className="px-3 py-1.5 rounded-full border border-pink-200 bg-pink-50 text-pink-700 text-sm font-medium hover:bg-pink-100 transition-colors"
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <Input
                 label="Description *"
                 value={formData.description}

@@ -307,18 +307,26 @@ export async function sendPasswordResetEmail(
 
 interface AdminServiceRequestNotificationProps {
   customerName: string
+  customerEmail?: string
+  customerPhone?: string
   requestType: string
   description?: string
   requestedDate?: string
+  notes?: string
   installationAddress: string
+  installedItems?: string // For removal requests: what was originally installed at the address
 }
 
 export async function sendAdminServiceRequestNotification({
   customerName,
+  customerEmail,
+  customerPhone,
   requestType,
   description,
   requestedDate,
+  notes,
   installationAddress,
+  installedItems,
 }: AdminServiceRequestNotificationProps) {
   const adminEmail = process.env.ADMIN_EMAIL
   if (!adminEmail) {
@@ -326,20 +334,60 @@ export async function sendAdminServiceRequestNotification({
     return null
   }
 
-  const text = `
-New Service Request Received!
-
-Customer: ${customerName}
-Request Type: ${requestType}
-${description ? `Description: ${description}\n` : ''}${requestedDate ? `Requested Date: ${requestedDate}\n` : ''}Installation Address: ${installationAddress}
-  `.trim()
+  const lines = [
+    'New Service Request Received!',
+    '',
+    `Customer: ${customerName}`,
+    customerEmail ? `Email: ${customerEmail}` : null,
+    customerPhone ? `Phone: ${customerPhone}` : null,
+    `Request Type: ${requestType}`,
+    `Address: ${installationAddress}`,
+    requestedDate ? `Requested Date: ${requestedDate}` : null,
+    '',
+    description ? `Description:\n${description}\n` : null,
+    notes ? `Customer Notes:\n${notes}\n` : null,
+    installedItems ? `What was installed here (please bring back):\n${installedItems}` : null,
+  ].filter(Boolean)
 
   return getResend().emails.send({
     from: 'Pink Posts Installations <orders@pinkposts.com>',
     to: adminEmail,
     subject: `New Service Request: ${requestType} - ${installationAddress}`,
-    text,
+    text: lines.join('\n'),
   })
+}
+
+/**
+ * Notify the customer when a service request (especially a removal) is marked
+ * complete. Removals are the case the client specifically called out — but the
+ * same email works for service, repair, replacement too.
+ */
+export async function sendServiceRequestCompletedEmail({
+  customerEmail,
+  customerName,
+  requestType,
+  address,
+}: {
+  customerEmail: string
+  customerName: string
+  requestType: string
+  address: string
+}) {
+  const friendlyType = requestType === 'removal' ? 'Removal' : requestType.charAt(0).toUpperCase() + requestType.slice(1)
+  const text = `Hi ${customerName},\n\nGreat news — your ${friendlyType.toLowerCase()} at ${address} has been completed.\n\nIf you have any questions or need another service, just reply to this email or visit your dashboard.\n\nThanks,\nPink Posts Installations`
+
+  try {
+    const result = await getResend().emails.send({
+      from: 'Pink Posts Installations <orders@pinkposts.com>',
+      to: customerEmail,
+      subject: `${friendlyType} complete: ${address}`,
+      text,
+    })
+    return result
+  } catch (error) {
+    console.error('Failed to send service-request-complete email:', error)
+    throw error
+  }
 }
 
 export async function sendInstallationCompleteEmail(

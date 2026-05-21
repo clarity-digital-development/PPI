@@ -66,7 +66,7 @@ export async function POST(
     try {
       const userInfo = await prisma.user.findUnique({
         where: { id: user.id },
-        select: { fullName: true, name: true, email: true },
+        select: { fullName: true, name: true, email: true, phone: true },
       })
       const customerName = userInfo?.fullName || userInfo?.name || userInfo?.email || 'Unknown'
       const installationAddress = [
@@ -76,12 +76,31 @@ export async function POST(
         installation.propertyZip,
       ].filter(Boolean).join(', ')
 
+      // For removal requests, include what was originally installed at this
+      // address so admin knows what to bring back
+      let installedItems: string | undefined
+      if (type === 'removal') {
+        const originalOrder = await prisma.order.findFirst({
+          where: { id: installation.orderId },
+          include: { orderItems: { select: { description: true, quantity: true } } },
+        })
+        if (originalOrder?.orderItems?.length) {
+          installedItems = originalOrder.orderItems
+            .map(i => `  - ${i.description}${i.quantity > 1 ? ` (×${i.quantity})` : ''}`)
+            .join('\n')
+        }
+      }
+
       await sendAdminServiceRequestNotification({
         customerName,
+        customerEmail: userInfo?.email,
+        customerPhone: userInfo?.phone ?? undefined,
         requestType: type,
         description: description || undefined,
         requestedDate: requested_date || undefined,
+        notes: notes || undefined,
         installationAddress,
+        installedItems,
       })
     } catch (emailError) {
       console.error('Failed to send admin service request notification:', emailError)

@@ -7,15 +7,26 @@ import { ExpandableImage } from '../ExpandableImage'
 import type { StepProps, RiderSelection } from '../types'
 import { PRICING } from '../types'
 
-// Convert from RiderSelector format to order form format
-function toRiderSelection(selected: SelectedRider): RiderSelection {
+// Convert from RiderSelector format to order form format. When source is 'owned'
+// we look up the matching CustomerRider record in inventory by slug so the order
+// item gets `customer_rider_id` set — without that, the inventory auto-remove
+// hook can't mark the rider as out-of-storage.
+function toRiderSelection(
+  selected: SelectedRider,
+  inventory: Array<{ id: string; riderType: string }> = []
+): RiderSelection {
   const rider = RIDERS.find(r => r.id === selected.riderId)
+  const slug = rider?.slug || selected.riderId
+  const inventoryMatch = selected.source === 'owned'
+    ? inventory.find(inv => inv.riderType === slug)
+    : undefined
   return {
-    rider_type: rider?.slug || selected.riderId,
+    rider_type: slug,
     is_rental: selected.source === 'rental',
     source: selected.source,
     quantity: 1,
     custom_value: selected.customValue?.toString(),
+    customer_rider_id: inventoryMatch?.id,
   }
 }
 
@@ -60,9 +71,9 @@ export function RiderStep({ formData, updateFormData, inventory }: StepProps) {
 
   // Handle selection changes from RiderSelector
   const handleSelectionChange = useCallback((newSelection: SelectedRider[]) => {
-    const riderSelections = newSelection.map(toRiderSelection)
+    const riderSelections = newSelection.map(sel => toRiderSelection(sel, customerInventory))
     updateFormData({ riders: riderSelections })
-  }, [updateFormData])
+  }, [updateFormData, customerInventory])
 
   return (
     <div className="space-y-8">

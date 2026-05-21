@@ -48,6 +48,10 @@ interface ServiceRequest {
     propertyState: string
     propertyZip: string
     status: string
+    order?: {
+      orderNumber: string
+      orderItems: Array<{ description: string; quantity: number; itemType: string }>
+    }
   } | null
   // For unlisted-address service requests (no existing installation)
   unlistedAddress?: string | null
@@ -394,6 +398,26 @@ export default function ServiceRequestsPage() {
               <div>
                 <h4 className="font-medium text-gray-900 mb-2">Customer Notes</h4>
                 <p className="text-sm text-gray-600">{selectedRequest.notes}</p>
+              </div>
+            )}
+
+            {/* For removal requests, show what was originally installed so admin
+                knows what to bring back */}
+            {selectedRequest.type === 'removal' && selectedRequest.installation?.order?.orderItems && selectedRequest.installation.order.orderItems.length > 0 && (
+              <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                <h4 className="font-medium text-amber-900 mb-2">
+                  Items Installed Here ({selectedRequest.installation.order.orderNumber})
+                </h4>
+                <ul className="text-sm text-amber-800 space-y-1">
+                  {selectedRequest.installation.order.orderItems.map((item, idx) => (
+                    <li key={idx} className="flex justify-between gap-2">
+                      <span>{item.description}</span>
+                      {item.quantity > 1 && (
+                        <span className="text-amber-700 font-medium">×{item.quantity}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
 

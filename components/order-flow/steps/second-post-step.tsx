@@ -9,14 +9,22 @@ import { ExpandableImage } from '../ExpandableImage'
 import type { StepProps, RiderSelection } from '../types'
 import { PRICING } from '../types'
 
-function toRiderSelection(selected: SelectedRider): RiderSelection {
+function toRiderSelection(
+  selected: SelectedRider,
+  inventory: Array<{ id: string; riderType: string }> = []
+): RiderSelection {
   const rider = RIDERS.find(r => r.id === selected.riderId)
+  const slug = rider?.slug || selected.riderId
+  const inventoryMatch = selected.source === 'owned'
+    ? inventory.find(inv => inv.riderType === slug)
+    : undefined
   return {
-    rider_type: rider?.slug || selected.riderId,
+    rider_type: slug,
     is_rental: selected.source === 'rental',
     source: selected.source,
     quantity: 1,
     custom_value: selected.customValue?.toString(),
+    customer_rider_id: inventoryMatch?.id,
   }
 }
 
@@ -84,9 +92,9 @@ export function SecondPostStep({ formData, updateFormData, inventory }: StepProp
   }, [formData.second_post_riders])
 
   const handleSelectionChange = useCallback((newSelection: SelectedRider[]) => {
-    const riderSelections = newSelection.map(toRiderSelection)
+    const riderSelections = newSelection.map(sel => toRiderSelection(sel, customerInventory))
     updateFormData({ second_post_riders: riderSelections })
-  }, [updateFormData])
+  }, [updateFormData, customerInventory])
 
   const hasStoredSigns = inventory?.signs && inventory.signs.length > 0
 

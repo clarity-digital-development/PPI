@@ -143,6 +143,9 @@ export function OrderWizard({ inventory, paymentMethods }: OrderWizardProps) {
       case 'post':
         return true // Post is now optional
       case 'sign':
+        // If "from inventory" is selected, customer must pick which specific sign
+        if (formData.sign_option === 'stored' && !formData.stored_sign_id) return false
+        return true
       case 'rider':
       case 'second-post':
       case 'lockbox':
