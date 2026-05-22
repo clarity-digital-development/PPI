@@ -19,6 +19,7 @@ export function ReviewStep({
   paymentMethods,
   isSubmitting,
   setIsSubmitting,
+  onBehalfOf,
 }: StepProps) {
   const router = useRouter()
   const [error, setError] = useState<string | null>(null)
@@ -676,6 +677,9 @@ export function ReviewStep({
           promo_code: formData.promo_code,
           promo_code_id: formData.promo_code_id,
           fuel_surcharge_waived: fuelSurchargeWaived,
+          // When admin/team_admin places on behalf of an agent the API needs
+          // the agent's user id so the order is owned by them
+          on_behalf_of_user_id: onBehalfOf,
         }),
       })
 

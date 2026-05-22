@@ -81,6 +81,10 @@ model User {
   role            UserRole  @default(customer)
   stripeCustomerId String?  @map("stripe_customer_id")
 
+  // Team membership (for RE teams managed by a team_admin who places orders
+  // on behalf of their agents). Both team_admins and agents have a teamId.
+  teamId          String?   @map("team_id")
+
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
 
@@ -101,12 +105,33 @@ model User {
   notifications   Notification[]
   promoCodeUsages PromoCodeUsage[]
 
+  team            Team?     @relation(fields: [teamId], references: [id])
+  // Orders placed by THIS user on behalf of an agent. The Order's userId is
+  // the agent; placedByUserId is the team_admin who actually placed it.
+  ordersPlacedFor Order[]   @relation("OrdersPlacedBy")
+
+  @@index([teamId])
   @@map("users")
 }
 
 enum UserRole {
   customer
   admin
+  team_admin
+}
+
+// A team of real-estate agents managed by one or more team_admin users.
+// The team_admin places orders on behalf of agents and pays from their own
+// card; the order itself is recorded under the agent's account.
+model Team {
+  id          String   @id @default(cuid())
+  name        String   // e.g. "Peggy Heckert Team"
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  members     User[]
+
+  @@map("teams")
 }
 
 // ============================================
@@ -311,15 +336,22 @@ model Order {
   paymentIntentId   String?       @map("payment_intent_id")
   paidAt            DateTime?     @map("paid_at")
 
+  // If a team_admin placed this order on behalf of an agent, placedByUserId
+  // is the team_admin (charged Stripe customer); userId is still the agent.
+  // Null = the agent placed it themselves.
+  placedByUserId    String?       @map("placed_by_user_id")
+
   createdAt         DateTime      @default(now()) @map("created_at")
   updatedAt         DateTime      @updatedAt @map("updated_at")
 
   user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  placedBy          User?         @relation("OrdersPlacedBy", fields: [placedByUserId], references: [id])
   postType          PostType?     @relation(fields: [postTypeId], references: [id])
   promoCode         PromoCode?    @relation(fields: [promoCodeId], references: [id])
   orderItems        OrderItem[]
   installation      Installation?
 
+  @@index([placedByUserId])
   @@map("orders")
 }
 

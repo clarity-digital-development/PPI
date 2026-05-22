@@ -100,6 +100,9 @@ export interface StepProps {
   }>
   isSubmitting?: boolean
   setIsSubmitting?: (value: boolean) => void
+  // Optional: when an admin / team_admin is placing the order for an agent,
+  // this is the agent's user id. Passed through to the API on submit.
+  onBehalfOf?: string
 }
 
 export const PRICING = {

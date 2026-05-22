@@ -25,10 +25,13 @@ export async function GET() {
         fullName: true,
         phone: true,
         company: true,
+        role: true,
+        teamId: true,
       },
     })
 
-    return NextResponse.json({ profile })
+    // `user` mirrors `profile` for callers that want either shape
+    return NextResponse.json({ profile, user: profile })
   } catch (error) {
     console.error('Error fetching profile:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

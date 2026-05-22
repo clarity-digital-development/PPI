@@ -6,9 +6,11 @@ export default withAuth(
     const token = req.nextauth.token
     const path = req.nextUrl.pathname
 
-    // Admin routes require admin role
+    // Admin routes — both Pink Posts admins and team_admins can enter; per-page
+    // permission scoping happens in the route handlers (e.g. team_admin only
+    // sees their team's customers)
     if (path.startsWith('/admin')) {
-      if (token?.role !== 'admin') {
+      if (token?.role !== 'admin' && token?.role !== 'team_admin') {
         return NextResponse.redirect(new URL('/dashboard', req.url))
       }
     }
@@ -34,9 +36,10 @@ export default withAuth(
           return !!token
         }
 
-        // Admin API routes require admin role
+        // Admin API routes accept both admin and team_admin; per-route handlers
+        // enforce team scoping
         if (path.startsWith('/api/admin')) {
-          return token?.role === 'admin'
+          return token?.role === 'admin' || token?.role === 'team_admin'
         }
 
         return true

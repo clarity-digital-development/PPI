@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { getCurrentUser } from '@/lib/auth-utils'
+import { getCurrentUser, isAdminOrTeamAdmin, canActOnBehalfOf } from '@/lib/auth-utils'
 
 export async function GET(
   request: NextRequest,
@@ -14,7 +14,12 @@ export async function GET(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    if (user.role !== 'admin') {
+    if (!isAdminOrTeamAdmin(user)) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+
+    // Team admins can only view customers in their own team
+    if (!(await canActOnBehalfOf(user, id))) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
@@ -158,7 +163,18 @@ export async function GET(
         riders,
         lockboxes,
         brochureBoxes,
-        otherItems: otherItemsRaw.map((item) => ({ id: item.id, description: item.description })),
+        // Group duplicate descriptions onto one line with a quantity count
+        otherItems: (() => {
+          const grouped: Record<string, { id: string; description: string; quantity: number }> = {}
+          for (const item of otherItemsRaw) {
+            if (grouped[item.description]) {
+              grouped[item.description].quantity += 1
+            } else {
+              grouped[item.description] = { id: item.id, description: item.description, quantity: 1 }
+            }
+          }
+          return Object.values(grouped)
+        })(),
         deployed,
       },
       orders,

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { getCurrentUser } from '@/lib/auth-utils'
+import { getCurrentUser, canActOnBehalfOf } from '@/lib/auth-utils'
 
 export async function GET(request: NextRequest) {
   try {
@@ -10,22 +10,34 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
+    // Admin / team_admin can fetch another customer's inventory when placing
+    // an order on their behalf. Always defer to the canActOnBehalfOf check.
+    const { searchParams } = new URL(request.url)
+    const onBehalfOf = searchParams.get('on_behalf_of')
+    let targetUserId = user.id
+    if (onBehalfOf && onBehalfOf !== user.id) {
+      if (!(await canActOnBehalfOf(user, onBehalfOf))) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      }
+      targetUserId = onBehalfOf
+    }
+
     // Fetch all inventory types in parallel
     const [rawSigns, rawRiders, rawLockboxes, rawBrochureBoxes] = await Promise.all([
       prisma.customerSign.findMany({
-        where: { userId: user.id, inStorage: true },
+        where: { userId: targetUserId, inStorage: true },
         orderBy: { createdAt: 'desc' },
       }),
       prisma.customerRider.findMany({
-        where: { userId: user.id, inStorage: true },
+        where: { userId: targetUserId, inStorage: true },
         include: { rider: true },
       }),
       prisma.customerLockbox.findMany({
-        where: { userId: user.id, inStorage: true },
+        where: { userId: targetUserId, inStorage: true },
         include: { lockboxType: true },
       }),
       prisma.customerBrochureBox.findMany({
-        where: { userId: user.id, inStorage: true },
+        where: { userId: targetUserId, inStorage: true },
       }),
     ])
 

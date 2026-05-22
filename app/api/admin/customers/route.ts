@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { getCurrentUser } from '@/lib/auth-utils'
+import { getCurrentUser, isAdminOrTeamAdmin } from '@/lib/auth-utils'
 
 export async function GET(request: NextRequest) {
   try {
@@ -10,7 +10,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    if (user.role !== 'admin') {
+    if (!isAdminOrTeamAdmin(user)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
@@ -19,8 +19,15 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '500')
     const offset = parseInt(searchParams.get('offset') || '0')
 
+    // Team admins see only the customers in their team. Pink Posts internal
+    // admins see everyone.
+    const teamFilter = user.role === 'team_admin'
+      ? { teamId: user.teamId ?? '__no-team__' }
+      : {}
+
     const where = {
       role: 'customer' as const,
+      ...teamFilter,
       ...(search
         ? {
             OR: [

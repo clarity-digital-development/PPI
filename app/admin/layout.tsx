@@ -18,13 +18,19 @@ import {
 import { Logo } from '@/components/shared'
 import { cn } from '@/lib/utils'
 
-const navItems = [
+// Full admin nav for Pink Posts internal admins
+const fullNavItems = [
   { href: '/admin', label: 'Overview', icon: LayoutDashboard },
   { href: '/admin/customers', label: 'Customers', icon: Users },
   { href: '/admin/orders', label: 'Orders', icon: ShoppingCart },
   { href: '/admin/service-requests', label: 'Service Requests', icon: Wrench },
   { href: '/admin/inventory', label: 'Inventory', icon: Package },
   { href: '/admin/settings', label: 'Settings', icon: Settings },
+]
+
+// Trimmed nav for team admins — they only need their team's agents
+const teamAdminNavItems = [
+  { href: '/admin/customers', label: 'My Agents', icon: Users },
 ]
 
 export default function AdminLayout({
@@ -35,23 +41,33 @@ export default function AdminLayout({
   const pathname = usePathname()
   const router = useRouter()
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [isAdmin, setIsAdmin] = useState<boolean | null>(null)
+  const [role, setRole] = useState<'admin' | 'team_admin' | null>(null)
 
   useEffect(() => {
-    async function checkAdmin() {
+    async function checkRole() {
       try {
-        const res = await fetch('/api/admin/stats')
-        if (res.status === 403 || res.status === 401) {
+        // /api/profile returns the current user including their role
+        const res = await fetch('/api/profile')
+        if (!res.ok) {
           router.push('/dashboard')
-        } else if (res.ok) {
-          setIsAdmin(true)
+          return
+        }
+        const data = await res.json()
+        const r = data.user?.role
+        if (r === 'admin' || r === 'team_admin') {
+          setRole(r)
+        } else {
+          router.push('/dashboard')
         }
       } catch {
         router.push('/dashboard')
       }
     }
-    checkAdmin()
+    checkRole()
   }, [router])
+
+  const navItems = role === 'team_admin' ? teamAdminNavItems : fullNavItems
+  const isAdmin = role !== null
 
   if (isAdmin === null) {
     return (

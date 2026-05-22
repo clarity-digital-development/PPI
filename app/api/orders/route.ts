@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { getCurrentUser, generateOrderNumber } from '@/lib/auth-utils'
+import { getCurrentUser, generateOrderNumber, canActOnBehalfOf } from '@/lib/auth-utils'
 import { createOrderSchema } from '@/lib/validations'
 import { createPaymentIntent, createCustomer, calculateTax, getStripeErrorMessage } from '@/lib/stripe/server'
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
@@ -45,13 +45,37 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const user = await getCurrentUser()
+    const actor = await getCurrentUser()
 
-    if (!user) {
+    if (!actor) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
     const body = await request.json()
+
+    // If an admin or team_admin is placing an order on behalf of an agent,
+    // the order's `userId` is the agent (so it shows in their account, their
+    // inventory tracks correctly, etc.) but the Stripe customer + payment
+    // method are the actor's (so they get charged).
+    //
+    // `user` below = the customer/agent who OWNS the order (= actor when
+    // self-placing). `payer` = whoever's card is charged (= actor always).
+    const onBehalfOfUserId: string | undefined = body.on_behalf_of_user_id
+    let user = actor
+    const payer = actor
+    let placedByUserId: string | null = null
+    if (onBehalfOfUserId && onBehalfOfUserId !== actor.id) {
+      if (!(await canActOnBehalfOf(actor, onBehalfOfUserId))) {
+        return NextResponse.json({ error: 'Forbidden — cannot place order for this user' }, { status: 403 })
+      }
+      const agent = await prisma.user.findUnique({ where: { id: onBehalfOfUserId } })
+      if (!agent) {
+        return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
+      }
+      user = agent
+      placedByUserId = actor.id
+    }
+
     const validationResult = createOrderSchema.safeParse(body)
 
     if (!validationResult.success) {
@@ -188,15 +212,17 @@ export async function POST(request: NextRequest) {
 
     const total = discountedSubtotal + actualFuelSurcharge + expediteFee + noPostSurcharge + tax
 
-    // Create or get Stripe customer
-    let stripeCustomerId = user.stripeCustomerId
+    // Create or get Stripe customer — always the payer (who is charged),
+    // never the agent. For on-behalf-of orders this means the team_admin's
+    // Stripe customer.
+    let stripeCustomerId = payer.stripeCustomerId
     if (!stripeCustomerId) {
       try {
-        const stripeCustomer = await createCustomer(user.email, user.fullName || user.name || '')
+        const stripeCustomer = await createCustomer(payer.email, payer.fullName || payer.name || '')
         stripeCustomerId = stripeCustomer.id
 
         await prisma.user.update({
-          where: { id: user.id },
+          where: { id: payer.id },
           data: { stripeCustomerId },
         })
       } catch (customerError) {
@@ -268,6 +294,7 @@ export async function POST(request: NextRequest) {
       data: {
         orderNumber: generateOrderNumber(),
         userId: user.id,
+        placedByUserId,
         postTypeId,
         propertyType: orderData.property_type as any,
         propertyAddress: orderData.property_address,
