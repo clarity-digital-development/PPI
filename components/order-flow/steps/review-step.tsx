@@ -7,6 +7,7 @@ import { Button, Input } from '@/components/ui'
 import { AddCardModal } from '@/components/billing'
 import { cn } from '@/lib/utils'
 import { getStripe } from '@/lib/stripe/client'
+import { useCart } from '@/lib/cart'
 import type { StepProps } from '../types'
 import { PRICING } from '../types'
 
@@ -379,6 +380,63 @@ export function ReviewStep({
       }
     } catch (err) {
       console.error('Error fetching payment methods:', err)
+    }
+  }
+
+  // Cart support (for admin/team_admin batching multiple agent orders)
+  const cart = useCart()
+  const [addingToCart, setAddingToCart] = useState(false)
+
+  const handleAddToCart = async () => {
+    if (orderItems.length === 0) {
+      setError('Please select at least one item for the order')
+      return
+    }
+    if (!onBehalfOf) {
+      setError('Cart is only available when placing on behalf of an agent.')
+      return
+    }
+    setAddingToCart(true)
+    setError(null)
+    try {
+      // Build the items array exactly like handleSubmit does so we can replay
+      // it at checkout time without recomputing
+      const items: Array<Record<string, unknown>> = orderItems.map(oi => ({
+        item_type: 'misc',
+        description: oi.description,
+        quantity: 1,
+        unit_price: oi.price,
+        total_price: oi.price,
+      }))
+
+      // Fetch agent display info for the cart row
+      let agentName = ''
+      let agentEmail = ''
+      try {
+        const res = await fetch(`/api/admin/customers/${onBehalfOf}`)
+        if (res.ok) {
+          const data = await res.json()
+          agentName = data.customer.full_name || data.customer.email || ''
+          agentEmail = data.customer.email || ''
+        }
+      } catch {
+        // Best-effort — cart still works without it
+      }
+
+      cart.addItem({
+        agentId: onBehalfOf,
+        agentName,
+        agentEmail,
+        formData,
+        items,
+        estimatedTotal: total,
+        propertyAddress: `${formData.property_address}, ${formData.property_city}`,
+      })
+      router.push('/dashboard/cart')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not add to cart')
+    } finally {
+      setAddingToCart(false)
     }
   }
 
@@ -972,15 +1030,39 @@ export function ReviewStep({
         </div>
       )}
 
-      {/* Submit Button */}
-      <Button
-        size="lg"
-        className="w-full"
-        onClick={handleSubmit}
-        disabled={isSubmitting || (!activePaymentMethods?.length && !formData.payment_method_id)}
-      >
-        {isSubmitting ? 'Processing...' : `Place Order — $${total.toFixed(2)}`}
-      </Button>
+      {/* Submit Buttons — when placing on behalf of an agent, offer batching */}
+      {onBehalfOf ? (
+        <div className="space-y-3">
+          <Button
+            size="lg"
+            className="w-full"
+            onClick={handleAddToCart}
+            disabled={isSubmitting || addingToCart}
+          >
+            {addingToCart ? 'Adding…' : `Add to Cart — $${total.toFixed(2)}`}
+          </Button>
+          <p className="text-xs text-center text-gray-500">
+            Build a batch of orders, then check out all at once.
+          </p>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={isSubmitting || (!activePaymentMethods?.length && !formData.payment_method_id)}
+            className="w-full text-center text-sm text-pink-600 hover:text-pink-700 font-medium py-2 underline disabled:opacity-40"
+          >
+            {isSubmitting ? 'Processing…' : 'Or place this order now'}
+          </button>
+        </div>
+      ) : (
+        <Button
+          size="lg"
+          className="w-full"
+          onClick={handleSubmit}
+          disabled={isSubmitting || (!activePaymentMethods?.length && !formData.payment_method_id)}
+        >
+          {isSubmitting ? 'Processing...' : `Place Order — $${total.toFixed(2)}`}
+        </Button>
+      )}
 
       {/* Add Card Modal */}
       <AddCardModal
