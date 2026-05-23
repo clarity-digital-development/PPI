@@ -271,12 +271,6 @@ export default function CustomerDetailPage() {
             )}
           </div>
           <div className="flex gap-2 flex-wrap">
-            <Link href={`/dashboard/place-order?on_behalf_of=${data.customer.id}`}>
-              <Button size="sm">
-                <Plus className="w-4 h-4 mr-1" />
-                Place Order for This Customer
-              </Button>
-            </Link>
             <Button
               variant="outline"
               size="sm"

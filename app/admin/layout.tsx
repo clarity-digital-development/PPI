@@ -28,11 +28,6 @@ const fullNavItems = [
   { href: '/admin/settings', label: 'Settings', icon: Settings },
 ]
 
-// Trimmed nav for team admins — they only need their team's agents
-const teamAdminNavItems = [
-  { href: '/admin/customers', label: 'My Agents', icon: Users },
-]
-
 export default function AdminLayout({
   children,
 }: {
@@ -41,21 +36,21 @@ export default function AdminLayout({
   const pathname = usePathname()
   const router = useRouter()
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [role, setRole] = useState<'admin' | 'team_admin' | null>(null)
+  const [role, setRole] = useState<'admin' | null>(null)
 
   useEffect(() => {
     async function checkRole() {
       try {
-        // /api/profile returns the current user including their role
+        // Only Pink Posts internal admins access the /admin area. team_admin
+        // accounts (e.g. Peggy) use the regular dashboard with the cart.
         const res = await fetch('/api/profile')
         if (!res.ok) {
           router.push('/dashboard')
           return
         }
         const data = await res.json()
-        const r = data.user?.role
-        if (r === 'admin' || r === 'team_admin') {
-          setRole(r)
+        if (data.user?.role === 'admin') {
+          setRole('admin')
         } else {
           router.push('/dashboard')
         }
@@ -66,7 +61,7 @@ export default function AdminLayout({
     checkRole()
   }, [router])
 
-  const navItems = role === 'team_admin' ? teamAdminNavItems : fullNavItems
+  const navItems = fullNavItems
   const isAdmin = role !== null
 
   if (isAdmin === null) {

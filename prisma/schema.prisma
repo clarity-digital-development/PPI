@@ -341,6 +341,11 @@ model Order {
   // Null = the agent placed it themselves.
   placedByUserId    String?       @map("placed_by_user_id")
 
+  // Free-text name of the agent on the team who sold this property. Only
+  // captured for team_admin accounts (Peggy & similar) — they manage a team
+  // as one user account and label each order with the responsible agent.
+  placedForAgentName String?      @map("placed_for_agent_name")
+
   createdAt         DateTime      @default(now()) @map("created_at")
   updatedAt         DateTime      @updatedAt @map("updated_at")
 

@@ -21,7 +21,13 @@ export function ReviewStep({
   isSubmitting,
   setIsSubmitting,
   onBehalfOf,
+  currentUserRole,
 }: StepProps) {
+  // Cart + agent-name input are enabled for team-admin accounts (and Pink
+  // Posts admins on-behalf-of flow). Regular customers get the classic
+  // single-order flow with no cart.
+  const isTeamAdmin = currentUserRole === 'team_admin'
+  const cartEnabled = isTeamAdmin || !!onBehalfOf
   const router = useRouter()
   const [error, setError] = useState<string | null>(null)
   const [promoCodeInput, setPromoCodeInput] = useState(formData.promo_code || '')
@@ -392,8 +398,8 @@ export function ReviewStep({
       setError('Please select at least one item for the order')
       return
     }
-    if (!onBehalfOf) {
-      setError('Cart is only available when placing on behalf of an agent.')
+    if (!cartEnabled) {
+      setError('Cart is only available for team admin accounts.')
       return
     }
     setAddingToCart(true)
@@ -409,23 +415,26 @@ export function ReviewStep({
         total_price: oi.price,
       }))
 
-      // Fetch agent display info for the cart row
-      let agentName = ''
+      // Use the typed agent name if provided; otherwise fall back to the
+      // agent's full name from /api/admin/customers (legacy on-behalf-of flow)
+      let agentName = formData.placed_for_agent_name?.trim() || ''
       let agentEmail = ''
-      try {
-        const res = await fetch(`/api/admin/customers/${onBehalfOf}`)
-        if (res.ok) {
-          const data = await res.json()
-          agentName = data.customer.full_name || data.customer.email || ''
-          agentEmail = data.customer.email || ''
+      if (!agentName && onBehalfOf) {
+        try {
+          const res = await fetch(`/api/admin/customers/${onBehalfOf}`)
+          if (res.ok) {
+            const data = await res.json()
+            agentName = data.customer.full_name || data.customer.email || ''
+            agentEmail = data.customer.email || ''
+          }
+        } catch {
+          // Best-effort
         }
-      } catch {
-        // Best-effort — cart still works without it
       }
 
       cart.addItem({
-        agentId: onBehalfOf,
-        agentName,
+        agentId: onBehalfOf || '', // empty string when team_admin places under own account
+        agentName: agentName || 'Unassigned',
         agentEmail,
         formData,
         items,
@@ -738,6 +747,9 @@ export function ReviewStep({
           // When admin/team_admin places on behalf of an agent the API needs
           // the agent's user id so the order is owned by them
           on_behalf_of_user_id: onBehalfOf,
+          // Free-text agent attribution (team_admin accounts use this to label
+          // which agent on their team sold the property)
+          placed_for_agent_name: formData.placed_for_agent_name?.trim() || undefined,
         }),
       })
 
@@ -1030,8 +1042,28 @@ export function ReviewStep({
         </div>
       )}
 
-      {/* Submit Buttons — when placing on behalf of an agent, offer batching */}
-      {onBehalfOf ? (
+      {/* Team admin: ask which agent on the team sold this property so it's
+          attributable on the order */}
+      {isTeamAdmin && (
+        <div className="p-4 bg-pink-50 border border-pink-200 rounded-xl">
+          <label className="block text-sm font-semibold text-pink-900 mb-1">
+            Agent who sold this property
+          </label>
+          <input
+            type="text"
+            value={formData.placed_for_agent_name || ''}
+            onChange={(e) => updateFormData({ placed_for_agent_name: e.target.value })}
+            placeholder="e.g. Ashley Smith"
+            className="w-full px-3 py-2 rounded-lg border border-pink-200 focus:ring-2 focus:ring-pink-500 focus:border-transparent text-sm"
+          />
+          <p className="text-xs text-pink-700 mt-1">
+            Optional — labels the order so you can track which agent it&apos;s for.
+          </p>
+        </div>
+      )}
+
+      {/* Submit Buttons — cart mode (team_admin or on-behalf-of) shows batching */}
+      {cartEnabled ? (
         <div className="space-y-3">
           <Button
             size="lg"

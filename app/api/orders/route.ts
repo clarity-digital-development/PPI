@@ -295,6 +295,9 @@ export async function POST(request: NextRequest) {
         orderNumber: generateOrderNumber(),
         userId: user.id,
         placedByUserId,
+        // Team-admin-only field: free-text name of the agent who sold the
+        // property. Trimmed; null if blank.
+        placedForAgentName: (body.placed_for_agent_name ?? '').toString().trim() || null,
         postTypeId,
         propertyType: orderData.property_type as any,
         propertyAddress: orderData.property_address,

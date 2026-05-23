@@ -31,6 +31,7 @@ export default function PlaceOrderPage() {
   }> | undefined>()
 
   const [agent, setAgent] = useState<AgentBrief | null>(null)
+  const [currentUserRole, setCurrentUserRole] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [accessError, setAccessError] = useState<string | null>(null)
 
@@ -44,12 +45,13 @@ export default function PlaceOrderPage() {
         const requests: Promise<Response>[] = [
           fetch(inventoryUrl),
           fetch('/api/payments/methods'),
+          fetch('/api/profile'),
         ]
         // If placing on behalf, fetch the agent's name for the banner
         if (onBehalfOf) {
           requests.push(fetch(`/api/admin/customers/${onBehalfOf}`))
         }
-        const [inventoryRes, paymentsRes, agentRes] = await Promise.all(requests)
+        const [inventoryRes, paymentsRes, profileRes, agentRes] = await Promise.all(requests)
 
         if (inventoryRes.ok) {
           const data = await inventoryRes.json()
@@ -61,6 +63,11 @@ export default function PlaceOrderPage() {
         if (paymentsRes.ok) {
           const data = await paymentsRes.json()
           setPaymentMethods(data.paymentMethods)
+        }
+
+        if (profileRes?.ok) {
+          const data = await profileRes.json()
+          setCurrentUserRole(data.user?.role || null)
         }
 
         if (agentRes && agentRes.ok) {
@@ -115,6 +122,7 @@ export default function PlaceOrderPage() {
               inventory={inventory}
               paymentMethods={paymentMethods}
               onBehalfOf={onBehalfOf}
+              currentUserRole={currentUserRole}
             />
           </>
         )}

@@ -81,6 +81,10 @@ export interface OrderFormData {
   promo_code_id?: string
   discount?: number
   fuel_surcharge_waived?: boolean
+
+  // Team-admin only: the name of the agent on the team who sold this property.
+  // Captured at checkout so each order in a batch can be attributed.
+  placed_for_agent_name?: string
 }
 
 export interface StepProps {
@@ -103,6 +107,8 @@ export interface StepProps {
   // Optional: when an admin / team_admin is placing the order for an agent,
   // this is the agent's user id. Passed through to the API on submit.
   onBehalfOf?: string
+  // Current user's role — controls team-admin specific UX (cart, agent name input)
+  currentUserRole?: string | null
 }
 
 export const PRICING = {

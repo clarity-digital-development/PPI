@@ -99,7 +99,8 @@ export default function CartPage() {
             promo_code: fd.promo_code,
             promo_code_id: fd.promo_code_id,
             fuel_surcharge_waived: fd.fuel_surcharge_waived,
-            on_behalf_of_user_id: cartItem.agentId,
+            on_behalf_of_user_id: cartItem.agentId || undefined,
+            placed_for_agent_name: fd.placed_for_agent_name?.trim() || cartItem.agentName || undefined,
           }),
         })
         const data = await res.json()

@@ -6,11 +6,11 @@ export default withAuth(
     const token = req.nextauth.token
     const path = req.nextUrl.pathname
 
-    // Admin routes — both Pink Posts admins and team_admins can enter; per-page
-    // permission scoping happens in the route handlers (e.g. team_admin only
-    // sees their team's customers)
+    // /admin is for Pink Posts internal admins only. team_admin accounts
+    // (e.g. Peggy / Semonin Realtors) use the regular dashboard with the
+    // cart — they place orders under their own account.
     if (path.startsWith('/admin')) {
-      if (token?.role !== 'admin' && token?.role !== 'team_admin') {
+      if (token?.role !== 'admin') {
         return NextResponse.redirect(new URL('/dashboard', req.url))
       }
     }
@@ -36,10 +36,9 @@ export default withAuth(
           return !!token
         }
 
-        // Admin API routes accept both admin and team_admin; per-route handlers
-        // enforce team scoping
+        // Admin API routes restricted to Pink Posts internal admin
         if (path.startsWith('/api/admin')) {
-          return token?.role === 'admin' || token?.role === 'team_admin'
+          return token?.role === 'admin'
         }
 
         return true

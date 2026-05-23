@@ -77,6 +77,8 @@ const initialFormData: OrderFormData = {
   // Payment
   payment_method_id: undefined,
   save_payment_method: false,
+  // Team admin: agent attribution
+  placed_for_agent_name: '',
 }
 
 interface OrderWizardProps {
@@ -96,9 +98,12 @@ interface OrderWizardProps {
   // Threaded through to the order POST so the order is owned by the agent
   // but charged to the actor (admin/team_admin).
   onBehalfOf?: string
+  // The current user's role — used to enable team-admin specific UX
+  // (cart by default, agent-name input on review step).
+  currentUserRole?: string | null
 }
 
-export function OrderWizard({ inventory, paymentMethods, onBehalfOf }: OrderWizardProps) {
+export function OrderWizard({ inventory, paymentMethods, onBehalfOf, currentUserRole }: OrderWizardProps) {
   const [currentStep, setCurrentStep] = useState(0)
   const [highestStep, setHighestStep] = useState(0) // Track furthest step reached
   const [formData, setFormData] = useState<OrderFormData>(initialFormData)
@@ -277,6 +282,7 @@ export function OrderWizard({ inventory, paymentMethods, onBehalfOf }: OrderWiza
               isSubmitting={isSubmitting}
               setIsSubmitting={setIsSubmitting}
               onBehalfOf={onBehalfOf}
+              currentUserRole={currentUserRole}
             />
           </motion.div>
         </AnimatePresence>

@@ -50,6 +50,7 @@ interface Order {
   signOrientationOther: string | null
   installationLocation: string | null
   installationLocationImage: string | null
+  placedForAgentName?: string | null
   subtotal: number | string
   fuelSurcharge: number | string
   expediteFee: number | string
@@ -349,6 +350,12 @@ export default function AdminOrderDetailPage() {
           <Card variant="bordered">
             <CardContent className="p-6">
               <h2 className="font-semibold text-gray-900 mb-4">Property Details</h2>
+              {order.placedForAgentName && (
+                <div className="mb-4 p-3 bg-pink-50 border border-pink-200 rounded-lg">
+                  <p className="text-xs font-semibold text-pink-700 uppercase tracking-wide">Sold by agent</p>
+                  <p className="font-semibold text-gray-900">{order.placedForAgentName}</p>
+                </div>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="flex items-start gap-3">
                   <MapPin className="w-5 h-5 text-gray-400 mt-0.5" />
