@@ -23,10 +23,11 @@ export function ReviewStep({
   onBehalfOf,
   currentUserRole,
 }: StepProps) {
-  // Cart + agent-name input are enabled for team-admin accounts (and Pink
-  // Posts admins on-behalf-of flow). Regular customers get the classic
-  // single-order flow with no cart.
-  const isTeamAdmin = currentUserRole === 'team_admin'
+  // Cart + agent-name input are enabled for team-admin accounts AND for
+  // Pink Posts internal admins (so admin@pinkposts.com can test/use the
+  // same flow). Also enabled when an admin is placing on behalf of a
+  // specific agent. Regular customers get the classic single-order flow.
+  const isTeamAdmin = currentUserRole === 'team_admin' || currentUserRole === 'admin'
   const cartEnabled = isTeamAdmin || !!onBehalfOf
   const router = useRouter()
   const [error, setError] = useState<string | null>(null)
