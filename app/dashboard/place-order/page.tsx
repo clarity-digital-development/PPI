@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Header } from '@/components/dashboard'
 import { OrderWizard } from '@/components/order-flow'
@@ -12,7 +12,27 @@ interface AgentBrief {
   company: string | null
 }
 
+// Outer default export wraps the inner client component in <Suspense> —
+// required by Next.js 14 App Router when any descendant uses useSearchParams,
+// or the production build fails at static prerender time.
 export default function PlaceOrderPage() {
+  return (
+    <Suspense
+      fallback={
+        <div>
+          <Header title="Place New Order" />
+          <div className="flex items-center justify-center py-12">
+            <div className="w-8 h-8 border-4 border-pink-500 border-t-transparent rounded-full animate-spin" />
+          </div>
+        </div>
+      }
+    >
+      <PlaceOrderPageInner />
+    </Suspense>
+  )
+}
+
+function PlaceOrderPageInner() {
   const searchParams = useSearchParams()
   const onBehalfOf = searchParams.get('on_behalf_of') || undefined
 
