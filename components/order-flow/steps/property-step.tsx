@@ -3,7 +3,7 @@
 import { useRef } from 'react'
 import Image from 'next/image'
 import { Building2, Home, HardHat, Building, LandPlot, Paperclip, X } from 'lucide-react'
-import { Input } from '@/components/ui'
+import { Input, AddressAutocomplete } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import type { StepProps } from '../types'
 import type { PropertyType } from '@/types/database'
@@ -122,11 +122,15 @@ export function PropertyStep({ formData, updateFormData }: StepProps) {
       {/* Address Fields */}
       <div className="grid md:grid-cols-2 gap-4">
         <div className="md:col-span-2">
-          <Input
-            label="Street Address *"
+          <AddressAutocomplete
             value={formData.property_address}
-            onChange={(e) => updateFormData({ property_address: e.target.value })}
-            placeholder="123 Main Street"
+            onChange={(street) => updateFormData({ property_address: street })}
+            onPlaceSelected={(parsed) => updateFormData({
+              property_address: parsed.street || formData.property_address,
+              property_city: parsed.city || formData.property_city,
+              property_state: parsed.state || formData.property_state,
+              property_zip: parsed.zip || formData.property_zip,
+            })}
           />
         </div>
         <Input

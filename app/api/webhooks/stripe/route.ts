@@ -70,32 +70,29 @@ export async function POST(request: NextRequest) {
       case 'payment_intent.succeeded': {
         const paymentIntent = event.data.object as Stripe.PaymentIntent
 
-        // Find order by payment intent ID
-        const existingOrder = await prisma.order.findFirst({
+        // Find ALL orders for this payment intent — a single PI may back
+        // a batch of orders placed via /api/orders/batch
+        const existingOrders = await prisma.order.findMany({
           where: { paymentIntentId: paymentIntent.id },
         })
 
-        if (!existingOrder) {
-          console.error('Order not found for payment intent:', paymentIntent.id)
+        if (existingOrders.length === 0) {
+          console.error('No orders found for payment intent:', paymentIntent.id)
           break
         }
 
-        // Update order
-        const order = await prisma.order.update({
-          where: { id: existingOrder.id },
-          data: {
-            paymentStatus: 'succeeded',
-            paidAt: new Date(),
-          },
-          include: {
-            orderItems: true,
-            user: true,
-          },
+        await prisma.order.updateMany({
+          where: { paymentIntentId: paymentIntent.id, paymentStatus: { not: 'succeeded' } },
+          data: { paymentStatus: 'succeeded', paidAt: new Date() },
         })
 
-        if (order) {
-
-          // Send confirmation emails
+        // Send one confirmation + admin email per order in the batch
+        for (const o of existingOrders) {
+          const order = await prisma.order.findUnique({
+            where: { id: o.id },
+            include: { orderItems: true, user: true },
+          })
+          if (!order) continue
           console.log(`Webhook: Sending emails for order ${order.orderNumber}`)
           try {
             await Promise.all([
@@ -128,7 +125,6 @@ export async function POST(request: NextRequest) {
                 isExpedited: order.isExpedited,
               }),
             ])
-            console.log(`Webhook: Emails sent successfully for order ${order.orderNumber}`)
           } catch (emailError) {
             console.error(`Webhook: Error sending emails for order ${order.orderNumber}:`, emailError)
           }

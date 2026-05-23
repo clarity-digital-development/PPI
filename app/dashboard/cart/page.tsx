@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { Header } from '@/components/dashboard'
-import { Card, CardContent, Button } from '@/components/ui'
+import { Card, CardContent, Button, Select } from '@/components/ui'
 import { useCart } from '@/lib/cart'
 import {
   ShoppingCart,
@@ -15,6 +15,7 @@ import {
   User,
   MapPin,
 } from 'lucide-react'
+import { getStripe } from '@/lib/stripe/client'
 
 interface PaymentMethod {
   id: string
@@ -62,21 +63,16 @@ export default function CartPage() {
     if (items.length === 0 || !selectedPaymentMethod) return
     setCheckingOut(true)
     setDone(false)
-    const initial: CheckoutResult[] = items.map(i => ({ cartItemId: i.id, status: 'pending' }))
-    setResults(initial)
+    setResults(items.map(i => ({ cartItemId: i.id, status: 'processing' })))
 
-    const updated = [...initial]
-    for (let idx = 0; idx < items.length; idx++) {
-      const cartItem = items[idx]
-      updated[idx] = { ...updated[idx], status: 'processing' }
-      setResults([...updated])
-
-      try {
-        const fd = cartItem.formData
-        const res = await fetch('/api/orders', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+    try {
+      // Build the batch payload — every cart row becomes one order in the batch,
+      // all sharing a SINGLE Stripe charge for the combined total
+      const batchPayload = {
+        payment_method_id: selectedPaymentMethod,
+        orders: items.map(cartItem => {
+          const fd = cartItem.formData
+          return {
             property_type: fd.property_type,
             property_address: fd.property_address,
             property_city: fd.property_city,
@@ -94,31 +90,59 @@ export default function CartPage() {
             items: cartItem.items,
             requested_date: fd.requested_date,
             is_expedited: fd.schedule_type === 'expedited',
-            payment_method_id: selectedPaymentMethod,
-            save_payment_method: false,
-            promo_code: fd.promo_code,
-            promo_code_id: fd.promo_code_id,
-            fuel_surcharge_waived: fd.fuel_surcharge_waived,
-            on_behalf_of_user_id: cartItem.agentId || undefined,
             placed_for_agent_name: fd.placed_for_agent_name?.trim() || cartItem.agentName || undefined,
-          }),
-        })
-        const data = await res.json()
-        if (!res.ok) {
-          updated[idx] = { ...updated[idx], status: 'error', error: data.error || 'Order failed' }
-        } else {
-          updated[idx] = { ...updated[idx], status: 'success', orderNumber: data.order?.orderNumber }
-          // Remove successful items from the cart so a retry only re-charges failures
-          removeItem(cartItem.id)
-        }
-      } catch (err) {
-        updated[idx] = { ...updated[idx], status: 'error', error: err instanceof Error ? err.message : 'Network error' }
+          }
+        }),
       }
-      setResults([...updated])
-    }
 
-    setCheckingOut(false)
-    setDone(true)
+      const res = await fetch('/api/orders/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(batchPayload),
+      })
+      const data = await res.json()
+
+      if (!res.ok) {
+        // Batch-wide failure — mark all rows errored with the message
+        setResults(items.map(i => ({ cartItemId: i.id, status: 'error', error: data.error || 'Batch failed' })))
+        setCheckingOut(false)
+        setDone(true)
+        return
+      }
+
+      // If 3DS is required, ask Stripe.js to handle the challenge on the
+      // single combined PaymentIntent
+      if (data.status === 'requires_action' && data.client_secret) {
+        const stripe = await getStripe()
+        if (!stripe) throw new Error('Could not load payment service.')
+        const { paymentIntent, error: stripeError } = await stripe.handleNextAction({
+          clientSecret: data.client_secret,
+        })
+        if (stripeError) throw new Error(stripeError.message || 'Payment verification failed.')
+        if (paymentIntent?.status !== 'succeeded' && paymentIntent?.status !== 'processing') {
+          throw new Error('Your bank did not approve the payment. Please try a different card.')
+        }
+      }
+
+      // All N orders placed under one charge — mark each row success
+      const placedOrders = data.orders || []
+      setResults(items.map((cartItem, idx) => ({
+        cartItemId: cartItem.id,
+        status: 'success',
+        orderNumber: placedOrders[idx]?.orderNumber,
+      })))
+      // Clear the cart now that everything is placed
+      clearCart()
+    } catch (err) {
+      setResults(items.map(i => ({
+        cartItemId: i.id,
+        status: 'error',
+        error: err instanceof Error ? err.message : 'Network error',
+      })))
+    } finally {
+      setCheckingOut(false)
+      setDone(true)
+    }
   }
 
   if (!loaded) {
@@ -263,31 +287,24 @@ export default function CartPage() {
         {items.length > 0 && !done && (
           <Card>
             <CardContent className="p-5 space-y-3">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Charge to (your card on file)
-                </label>
-                {paymentMethods.length === 0 ? (
-                  <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
-                    No payment method on file. Add one from your{' '}
-                    <Link href="/dashboard/billing" className="underline font-medium">billing page</Link>.
-                  </div>
-                ) : (
-                  <select
-                    value={selectedPaymentMethod}
-                    onChange={(e) => setSelectedPaymentMethod(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg border border-gray-200 focus:ring-2 focus:ring-pink-500 focus:border-transparent"
-                    disabled={checkingOut}
-                  >
-                    {paymentMethods.map(pm => (
-                      <option key={pm.id} value={pm.id}>
-                        {pm.card_brand?.toUpperCase() || 'Card'} •••• {pm.card_last4}
-                        {pm.is_default && ' (default)'}
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </div>
+              {paymentMethods.length === 0 ? (
+                <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                  No payment method on file. Add one from your{' '}
+                  <Link href="/dashboard/billing" className="underline font-medium">billing page</Link>.
+                </div>
+              ) : (
+                <Select
+                  label="Charge to (your card on file)"
+                  value={selectedPaymentMethod}
+                  onChange={(e) => setSelectedPaymentMethod(e.target.value)}
+                  disabled={checkingOut}
+                  placeholder=""
+                  options={paymentMethods.map(pm => ({
+                    value: pm.id,
+                    label: `${pm.card_brand?.toUpperCase() || 'Card'} •••• ${pm.card_last4}${pm.is_default ? ' (default)' : ''}`,
+                  }))}
+                />
+              )}
 
               <Button
                 size="lg"
@@ -301,7 +318,7 @@ export default function CartPage() {
                 }
               </Button>
               <p className="text-xs text-center text-gray-500">
-                Each order is charged separately to the selected card.
+                Single charge for the combined total — appears once on your statement.
               </p>
             </CardContent>
           </Card>
