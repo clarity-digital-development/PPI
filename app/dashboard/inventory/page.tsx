@@ -12,6 +12,35 @@ interface InventoryData {
   brochureBoxes: { quantity: number } | null
 }
 
+/**
+ * Inventory list that truncates visual height to ~5 rows and scrolls within
+ * the card instead of expanding it. Keeps the cards balanced on the grid
+ * even when an agent has 50+ items in one category.
+ */
+function ScrollableList({ itemCount, children }: { itemCount: number; children: React.ReactNode }) {
+  const SCROLL_AFTER = 5
+  const shouldScroll = itemCount > SCROLL_AFTER
+  return (
+    <div>
+      <ul
+        className={
+          shouldScroll
+            // 5 rows × ~52px (p-3 + line-height + space-y-3 gap) ≈ 280px
+            ? 'space-y-3 max-h-[280px] overflow-y-auto pr-1 -mr-1 scroll-smooth'
+            : 'space-y-3'
+        }
+      >
+        {children}
+      </ul>
+      {shouldScroll && (
+        <p className="text-xs text-gray-400 mt-2 text-center">
+          Showing all {itemCount} — scroll to see more
+        </p>
+      )}
+    </div>
+  )
+}
+
 export default function InventoryPage() {
   const [inventory, setInventory] = useState<InventoryData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -106,14 +135,14 @@ export default function InventoryPage() {
                 </div>
 
                 {inventory?.signs && inventory.signs.length > 0 ? (
-                  <ul className="space-y-3">
+                  <ScrollableList itemCount={inventory.signs.length}>
                     {inventory.signs.map((sign) => (
                       <li key={sign.id} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
                         <Package className="w-4 h-4 text-gray-400" />
                         <span className="text-sm text-gray-700">{sign.description}</span>
                       </li>
                     ))}
-                  </ul>
+                  </ScrollableList>
                 ) : (
                   <p className="text-sm text-gray-500 italic">No signs in storage</p>
                 )}
@@ -136,7 +165,7 @@ export default function InventoryPage() {
                 </div>
 
                 {inventory?.riders && inventory.riders.length > 0 ? (
-                  <ul className="space-y-3">
+                  <ScrollableList itemCount={inventory.riders.length}>
                     {inventory.riders.map((rider) => (
                       <li key={rider.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                         <div className="flex items-center gap-3">
@@ -146,7 +175,7 @@ export default function InventoryPage() {
                         <span className="text-sm font-medium text-pink-600">x{rider.quantity}</span>
                       </li>
                     ))}
-                  </ul>
+                  </ScrollableList>
                 ) : (
                   <p className="text-sm text-gray-500 italic">No riders in storage</p>
                 )}
@@ -167,7 +196,7 @@ export default function InventoryPage() {
                 </div>
 
                 {inventory?.lockboxes && inventory.lockboxes.length > 0 ? (
-                  <ul className="space-y-3">
+                  <ScrollableList itemCount={inventory.lockboxes.length}>
                     {inventory.lockboxes.map((lockbox) => (
                       <li key={lockbox.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                         <div className="flex items-center gap-3">
@@ -181,7 +210,7 @@ export default function InventoryPage() {
                         )}
                       </li>
                     ))}
-                  </ul>
+                  </ScrollableList>
                 ) : (
                   <p className="text-sm text-gray-500 italic">No lockboxes in storage</p>
                 )}
