@@ -113,26 +113,37 @@ export function OrderWizard({ inventory, paymentMethods, onBehalfOf, currentUser
     setFormData((prev) => ({ ...prev, ...updates }))
   }, [])
 
+  // Scroll the window to the top whenever the step changes so customers don't
+  // land halfway down the next step (e.g. mid-way through the Post options).
+  const scrollToTop = useCallback(() => {
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    }
+  }, [])
+
   const goToNextStep = useCallback(() => {
     if (currentStep < steps.length - 1) {
       const nextStep = currentStep + 1
       setCurrentStep(nextStep)
       setHighestStep((prev) => Math.max(prev, nextStep))
+      scrollToTop()
     }
-  }, [currentStep])
+  }, [currentStep, scrollToTop])
 
   const goToPreviousStep = useCallback(() => {
     if (currentStep > 0) {
       setCurrentStep((prev) => prev - 1)
+      scrollToTop()
     }
-  }, [currentStep])
+  }, [currentStep, scrollToTop])
 
   const goToStep = useCallback((stepIndex: number) => {
     // Allow going to any step that has been visited (up to highestStep)
     if (stepIndex <= highestStep) {
       setCurrentStep(stepIndex)
+      scrollToTop()
     }
-  }, [highestStep])
+  }, [highestStep, scrollToTop])
 
   const canProceed = useCallback(() => {
     const step = steps[currentStep]

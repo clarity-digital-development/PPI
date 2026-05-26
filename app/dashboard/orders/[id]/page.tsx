@@ -108,6 +108,7 @@ export default function OrderDetailsPage() {
     fetchOrder()
   }, [orderId])
 
+  // createdAt is a real timestamp — render in local time ("Placed on …")
   const formatDate = (date: string) => {
     return new Date(date).toLocaleDateString('en-US', {
       weekday: 'long',
@@ -117,11 +118,14 @@ export default function OrderDetailsPage() {
     })
   }
 
+  // scheduledDate is a date-only field stored at noon UTC — render in UTC so
+  // the calendar date doesn't shift back a day in US timezones.
   const formatShortDate = (date: string) => {
     return new Date(date).toLocaleDateString('en-US', {
       month: 'short',
       day: 'numeric',
       year: 'numeric',
+      timeZone: 'UTC',
     })
   }
 

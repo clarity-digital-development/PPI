@@ -43,7 +43,7 @@ export interface OrderFormData {
   riders: RiderSelection[]
 
   // Lockbox Selection
-  lockbox_option: 'sentrilock' | 'mechanical_own' | 'mechanical_rent' | 'none'
+  lockbox_option: 'sentrilock' | 'mechanical_own' | 'mechanical_rent' | 'at_property' | 'none'
   lockbox_type?: string
   lockbox_code?: string
   customer_lockbox_id?: string

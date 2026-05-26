@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { Header } from '@/components/dashboard'
-import { Card, CardContent, Button, Badge, Input } from '@/components/ui'
+import { Card, CardContent, Button, Badge, Input, Select } from '@/components/ui'
 import {
   ArrowLeft,
   Loader2,
@@ -154,10 +154,14 @@ export default function EditOrderPage() {
   const [saveSuccess, setSaveSuccess] = useState(false)
 
   // Edit state
+  // Post type: a post name, 'open_house', or '' for no post. Initialized from
+  // the order's current post; sent as post_type only when changed.
+  const [postType, setPostType] = useState<string>('')
+  const [postDirty, setPostDirty] = useState(false)
   const [signOption, setSignOption] = useState<'stored' | 'at_property' | 'none'>('none')
   const [signDescription, setSignDescription] = useState('')
   const [selectedRiders, setSelectedRiders] = useState<SelectedRider[]>([])
-  const [lockboxOption, setLockboxOption] = useState<'sentrilock' | 'mechanical_own' | 'mechanical_rent' | 'none'>('none')
+  const [lockboxOption, setLockboxOption] = useState<'sentrilock' | 'mechanical_own' | 'mechanical_rent' | 'at_property' | 'none'>('none')
   const [lockboxCode, setLockboxCode] = useState('')
   const [brochureOption, setBrochureOption] = useState<'purchase' | 'own' | 'none'>('none')
   const [installationNotes, setInstallationNotes] = useState('')
@@ -211,6 +215,9 @@ export default function EditOrderPage() {
   }, [orderId])
 
   const initializeFromOrder = (ord: Order) => {
+    // Post — initialize from the existing post type (empty = no post)
+    setPostType(ord.postType?.name || '')
+
     // Sign
     const signItem = ord.orderItems.find(i => i.itemType === 'sign')
     if (signItem) {
@@ -234,9 +241,13 @@ export default function EditOrderPage() {
     // Lockbox
     const lockboxItem = ord.orderItems.find(i => i.itemType === 'lockbox')
     if (lockboxItem) {
+      const desc = lockboxItem.description?.toLowerCase() || ''
       if (lockboxItem.itemCategory === 'rental') {
         setLockboxOption('mechanical_rent')
-      } else if (lockboxItem.description?.toLowerCase().includes('sentrilock')) {
+      } else if (desc.includes('at property') || desc.includes('pickup')) {
+        setLockboxOption('at_property')
+        setLockboxCode(lockboxItem.customValue || '')
+      } else if (desc.includes('sentrilock')) {
         setLockboxOption('sentrilock')
       } else {
         setLockboxOption('mechanical_own')
@@ -342,6 +353,17 @@ export default function EditOrderPage() {
         unit_price: PRICING.lockbox_install,
         total_price: PRICING.lockbox_install,
       })
+    } else if (lockboxOption === 'at_property') {
+      items.push({
+        item_type: 'lockbox',
+        item_category: 'owned',
+        description: lockboxCode
+          ? `Lockbox Install (at property / pickup) — code ${lockboxCode}`
+          : 'Lockbox Install (at property / pickup)',
+        quantity: 1,
+        unit_price: PRICING.lockbox_install,
+        total_price: PRICING.lockbox_install,
+      })
     } else if (lockboxOption === 'mechanical_rent') {
       items.push({
         item_type: 'lockbox',
@@ -378,17 +400,21 @@ export default function EditOrderPage() {
 
     return items
   // origRiderItems intentionally unused here — riders preserve their IDs via riderToSelectedRider
-  }, [signOption, selectedRiders, lockboxOption, brochureOption, order])
+  }, [signOption, selectedRiders, lockboxOption, lockboxCode, brochureOption, order])
 
   const newItems = calculateNewItems()
-  const postItem = order?.orderItems.find(i => i.itemType === 'post')
-  const postPrice = postItem ? Number(postItem.totalPrice) : 0
+  // Post price from the editable selection (empty / open_house = $0)
+  const postPrice = postType && postType !== 'open_house'
+    ? (PRICING.posts[postType as keyof typeof PRICING.posts] ?? 0)
+    : 0
   const newItemsTotal = newItems.reduce((sum, item) => sum + item.total_price, 0)
   const newSubtotal = postPrice + newItemsTotal
 
   // Use order's existing fees (fuel surcharge not re-charged)
   const fuelSurcharge = order ? Number(order.fuelSurcharge) : PRICING.fuel_surcharge
-  const noPostSurcharge = order ? Number(order.noPostSurcharge) : 0
+  // No-post surcharge recomputes live as the post selection changes
+  const hasPost = !!postType && postType !== 'open_house'
+  const noPostSurcharge = postType === '' ? PRICING.no_post_surcharge : (hasPost ? 0 : 0)
   const expediteFee = order ? Number(order.expediteFee) : 0
   const discount = order ? Number(order.discount) : 0
 
@@ -413,6 +439,9 @@ export default function EditOrderPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           items,
+          // Only send post_type if the user actually changed it, so unchanged
+          // orders keep their existing post row untouched
+          ...(postDirty ? { post_type: postType } : {}),
           sign_option: signOption,
           sign_description: signDescription,
           lockbox_option: lockboxOption,
@@ -514,24 +543,37 @@ export default function EditOrderPage() {
           </CardContent>
         </Card>
 
-        {/* Post (non-editable) */}
-        {postItem && (
-          <Card variant="bordered" className="mb-6">
-            <CardContent className="p-6">
-              <h3 className="font-semibold text-gray-900 mb-3">Post Installation</h3>
-              <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                <div className="flex items-center gap-3">
-                  <Package className="w-5 h-5 text-pink-500" />
-                  <div>
-                    <p className="font-medium text-gray-900">{postItem.description}</p>
-                    <p className="text-xs text-gray-500">Post type cannot be changed after ordering</p>
-                  </div>
-                </div>
-                <p className="font-semibold text-gray-900">${Number(postItem.totalPrice).toFixed(2)}</p>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+        {/* Post (editable) */}
+        <Card variant="bordered" className="mb-6">
+          <CardContent className="p-6">
+            <div className="flex items-center gap-2 mb-3">
+              <Package className="w-5 h-5 text-pink-500" />
+              <h3 className="font-semibold text-gray-900">Post Installation</h3>
+            </div>
+            <Select
+              label="Post type"
+              value={postType}
+              onChange={(e) => { setPostType(e.target.value); setPostDirty(true) }}
+              placeholder=""
+              options={[
+                { value: 'White Vinyl Post', label: `White Vinyl Post — $${PRICING.posts['White Vinyl Post']}` },
+                { value: 'Black Vinyl Post', label: `Black Vinyl Post — $${PRICING.posts['Black Vinyl Post']}` },
+                { value: 'Signature Pink Post', label: `Signature Pink Post — $${PRICING.posts['Signature Pink Post']}` },
+                { value: 'Metal Frame Sign', label: `Metal Frame Sign — $${PRICING.posts['Metal Frame Sign']}` },
+                { value: 'Wood Panel Post', label: `Wood Panel Post — $${PRICING.posts['Wood Panel Post']}` },
+                { value: 'open_house', label: 'Open House / Wire Frame Only — $0' },
+                { value: '', label: `No post needed (+$${PRICING.no_post_surcharge} trip fee)` },
+              ]}
+            />
+            <p className="text-xs text-gray-500 mt-2">
+              {postType && postType !== 'open_house'
+                ? `Post: $${postPrice.toFixed(2)}`
+                : postType === 'open_house'
+                  ? 'No post charge — wire frames billed in riders.'
+                  : `No post — a $${PRICING.no_post_surcharge} service trip fee applies.`}
+            </p>
+          </CardContent>
+        </Card>
 
         {/* Sign Selection */}
         <Card variant="bordered" className="mb-6">
@@ -623,6 +665,30 @@ export default function EditOrderPage() {
                 <span className="text-sm text-pink-600">${PRICING.lockbox_install.toFixed(2)}</span>
               </button>
               {lockboxOption === 'mechanical_own' && (
+                <div className="ml-6 p-3 bg-gray-50 rounded-lg">
+                  <Input
+                    label="Lockbox Code (optional)"
+                    value={lockboxCode}
+                    onChange={(e) => setLockboxCode(e.target.value)}
+                    placeholder="e.g., 1234"
+                  />
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => setLockboxOption('at_property')}
+                className={cn(
+                  'w-full flex items-center justify-between p-3 rounded-lg border transition-all text-left',
+                  lockboxOption === 'at_property' ? 'border-pink-500 bg-pink-50' : 'border-gray-200 hover:border-gray-300'
+                )}
+              >
+                <div className="flex items-center gap-2">
+                  <Key className="w-4 h-4 text-gray-500" />
+                  <span className="text-sm font-medium">Lockbox at property / available for pickup</span>
+                </div>
+                <span className="text-sm text-pink-600">${PRICING.lockbox_install.toFixed(2)}</span>
+              </button>
+              {lockboxOption === 'at_property' && (
                 <div className="ml-6 p-3 bg-gray-50 rounded-lg">
                   <Input
                     label="Lockbox Code (optional)"
@@ -729,10 +795,10 @@ export default function EditOrderPage() {
 
             <div className="space-y-2 text-sm">
               {/* Post */}
-              {postItem && (
+              {postType && postType !== 'open_house' && (
                 <div className="flex justify-between">
-                  <span className="text-gray-600">{postItem.description}</span>
-                  <span className="text-gray-900">${Number(postItem.totalPrice).toFixed(2)}</span>
+                  <span className="text-gray-600">{postType} (install & pickup)</span>
+                  <span className="text-gray-900">${postPrice.toFixed(2)}</span>
                 </div>
               )}
 

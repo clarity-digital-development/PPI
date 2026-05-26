@@ -20,12 +20,16 @@ const editOrderItemSchema = z.object({
 
 const editOrderSchema = z.object({
   items: z.array(editOrderItemSchema),
+  // Post — optional. When present, the order's post is changed/added/removed.
+  // Values: a post type name, 'open_house', 'none'/'' (no post), or omitted
+  // (keep the existing post).
+  post_type: z.string().optional(),
   // Sign options
   sign_option: z.enum(['stored', 'at_property', 'none']).optional(),
   stored_sign_id: z.string().optional(),
   sign_description: z.string().optional(),
   // Lockbox options
-  lockbox_option: z.enum(['sentrilock', 'mechanical_own', 'mechanical_rent', 'none']).optional(),
+  lockbox_option: z.enum(['sentrilock', 'mechanical_own', 'mechanical_rent', 'at_property', 'none']).optional(),
   lockbox_code: z.string().optional(),
   // Brochure box options
   brochure_option: z.enum(['purchase', 'own', 'none']).optional(),
@@ -34,6 +38,7 @@ const editOrderSchema = z.object({
 })
 
 const FUEL_SURCHARGE = 2.47
+const NO_POST_SURCHARGE = 40
 const FALLBACK_TAX_RATE = 0.06
 
 export async function PATCH(
@@ -85,21 +90,48 @@ export async function PATCH(
 
     const editData = validationResult.data
 
-    // Keep existing post item, replace everything else
+    // ---- Resolve the post for this edit ----
+    // If post_type is omitted, keep the existing post item untouched. If it's
+    // provided, change/add/remove it and recompute the no-post surcharge.
     const existingPostItem = existingOrder.orderItems.find(item => item.itemType === 'post')
+    let postItem: { description: string; price: number } | null = existingPostItem
+      ? { description: existingPostItem.description, price: Number(existingPostItem.totalPrice) }
+      : null
+    let newPostTypeId: string | null = existingOrder.postTypeId
+    let noPostSurcharge = Number(existingOrder.noPostSurcharge)
 
-    // Calculate new subtotal from all items (existing post + new items)
-    let newSubtotal = 0
-    if (existingPostItem) {
-      newSubtotal += Number(existingPostItem.totalPrice)
+    if (editData.post_type !== undefined) {
+      const pt = editData.post_type
+      if (!pt || pt === 'none') {
+        // No post — service-trip surcharge applies
+        postItem = null
+        newPostTypeId = null
+        noPostSurcharge = NO_POST_SURCHARGE
+      } else if (pt === 'open_house') {
+        // Open house / wire frame only — no post charge, no surcharge
+        postItem = null
+        newPostTypeId = null
+        noPostSurcharge = 0
+      } else {
+        const postType = await prisma.postType.findFirst({ where: { name: pt } })
+        if (!postType) {
+          return NextResponse.json({ error: `Invalid post type: ${pt}` }, { status: 400 })
+        }
+        postItem = { description: `${postType.name} (install & pickup)`, price: Number(postType.price) }
+        newPostTypeId = postType.id
+        noPostSurcharge = 0
+      }
     }
+
+    // Calculate new subtotal (post + line items)
+    let newSubtotal = 0
+    if (postItem) newSubtotal += postItem.price
     for (const item of editData.items) {
       newSubtotal += item.total_price
     }
 
-    // Re-use existing order's fuel surcharge (don't double-charge)
+    // Re-use existing order's fuel surcharge + expedite fee (don't re-charge)
     const fuelSurcharge = Number(existingOrder.fuelSurcharge)
-    const noPostSurcharge = Number(existingOrder.noPostSurcharge)
     const expediteFee = Number(existingOrder.expediteFee)
 
     // Re-calculate discount if promo code exists
@@ -135,16 +167,32 @@ export async function PATCH(
     }
 
     // Update order in a transaction (atomic: items + inventory both update or neither)
+    const postChanged = editData.post_type !== undefined
     const updatedOrder = await prisma.$transaction(async (tx) => {
-      // Delete non-post items (we keep the post item untouched)
+      // Delete line items. If the post is being changed we delete the post too
+      // and recreate it below; otherwise leave the existing post row alone.
       await tx.orderItem.deleteMany({
-        where: {
-          orderId: id,
-          itemType: { not: 'post' },
-        },
+        where: postChanged
+          ? { orderId: id }
+          : { orderId: id, itemType: { not: 'post' } },
       })
 
-      // Create new items
+      // Recreate the post item if the post changed and there is one
+      if (postChanged && postItem) {
+        await tx.orderItem.create({
+          data: {
+            orderId: id,
+            itemType: 'post',
+            itemCategory: 'new',
+            description: postItem.description,
+            quantity: 1,
+            unitPrice: postItem.price,
+            totalPrice: postItem.price,
+          },
+        })
+      }
+
+      // Create new line items
       if (editData.items.length > 0) {
         await tx.orderItem.createMany({
           data: editData.items.map((item) => ({
@@ -186,7 +234,7 @@ export async function PATCH(
       if (newBrochureIds.size)
         await tx.customerBrochureBox.updateMany({ where: { id: { in: Array.from(newBrochureIds) } }, data: { inStorage: false } })
 
-      // Update order totals and notes
+      // Update order totals and notes (and post type + surcharge if changed)
       const order = await tx.order.update({
         where: { id },
         data: {
@@ -194,6 +242,8 @@ export async function PATCH(
           discount,
           tax,
           total,
+          noPostSurcharge,
+          ...(postChanged ? { postTypeId: newPostTypeId } : {}),
           propertyNotes: editData.installation_notes !== undefined
             ? editData.installation_notes
             : existingOrder.propertyNotes,

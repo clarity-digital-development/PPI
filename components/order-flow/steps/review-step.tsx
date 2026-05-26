@@ -107,6 +107,11 @@ export function ReviewStep({
       description: `${formData.lockbox_option === 'sentrilock' ? 'SentriLock' : 'Mechanical Lockbox'} Install`,
       price: PRICING.lockbox_install,
     })
+  } else if (formData.lockbox_option === 'at_property') {
+    orderItems.push({
+      description: 'Lockbox Install (at property / pickup)',
+      price: PRICING.lockbox_install,
+    })
   } else if (formData.lockbox_option === 'mechanical_rent') {
     orderItems.push({
       description: 'Mechanical Lockbox Rental',
@@ -218,7 +223,7 @@ export function ReviewStep({
       const price = rider.is_rental ? PRICING.rider_rental : PRICING.rider_install
       items.push({ item_type: 'rider', total_price: price })
     })
-    if (formData.lockbox_option === 'sentrilock' || formData.lockbox_option === 'mechanical_own') {
+    if (formData.lockbox_option === 'sentrilock' || formData.lockbox_option === 'mechanical_own' || formData.lockbox_option === 'at_property') {
       items.push({ item_type: 'lockbox', total_price: PRICING.lockbox_install })
     } else if (formData.lockbox_option === 'mechanical_rent') {
       items.push({ item_type: 'lockbox', total_price: PRICING.lockbox_rental })
@@ -590,6 +595,17 @@ export function ReviewStep({
           unit_price: PRICING.lockbox_install,
           total_price: PRICING.lockbox_install,
           customer_lockbox_id: formData.customer_lockbox_id,
+        })
+      } else if (formData.lockbox_option === 'at_property') {
+        items.push({
+          item_type: 'lockbox',
+          item_category: 'owned',
+          description: formData.lockbox_code
+            ? `Lockbox Install (at property / pickup) — code ${formData.lockbox_code}`
+            : 'Lockbox Install (at property / pickup)',
+          quantity: 1,
+          unit_price: PRICING.lockbox_install,
+          total_price: PRICING.lockbox_install,
         })
       } else if (formData.lockbox_option === 'mechanical_rent') {
         items.push({

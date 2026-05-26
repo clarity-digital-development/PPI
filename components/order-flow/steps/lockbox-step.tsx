@@ -1,6 +1,7 @@
 'use client'
 
 import { Lock, Key, ShoppingCart, X, Package } from 'lucide-react'
+import { Input } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import type { StepProps } from '../types'
 import { PRICING } from '../types'
@@ -93,6 +94,51 @@ export function LockboxStep({ formData, updateFormData, inventory }: StepProps) 
           <p className="text-xs uppercase tracking-wide font-semibold text-gray-500">
             Other options
           </p>
+        )}
+
+        {/* Available for pickup / at property — customer's own lockbox that
+            isn't in our storage; we install it on-site */}
+        <button
+          type="button"
+          onClick={() => updateFormData({
+            lockbox_option: 'at_property',
+            lockbox_type: undefined,
+            lockbox_code: '',
+            customer_lockbox_id: undefined,
+          })}
+          className={cn(
+            'w-full flex items-start gap-4 p-4 rounded-xl border-2 transition-all text-left',
+            formData.lockbox_option === 'at_property'
+              ? 'border-pink-500 bg-pink-50'
+              : 'border-gray-200 hover:border-gray-300'
+          )}
+        >
+          <div className={cn(
+            'flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center',
+            formData.lockbox_option === 'at_property' ? 'bg-pink-500' : 'bg-gray-100'
+          )}>
+            <Key className={cn(
+              'w-5 h-5',
+              formData.lockbox_option === 'at_property' ? 'text-white' : 'text-gray-400'
+            )} />
+          </div>
+          <div className="flex-1">
+            <h3 className="font-semibold text-gray-900">Lockbox at property / available for pickup</h3>
+            <p className="text-sm text-gray-600">Your lockbox is on-site or we&apos;ll pick it up — we&apos;ll install it</p>
+            <p className="text-sm font-medium text-pink-600 mt-1">Install fee: ${PRICING.lockbox_install.toFixed(2)}</p>
+          </div>
+        </button>
+
+        {formData.lockbox_option === 'at_property' && (
+          <div className="ml-14 p-4 bg-gray-50 rounded-lg">
+            <Input
+              label="Lockbox code (optional)"
+              value={formData.lockbox_code || ''}
+              onChange={(e) => updateFormData({ lockbox_code: e.target.value })}
+              placeholder="e.g., 1234"
+              helperText="If you know the code, enter it so we can access it"
+            />
+          </div>
         )}
 
         <button
