@@ -124,11 +124,11 @@ async function main() {
   // Create Lockbox Types
   const lockboxTypes = await Promise.all([
     prisma.lockboxType.upsert({
-      where: { name: 'SentriLock' },
+      where: { name: 'Sentrilock/Supra' },
       update: {},
       create: {
-        name: 'SentriLock',
-        description: 'Electronic SentriLock - customer owned',
+        name: 'Sentrilock/Supra',
+        description: 'Electronic Sentrilock/Supra - customer owned',
         rentalPrice: null,
         installFee: 5.00,
         isRentable: false,

@@ -2,8 +2,10 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { Search, Filter, Eye, Check, Clock, Truck, XCircle } from 'lucide-react'
-import { Input, Select, Badge, Button } from '@/components/ui'
+import { Eye, Check, Clock, Truck, XCircle, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Select, Badge, Button } from '@/components/ui'
+
+const PAGE_SIZE = 25
 
 interface Order {
   id: string
@@ -72,17 +74,28 @@ export default function AdminOrdersPage() {
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState('')
+  const [page, setPage] = useState(0)
+  const [total, setTotal] = useState(0)
+
+  // Reset to the first page whenever the status filter changes
+  useEffect(() => {
+    setPage(0)
+  }, [statusFilter])
 
   useEffect(() => {
     async function fetchOrders() {
+      setLoading(true)
       try {
         const params = new URLSearchParams()
         if (statusFilter) params.set('status', statusFilter)
+        params.set('limit', String(PAGE_SIZE))
+        params.set('offset', String(page * PAGE_SIZE))
 
         const res = await fetch(`/api/admin/orders?${params}`)
         if (res.ok) {
           const data = await res.json()
           setOrders(data.orders)
+          setTotal(data.total ?? data.orders.length)
         }
       } catch (error) {
         console.error('Error fetching orders:', error)
@@ -92,7 +105,9 @@ export default function AdminOrdersPage() {
     }
 
     fetchOrders()
-  }, [statusFilter])
+  }, [statusFilter, page])
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   async function updateOrderStatus(orderId: string, newStatus: string) {
     try {
@@ -241,6 +256,37 @@ export default function AdminOrdersPage() {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {!loading && total > 0 && (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 mt-4">
+          <p className="text-sm text-gray-500">
+            Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of {total} orders
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page === 0}
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              className="gap-1"
+            >
+              <ChevronLeft className="w-4 h-4" /> Prev
+            </Button>
+            <span className="text-sm text-gray-600">
+              Page {page + 1} of {totalPages}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page + 1 >= totalPages}
+              onClick={() => setPage((p) => p + 1)}
+              className="gap-1"
+            >
+              Next <ChevronRight className="w-4 h-4" />
+            </Button>
           </div>
         </div>
       )}

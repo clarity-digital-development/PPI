@@ -320,7 +320,7 @@ export function ScheduleTripModal({
                           value={lockboxType}
                           onChange={(e) => setLockboxType(e.target.value)}
                           options={[
-                            { value: 'sentrilock', label: 'SentriLock' },
+                            { value: 'sentrilock', label: 'Sentrilock/Supra' },
                             { value: 'mechanical', label: 'Mechanical' },
                           ]}
                         />

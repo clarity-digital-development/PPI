@@ -231,8 +231,10 @@ export function SchedulingStep({ formData, updateFormData }: StepProps) {
 
       {formData.schedule_type === 'expedited' && (
         <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
-          <strong>Note:</strong> Same day installations are subject to availability and our current schedule.
-          We&apos;ll contact you to confirm if same day service is possible.
+          <strong>Note:</strong> Please contact{' '}
+          <a href="tel:8593958188" className="font-semibold underline">859-395-8188</a>{' '}
+          to notify us of the rush installation. We&apos;ll confirm if same-day service is possible.
+          If it&apos;s not possible, the expedite fee will be refunded.
         </div>
       )}
 

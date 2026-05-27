@@ -22,13 +22,19 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '50')
     const offset = parseInt(searchParams.get('offset') || '0')
 
+    const where = {
+      ...(status ? { status: status as any } : {}),
+      ...(customerId ? { userId: customerId } : {}),
+      ...(startDate ? { createdAt: { gte: new Date(startDate) } } : {}),
+      ...(endDate ? { createdAt: { lte: new Date(endDate) } } : {}),
+    }
+
+    // Total matching count so the admin UI can paginate through every order
+    // (the list used to silently truncate at the first `limit` rows).
+    const total = await prisma.order.count({ where })
+
     const orders = await prisma.order.findMany({
-      where: {
-        ...(status ? { status: status as any } : {}),
-        ...(customerId ? { userId: customerId } : {}),
-        ...(startDate ? { createdAt: { gte: new Date(startDate) } } : {}),
-        ...(endDate ? { createdAt: { lte: new Date(endDate) } } : {}),
-      },
+      where,
       include: {
         orderItems: true,
         user: {
@@ -72,7 +78,7 @@ export async function GET(request: NextRequest) {
       })),
     }))
 
-    return NextResponse.json({ orders: transformedOrders })
+    return NextResponse.json({ orders: transformedOrders, total })
   } catch (error) {
     console.error('Error fetching orders:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

@@ -67,21 +67,25 @@ export default function DashboardPage() {
       label: 'Active Posts',
       value: activeCount,
       icon: MapPin,
+      href: '/dashboard/order-history',
     },
     {
       label: 'Pending Orders',
       value: pendingOrders,
       icon: Clock,
+      href: '/dashboard/order-history',
     },
     {
       label: 'Scheduled Removals',
       value: scheduledRemovals,
       icon: Calendar,
+      href: '/dashboard/service-requests',
     },
     {
       label: 'This Month',
       value: `$${thisMonthSpend.toFixed(0)}`,
       icon: DollarSign,
+      href: '/dashboard/billing',
     },
   ]
 

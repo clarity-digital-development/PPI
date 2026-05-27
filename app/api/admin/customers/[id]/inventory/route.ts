@@ -85,7 +85,7 @@ export async function POST(
         if (!lockboxTypeId && data.lockbox_type) {
           // Map common frontend values to DB names
           const typeNameMap: Record<string, string> = {
-            sentrilock: 'SentriLock',
+            sentrilock: 'Sentrilock/Supra',
             mechanical: 'Mechanical (Customer Owned)',
             mechanical_own: 'Mechanical (Customer Owned)',
             mechanical_rent: 'Mechanical (Rental)',

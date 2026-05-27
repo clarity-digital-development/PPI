@@ -1,3 +1,4 @@
+import Link from 'next/link'
 import { Card, CardContent } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { LucideIcon } from 'lucide-react'
@@ -11,11 +12,20 @@ interface StatCardProps {
     isPositive: boolean
   }
   className?: string
+  // When set, the whole card becomes a link to the page that lists these items.
+  href?: string
 }
 
-const StatCard = ({ label, value, icon: Icon, trend, className }: StatCardProps) => {
-  return (
-    <Card variant="bordered" className={cn('overflow-hidden', className)}>
+const StatCard = ({ label, value, icon: Icon, trend, className, href }: StatCardProps) => {
+  const card = (
+    <Card
+      variant="bordered"
+      className={cn(
+        'overflow-hidden h-full',
+        href && 'transition-shadow hover:shadow-md hover:border-pink-300',
+        className
+      )}
+    >
       <CardContent className="p-6">
         <div className="flex items-center justify-between">
           <div>
@@ -39,6 +49,14 @@ const StatCard = ({ label, value, icon: Icon, trend, className }: StatCardProps)
         </div>
       </CardContent>
     </Card>
+  )
+
+  return href ? (
+    <Link href={href} className="block">
+      {card}
+    </Link>
+  ) : (
+    card
   )
 }
 

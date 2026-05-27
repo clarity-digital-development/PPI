@@ -38,7 +38,7 @@ export function BrochureBoxStep({ formData, updateFormData }: StepProps) {
             <h3 className="font-semibold text-gray-900">Purchase a brochure box</h3>
             <p className="text-sm text-gray-600">We provide and install a brochure box for you to keep</p>
             <p className="text-sm font-medium text-pink-600 mt-1">
-              ${PRICING.brochure_box_purchase.toFixed(2)} <span className="text-gray-500 font-normal">(includes $2 install fee)</span>
+              ${PRICING.brochure_box_purchase.toFixed(2)} <span className="text-gray-500 font-normal">(includes ${PRICING.brochure_box_install} install fee)</span>
             </p>
           </div>
         </button>

@@ -47,7 +47,7 @@ export function LockboxStep({ formData, updateFormData, inventory }: StepProps) 
             {storedLockboxes.map((lockbox) => {
               const isPicked = formData.customer_lockbox_id === lockbox.id
               const isSentri = lockbox.lockbox_type === 'sentrilock'
-              const label = lockbox.lockbox_type_name || (isSentri ? 'SentriLock' : 'Mechanical Lockbox')
+              const label = isSentri ? 'Sentrilock/Supra' : (lockbox.lockbox_type_name || 'Mechanical Lockbox')
               return (
                 <button
                   key={lockbox.id}
@@ -171,6 +171,18 @@ export function LockboxStep({ formData, updateFormData, inventory }: StepProps) 
             <p className="text-sm font-medium text-pink-600 mt-1">Rental fee: ${PRICING.lockbox_rental.toFixed(2)}</p>
           </div>
         </button>
+
+        {formData.lockbox_option === 'mechanical_rent' && (
+          <div className="ml-14 p-4 bg-gray-50 rounded-lg">
+            <Input
+              label="Lockbox code (optional)"
+              value={formData.lockbox_code || ''}
+              onChange={(e) => updateFormData({ lockbox_code: e.target.value })}
+              placeholder="e.g., 1234"
+              helperText="Preferred code for the rental lockbox, if you have one"
+            />
+          </div>
+        )}
 
         {/* No lockbox */}
         <button
