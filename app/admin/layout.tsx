@@ -92,10 +92,13 @@ export default function AdminLayout({
         <div className="flex flex-col h-full">
           {/* Logo */}
           <div className="flex items-center justify-between h-16 px-4 border-b border-gray-800">
-            <Link href="/admin" className="flex items-center gap-2">
-              <Logo variant="light" className="h-8 w-auto" />
+            {/* Logo already renders its own <Link>; don't wrap it in another
+                <Link> or we nest <a> inside <a> (invalid HTML → hydration error
+                on every admin page). Point the logo's link at /admin instead. */}
+            <div className="flex items-center gap-2">
+              <Logo variant="light" href="/admin" className="h-8 w-auto" />
               <span className="text-gray-400 font-semibold">Admin</span>
-            </Link>
+            </div>
             <button
               className="lg:hidden text-gray-400 hover:text-white"
               onClick={() => setSidebarOpen(false)}
