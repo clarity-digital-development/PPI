@@ -20,14 +20,15 @@ export async function GET(request: NextRequest) {
     const offset = parseInt(searchParams.get('offset') || '0')
 
     // Team admins see only the customers in their team. Pink Posts internal
-    // admins see everyone.
-    const teamFilter = user.role === 'team_admin'
-      ? { teamId: user.teamId ?? '__no-team__' }
-      : {}
+    // admins see all customers AND team_admin accounts (so they can manage
+    // teams + tag them).
+    const roleScope =
+      user.role === 'team_admin'
+        ? { role: 'customer' as const, teamId: user.teamId ?? '__no-team__' }
+        : { role: { in: ['customer', 'team_admin'] as ('customer' | 'team_admin')[] } }
 
     const where = {
-      role: 'customer' as const,
-      ...teamFilter,
+      ...roleScope,
       ...(search
         ? {
             OR: [
@@ -65,6 +66,7 @@ export async function GET(request: NextRequest) {
       full_name: customer.fullName,
       phone: customer.phone,
       company: customer.company,
+      role: customer.role,
       created_at: customer.createdAt,
       sign_count: customer._count.customerSigns,
       rider_count: customer._count.customerRiders,

@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import {
   Table,
   TableHeader,
@@ -33,6 +34,8 @@ interface OrderData {
   total: number | string
   orderItems: OrderItemData[]
   postType?: { name: string } | null
+  // team view: which agent this order was placed for (free-text attribution)
+  placedForAgentName?: string | null
 }
 
 interface OrderHistoryTableProps {
@@ -51,6 +54,7 @@ const statusConfig: Record<string, { label: string; variant: 'info' | 'success' 
 const isEditable = (status: string) => status !== 'completed' && status !== 'cancelled'
 
 const OrderHistoryTable = ({ orders }: OrderHistoryTableProps) => {
+  const router = useRouter()
   const getItemSummary = (items: OrderItemData[]) => {
     const types: string[] = []
     const postItem = items.find(i => i.itemType === 'post')
@@ -87,16 +91,27 @@ const OrderHistoryTable = ({ orders }: OrderHistoryTableProps) => {
                     <Badge variant={config.variant}>{config.label}</Badge>
                   </div>
                   <p className="text-sm text-gray-500 mt-1">{formatDate(order.createdAt)}</p>
+                  {order.placedForAgentName && (
+                    <p className="text-xs text-pink-600 mt-0.5">For: {order.placedForAgentName}</p>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   {isEditable(order.status) && (
-                    <Link
-                      href={`/dashboard/orders/${order.id}/edit`}
-                      onClick={(e) => e.stopPropagation()}
+                    // A <button>, not a <Link>: this card is itself wrapped in a
+                    // <Link>, and nesting <a> inside <a> is invalid HTML (causes
+                    // a hydration error).
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        e.preventDefault()
+                        router.push(`/dashboard/orders/${order.id}/edit`)
+                      }}
                       className="p-2 text-gray-400 hover:text-pink-600 hover:bg-pink-50 rounded-lg transition-colors"
+                      aria-label="Edit order"
                     >
                       <Pencil className="w-4 h-4" />
-                    </Link>
+                    </button>
                   )}
                   <ChevronRight className="w-4 h-4 text-gray-400" />
                 </div>
@@ -141,6 +156,9 @@ const OrderHistoryTable = ({ orders }: OrderHistoryTableProps) => {
                       <Link href={`/dashboard/orders/${order.id}`} className="font-medium text-pink-600 hover:text-pink-700">
                         {order.orderNumber}
                       </Link>
+                      {order.placedForAgentName && (
+                        <p className="text-xs text-gray-500 mt-0.5">For: {order.placedForAgentName}</p>
+                      )}
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-gray-600">
                       {formatDate(order.createdAt)}

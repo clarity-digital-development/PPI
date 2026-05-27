@@ -14,6 +14,7 @@ export async function GET(request: NextRequest) {
     // an order on their behalf. Always defer to the canActOnBehalfOf check.
     const { searchParams } = new URL(request.url)
     const onBehalfOf = searchParams.get('on_behalf_of')
+    const memberId = searchParams.get('member_id')
     let targetUserId = user.id
     if (onBehalfOf && onBehalfOf !== user.id) {
       if (!(await canActOnBehalfOf(user, onBehalfOf))) {
@@ -22,22 +23,43 @@ export async function GET(request: NextRequest) {
       targetUserId = onBehalfOf
     }
 
+    // Team feature: when a team_admin loads a managed agent's (TeamMember's)
+    // inventory, return items from the team_admin's own pool that are assigned
+    // to that member. Name-only members have no userId, so we filter by
+    // assignedToMemberId rather than ownership.
+    let memberFilter: { assignedToMemberId: string } | undefined
+    if (memberId) {
+      if (user.role !== 'admin' && user.role !== 'team_admin') {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      }
+      const member = await prisma.teamMember.findUnique({ where: { id: memberId } })
+      if (!member || member.removedAt) {
+        return NextResponse.json({ error: 'Member not found' }, { status: 404 })
+      }
+      if (user.role !== 'admin' && member.teamId !== user.teamId) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      }
+      // Items are physically held under the team_admin's account.
+      targetUserId = user.id
+      memberFilter = { assignedToMemberId: memberId }
+    }
+
     // Fetch all inventory types in parallel
     const [rawSigns, rawRiders, rawLockboxes, rawBrochureBoxes] = await Promise.all([
       prisma.customerSign.findMany({
-        where: { userId: targetUserId, inStorage: true },
+        where: { userId: targetUserId, inStorage: true, ...memberFilter },
         orderBy: { createdAt: 'desc' },
       }),
       prisma.customerRider.findMany({
-        where: { userId: targetUserId, inStorage: true },
+        where: { userId: targetUserId, inStorage: true, ...memberFilter },
         include: { rider: true },
       }),
       prisma.customerLockbox.findMany({
-        where: { userId: targetUserId, inStorage: true },
+        where: { userId: targetUserId, inStorage: true, ...memberFilter },
         include: { lockboxType: true },
       }),
       prisma.customerBrochureBox.findMany({
-        where: { userId: targetUserId, inStorage: true },
+        where: { userId: targetUserId, inStorage: true, ...memberFilter },
       }),
     ])
 

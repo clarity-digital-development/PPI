@@ -158,8 +158,17 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url)
     const status = searchParams.get('status')
+    const memberId = searchParams.get('member_id') // team_admin: filter to one member's requests
     const limit = parseInt(searchParams.get('limit') || '50')
     const offset = parseInt(searchParams.get('offset') || '0')
+
+    // team_admins see service requests across their whole team (their own +
+    // any team member with a login); they can narrow to one member. Regular
+    // customers see only their own.
+    const srOwnership =
+      user.role === 'team_admin' && user.teamId
+        ? { user: { teamId: user.teamId }, ...(memberId ? { userId: memberId } : {}) }
+        : { userId: user.id }
 
     // Fetch only this user's service requests
     let serviceRequests: any[] = []
@@ -167,10 +176,11 @@ export async function GET(request: NextRequest) {
     try {
       serviceRequests = await prisma.serviceRequest.findMany({
         where: {
-          userId: user.id,
+          ...srOwnership,
           ...(status ? { status: status as any } : {}),
         },
         include: {
+          user: { select: { id: true, fullName: true, name: true, email: true } },
           installation: {
             select: {
               id: true,
@@ -191,12 +201,12 @@ export async function GET(request: NextRequest) {
       serviceRequests = []
     }
 
-    // Count by status for this user
+    // Count by status (same ownership scope as the list)
     let statusCounts: Record<string, number> = {}
     try {
       const counts = await prisma.serviceRequest.groupBy({
         by: ['status'],
-        where: { userId: user.id },
+        where: srOwnership,
         _count: true,
       })
       statusCounts = counts.reduce((acc, item) => {
@@ -219,6 +229,9 @@ export async function GET(request: NextRequest) {
         completedAt: sr.completedAt?.toISOString() || null,
         createdAt: sr.createdAt.toISOString(),
         updatedAt: sr.updatedAt.toISOString(),
+        // Who the request belongs to (used by the team_admin team view/filter)
+        userId: sr.userId,
+        userName: sr.user?.fullName || sr.user?.name || sr.user?.email || null,
         installation: sr.installation
           ? {
               id: sr.installation.id,

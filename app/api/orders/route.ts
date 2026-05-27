@@ -19,13 +19,22 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url)
     const status = searchParams.get('status')
+    const agent = searchParams.get('agent') // team_admin: filter by placed-for agent name
     const limit = parseInt(searchParams.get('limit') || '50')
     const offset = parseInt(searchParams.get('offset') || '0')
 
+    // team_admins see orders they own AND orders they placed on behalf of an
+    // agent (placedByUserId). Regular customers see only their own.
+    const ownership =
+      user.role === 'team_admin'
+        ? { OR: [{ userId: user.id }, { placedByUserId: user.id }] }
+        : { userId: user.id }
+
     const orders = await prisma.order.findMany({
       where: {
-        userId: user.id,
+        ...ownership,
         ...(status ? { status: status as any } : {}),
+        ...(agent ? { placedForAgentName: agent } : {}),
       },
       include: {
         orderItems: true,

@@ -11,6 +11,7 @@ interface Customer {
   email: string
   phone: string
   company_name: string | null
+  role: 'customer' | 'team_admin'
   sign_count: number
   rider_count: number
   lockbox_count: number
@@ -112,7 +113,12 @@ export default function CustomersPage() {
                   <tr key={customer.id} className="hover:bg-gray-50">
                     <td className="px-6 py-4">
                       <div>
-                        <p className="font-medium text-gray-900">{customer.full_name}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="font-medium text-gray-900">{customer.full_name}</p>
+                          {customer.role === 'team_admin' && (
+                            <Badge variant="info">Team Admin</Badge>
+                          )}
+                        </div>
                         {customer.company_name && (
                           <p className="text-sm text-gray-500">{customer.company_name}</p>
                         )}

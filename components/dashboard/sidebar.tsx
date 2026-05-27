@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { signOut } from 'next-auth/react'
@@ -18,6 +18,7 @@ import {
   X,
   Wrench,
   Package,
+  Users,
 } from 'lucide-react'
 import { Logo } from '@/components/shared'
 import { cn } from '@/lib/utils'
@@ -84,6 +85,43 @@ const accountNavItems = [
 const Sidebar = () => {
   const pathname = usePathname()
   const [isMobileOpen, setIsMobileOpen] = useState(false)
+  const [role, setRole] = useState<string | null>(null)
+
+  // Fetch the current user's role to drive team_admin-only nav. We render the
+  // default (customer) labels until this resolves so there's no crash if the
+  // request fails — only team_admins ever see the relabeled/extra items.
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/profile')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled) setRole(data?.user?.role ?? null)
+      })
+      .catch(() => {
+        // Leave role null — default customer nav stays in place.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const isTeamAdmin = role === 'team_admin'
+
+  // team_admins see "Team Inventory" instead of "My Inventory"; everyone else
+  // keeps the default. Built per-render so it updates once the role resolves.
+  const resolvedMainNavItems = mainNavItems.map((item) =>
+    item.href === '/dashboard/inventory' && isTeamAdmin
+      ? { ...item, label: 'Team Inventory' }
+      : item
+  )
+
+  // "My Team" lives in the account area and is team_admin-only.
+  const resolvedAccountNavItems = isTeamAdmin
+    ? [
+        ...accountNavItems,
+        { label: 'My Team', href: '/dashboard/teams', icon: Users },
+      ]
+    : accountNavItems
 
   const NavLink = ({
     href,
@@ -124,7 +162,7 @@ const Sidebar = () => {
       <nav className="flex-1 p-4 space-y-6 overflow-y-auto">
         {/* Main Navigation */}
         <div className="space-y-1">
-          {mainNavItems.map((item) => (
+          {resolvedMainNavItems.map((item) => (
             <NavLink key={item.href} {...item} />
           ))}
         </div>
@@ -144,7 +182,7 @@ const Sidebar = () => {
 
         {/* Account */}
         <div className="space-y-1">
-          {accountNavItems.map((item) => (
+          {resolvedAccountNavItems.map((item) => (
             <NavLink key={item.href} {...item} />
           ))}
         </div>

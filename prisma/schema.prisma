@@ -106,6 +106,9 @@ model User {
   promoCodeUsages PromoCodeUsage[]
 
   team            Team?     @relation(fields: [teamId], references: [id])
+  // If this user is the login for a managed team member (hybrid upgrade), this
+  // is their TeamMember record.
+  teamMember      TeamMember? @relation("TeamMemberUser")
   // Orders placed by THIS user on behalf of an agent. The Order's userId is
   // the agent; placedByUserId is the team_admin who actually placed it.
   ordersPlacedFor Order[]   @relation("OrdersPlacedBy")
@@ -129,9 +132,38 @@ model Team {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
+  // team_admin (and any agents that have their own login) share teamId via the
+  // User.teamId relation.
   members     User[]
+  // The managed roster — agents as name-only records, optionally upgraded to a
+  // linked User login (hybrid model).
+  teamMembers TeamMember[]
 
   @@map("teams")
+}
+
+// A managed agent on a team. Starts as a name-only record; can later be
+// "upgraded" to a full login by linking a User (hybrid model). Inventory and
+// orders reference the member, so assignments survive even before/after the
+// agent has their own login. Soft-removed (removedAt) rather than deleted so
+// their assigned inventory/order history is preserved.
+model TeamMember {
+  id        String    @id @default(cuid())
+  teamId    String    @map("team_id")
+  name      String
+  email     String?
+  phone     String?
+  // Linked login account once upgraded from name-only. Null = name-only.
+  userId    String?   @unique @map("user_id")
+  removedAt DateTime? @map("removed_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  team      Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user      User?     @relation("TeamMemberUser", fields: [userId], references: [id])
+
+  @@index([teamId])
+  @@map("team_members")
 }
 
 // ============================================
@@ -227,10 +259,14 @@ model CustomerSign {
   description String
   imageUrl    String?  @map("image_url")
   inStorage   Boolean  @default(true) @map("in_storage")
+  // Team feature: when a team_admin assigns this item to one of their agents,
+  // this points at the TeamMember it belongs to (null = unassigned / pool).
+  assignedToMemberId String? @map("assigned_to_member_id")
   createdAt   DateTime @default(now()) @map("created_at")
 
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([assignedToMemberId])
   @@map("customer_signs")
 }
 
@@ -240,11 +276,13 @@ model CustomerRider {
   riderId     String   @map("rider_id")
   isOwned     Boolean  @default(true) @map("is_owned")
   inStorage   Boolean  @default(true) @map("in_storage")
+  assignedToMemberId String? @map("assigned_to_member_id")
   createdAt   DateTime @default(now()) @map("created_at")
 
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   rider       RiderCatalog @relation(fields: [riderId], references: [id])
 
+  @@index([assignedToMemberId])
   @@map("customer_riders")
 }
 
@@ -256,11 +294,13 @@ model CustomerLockbox {
   code        String?
   isOwned     Boolean  @default(true) @map("is_owned")
   inStorage   Boolean  @default(true) @map("in_storage")
+  assignedToMemberId String? @map("assigned_to_member_id")
   createdAt   DateTime @default(now()) @map("created_at")
 
   user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   lockboxType LockboxType @relation(fields: [lockboxTypeId], references: [id])
 
+  @@index([assignedToMemberId])
   @@map("customer_lockboxes")
 }
 
@@ -269,10 +309,12 @@ model CustomerBrochureBox {
   userId      String   @map("user_id")
   description String?
   inStorage   Boolean  @default(true) @map("in_storage")
+  assignedToMemberId String? @map("assigned_to_member_id")
   createdAt   DateTime @default(now()) @map("created_at")
 
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([assignedToMemberId])
   @@map("customer_brochure_boxes")
 }
 
@@ -494,6 +536,12 @@ model ServiceRequest {
   notes           String?
   adminNotes      String?             @map("admin_notes")
   completedAt     DateTime?           @map("completed_at")
+  // Invoicing — service trips aren't always a flat $40, so admin can bill a
+  // variable amount and charge the customer's saved default card.
+  invoiceAmount          Decimal?     @db.Decimal(10, 2) @map("invoice_amount")
+  invoiceStatus          String?      @map("invoice_status") // 'paid' | 'failed'
+  invoicePaymentIntentId String?      @map("invoice_payment_intent_id")
+  invoicePaidAt          DateTime?    @map("invoice_paid_at")
   // Unlisted-address fields — populated when a service trip is requested for
   // an address Pink Posts hasn't installed at (no Installation row exists).
   unlistedAddress String?             @map("unlisted_address")

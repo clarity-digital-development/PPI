@@ -3,9 +3,12 @@
 import { useEffect, useState } from 'react'
 import { Header, OrderHistoryTable } from '@/components/dashboard'
 import type { OrderData } from '@/components/dashboard/order-history-table'
+import { Select } from '@/components/ui'
 import { Loader2 } from 'lucide-react'
 
 const ITEMS_PER_PAGE = 20
+
+interface RosterMember { id: string; name: string }
 
 export default function OrderHistoryPage() {
   const [orders, setOrders] = useState<OrderData[]>([])
@@ -14,13 +17,48 @@ export default function OrderHistoryPage() {
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(false)
 
+  // team_admin only: roster for the "filter by agent" control (filters on the
+  // placed-for agent name).
+  const [isTeamAdmin, setIsTeamAdmin] = useState(false)
+  const [members, setMembers] = useState<RosterMember[]>([])
+  const [agentFilter, setAgentFilter] = useState('') // '' = all agents
+
+  // Resolve role + roster once.
+  useEffect(() => {
+    async function fetchRoleAndRoster() {
+      try {
+        const profileRes = await fetch('/api/profile')
+        const role = profileRes.ok ? (await profileRes.json()).user?.role : null
+        if (role === 'team_admin') {
+          setIsTeamAdmin(true)
+          const teamsRes = await fetch('/api/teams')
+          if (teamsRes.ok) {
+            const data = await teamsRes.json()
+            setMembers(Array.isArray(data.members) ? data.members.map((m: RosterMember) => ({ id: m.id, name: m.name })) : [])
+          }
+        }
+      } catch (err) {
+        console.error('Error loading team roster:', err)
+      }
+    }
+    fetchRoleAndRoster()
+  }, [])
+
+  // Reset to the first page whenever the agent filter changes.
+  useEffect(() => { setPage(0) }, [agentFilter])
+
   useEffect(() => {
     async function fetchOrders() {
       setLoading(true)
       setError(null)
 
       try {
-        const res = await fetch(`/api/orders?limit=${ITEMS_PER_PAGE}&offset=${page * ITEMS_PER_PAGE}`)
+        const params = new URLSearchParams({
+          limit: String(ITEMS_PER_PAGE),
+          offset: String(page * ITEMS_PER_PAGE),
+        })
+        if (agentFilter) params.set('agent', agentFilter)
+        const res = await fetch(`/api/orders?${params.toString()}`)
         if (!res.ok) {
           throw new Error('Failed to fetch orders')
         }
@@ -38,7 +76,7 @@ export default function OrderHistoryPage() {
     }
 
     fetchOrders()
-  }, [page])
+  }, [page, agentFilter])
 
   const handlePrevious = () => {
     if (page > 0) setPage(page - 1)
@@ -48,25 +86,35 @@ export default function OrderHistoryPage() {
     if (hasMore) setPage(page + 1)
   }
 
-  if (loading) {
-    return (
-      <div>
-        <Header title="Order History" />
-        <div className="p-6 flex items-center justify-center min-h-[400px]">
-          <div className="flex flex-col items-center gap-3">
-            <Loader2 className="w-8 h-8 animate-spin text-pink-600" />
-            <p className="text-gray-500">Loading order history...</p>
-          </div>
-        </div>
-      </div>
-    )
-  }
+  return (
+    <div>
+      <Header title="Order History" />
 
-  if (error) {
-    return (
-      <div>
-        <Header title="Order History" />
-        <div className="p-6">
+      <div className="p-6">
+        {/* team_admin: filter the list by the agent an order was placed for */}
+        {isTeamAdmin && (
+          <div className="mb-4 max-w-xs">
+            <Select
+              label="Filter by agent"
+              placeholder=""
+              value={agentFilter}
+              onChange={(e) => setAgentFilter(e.target.value)}
+              options={[
+                { value: '', label: 'All agents' },
+                ...members.map((m) => ({ value: m.name, label: m.name })),
+              ]}
+            />
+          </div>
+        )}
+
+        {loading ? (
+          <div className="flex items-center justify-center min-h-[300px]">
+            <div className="flex flex-col items-center gap-3">
+              <Loader2 className="w-8 h-8 animate-spin text-pink-600" />
+              <p className="text-gray-500">Loading order history...</p>
+            </div>
+          </div>
+        ) : error ? (
           <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-center">
             <p className="text-red-700">{error}</p>
             <button
@@ -76,19 +124,11 @@ export default function OrderHistoryPage() {
               Try again
             </button>
           </div>
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div>
-      <Header title="Order History" />
-
-      <div className="p-6">
-        {orders.length === 0 ? (
+        ) : orders.length === 0 ? (
           <div className="bg-white rounded-lg border border-gray-200 p-8 text-center">
-            <p className="text-gray-500">No orders found. Place your first order to see it here!</p>
+            <p className="text-gray-500">
+              {agentFilter ? 'No orders for this agent.' : 'No orders found. Place your first order to see it here!'}
+            </p>
           </div>
         ) : (
           <>

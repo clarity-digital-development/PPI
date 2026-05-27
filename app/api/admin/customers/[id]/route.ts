@@ -149,6 +149,23 @@ export async function GET(
       installation_date: inst.installedAt.toISOString(),
     }))
 
+    // If this customer is a team_admin, include their team roster so admins can
+    // view/manage the agents they manage.
+    let team: { id: string; name: string; members: Array<{ id: string; name: string; email: string | null; hasLogin: boolean }> } | null = null
+    if (customer.role === 'team_admin' && customer.teamId) {
+      const t = await prisma.team.findUnique({
+        where: { id: customer.teamId },
+        include: { teamMembers: { where: { removedAt: null }, orderBy: { createdAt: 'asc' } } },
+      })
+      if (t) {
+        team = {
+          id: t.id,
+          name: t.name,
+          members: t.teamMembers.map((m) => ({ id: m.id, name: m.name, email: m.email, hasLogin: !!m.userId })),
+        }
+      }
+    }
+
     return NextResponse.json({
       customer: {
         id: customer.id,
@@ -157,7 +174,9 @@ export async function GET(
         phone: customer.phone,
         company_name: customer.company,
         license_number: null,
+        role: customer.role,
       },
+      team,
       inventory: {
         signs,
         riders,

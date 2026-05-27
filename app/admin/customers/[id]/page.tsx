@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
-import { ArrowLeft, Plus, Minus, Trash2, Package, Tag, Lock, FileBox, Pencil, UserX, Archive } from 'lucide-react'
+import { ArrowLeft, Plus, Minus, Trash2, Package, Tag, Lock, FileBox, Pencil, UserX, Archive, Users } from 'lucide-react'
 import { Card, CardContent, Button, Input, Badge, Modal } from '@/components/ui'
 
 interface CustomerData {
@@ -14,7 +14,13 @@ interface CustomerData {
     phone: string
     company_name: string | null
     license_number: string | null
+    role: 'customer' | 'team_admin'
   }
+  team: {
+    id: string
+    name: string
+    members: Array<{ id: string; name: string; email: string | null; hasLogin: boolean }>
+  } | null
   inventory: {
     signs: Array<{ id: string; description: string; size: string | null; quantity: number }>
     riders: Array<{ id: string; rider_id: string; rider_type: string; quantity: number }>
@@ -53,6 +59,8 @@ export default function CustomerDetailPage() {
   const [loading, setLoading] = useState(true)
   const [showAddModal, setShowAddModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
+  const [showAddMemberModal, setShowAddMemberModal] = useState(false)
+  const [memberData, setMemberData] = useState({ name: '', email: '', phone: '' })
   const [addType, setAddType] = useState<'sign' | 'rider' | 'lockbox' | 'brochure_box' | 'other' | null>(null)
   const [formData, setFormData] = useState({
     description: '',
@@ -113,6 +121,34 @@ export default function CustomerDetailPage() {
       }
     } catch (error) {
       console.error('Error updating customer:', error)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleAddMember() {
+    if (!memberData.name.trim()) return
+    setSaving(true)
+    try {
+      const res = await fetch(`/api/admin/customers/${id}/team-members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: memberData.name.trim(),
+          email: memberData.email.trim() || undefined,
+          phone: memberData.phone.trim() || undefined,
+        }),
+      })
+      if (res.ok) {
+        setShowAddMemberModal(false)
+        setMemberData({ name: '', email: '', phone: '' })
+        fetchCustomer()
+      } else {
+        const data = await res.json()
+        alert(data.error || 'Failed to add team member')
+      }
+    } catch (error) {
+      console.error('Error adding team member:', error)
     } finally {
       setSaving(false)
     }
@@ -292,6 +328,53 @@ export default function CustomerDetailPage() {
         </div>
       </div>
 
+      {/* Team Members (only for team_admin customers) */}
+      {data.team && (
+        <Card className="mb-6">
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Users className="w-5 h-5 text-pink-500" />
+                <h2 className="font-semibold text-gray-900">Team Members</h2>
+                <span className="text-sm text-gray-500">{data.team.name}</span>
+              </div>
+              <Button
+                size="sm"
+                onClick={() => {
+                  setMemberData({ name: '', email: '', phone: '' })
+                  setShowAddMemberModal(true)
+                }}
+              >
+                <Plus className="w-4 h-4 mr-1" />
+                Add Member
+              </Button>
+            </div>
+            {data.team.members.length > 0 ? (
+              <div className={`space-y-2 ${data.team.members.length > 5 ? 'max-h-[300px] overflow-y-auto pr-1' : ''}`}>
+                {data.team.members.map((member) => (
+                  <div
+                    key={member.id}
+                    className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
+                  >
+                    <div>
+                      <p className="font-medium text-gray-900">{member.name}</p>
+                      {member.email && (
+                        <p className="text-sm text-gray-500">{member.email}</p>
+                      )}
+                    </div>
+                    <Badge variant={member.hasLogin ? 'success' : 'neutral'}>
+                      {member.hasLogin ? 'Login' : 'Name only'}
+                    </Badge>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-gray-500 text-sm">No members yet</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid lg:grid-cols-2 gap-6">
         {/* Signs */}
         <Card>
@@ -360,7 +443,7 @@ export default function CustomerDetailPage() {
               </Button>
             </div>
             {data.inventory.riders.length > 0 ? (
-              <div className="space-y-2">
+              <div className={`space-y-2 ${data.inventory.riders.length > 5 ? 'max-h-[300px] overflow-y-auto pr-1' : ''}`}>
                 {data.inventory.riders.map((rider) => (
                   <div
                     key={rider.id}
@@ -609,7 +692,14 @@ export default function CustomerDetailPage() {
                 <tbody className="divide-y divide-gray-100">
                   {data.orders.slice(0, 10).map((order) => (
                     <tr key={order.id}>
-                      <td className="py-3 font-medium text-gray-900">{order.order_number}</td>
+                      <td className="py-3 font-medium">
+                        <Link
+                          href={`/admin/orders/${order.id}`}
+                          className="text-pink-600 hover:text-pink-700 hover:underline"
+                        >
+                          {order.order_number}
+                        </Link>
+                      </td>
                       <td className="py-3 text-gray-600">
                         {new Date(order.created_at).toLocaleDateString()}
                       </td>
@@ -671,6 +761,43 @@ export default function CustomerDetailPage() {
         </div>
       </Modal>
 
+      {/* Add Team Member Modal */}
+      <Modal
+        isOpen={showAddMemberModal}
+        onClose={() => setShowAddMemberModal(false)}
+        title="Add Team Member"
+      >
+        <div className="space-y-4">
+          <Input
+            label="Name *"
+            value={memberData.name}
+            onChange={(e) => setMemberData({ ...memberData, name: e.target.value })}
+            placeholder="e.g., Jane Smith"
+          />
+          <Input
+            label="Email"
+            type="email"
+            value={memberData.email}
+            onChange={(e) => setMemberData({ ...memberData, email: e.target.value })}
+            placeholder="jane@example.com"
+          />
+          <Input
+            label="Phone"
+            value={memberData.phone}
+            onChange={(e) => setMemberData({ ...memberData, phone: e.target.value })}
+            placeholder="859-555-1234"
+          />
+          <div className="flex justify-end gap-3 pt-4">
+            <Button variant="outline" onClick={() => setShowAddMemberModal(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleAddMember} disabled={saving || !memberData.name.trim()}>
+              {saving ? 'Adding...' : 'Add Member'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
       {/* Add Inventory Modal */}
       <Modal
         isOpen={showAddModal}
@@ -726,7 +853,7 @@ export default function CustomerDetailPage() {
                   onChange={(e) => setFormData({ ...formData, lockbox_type: e.target.value })}
                   className="w-full px-4 py-2.5 rounded-lg border border-gray-200 focus:border-pink-500 focus:ring-2 focus:ring-pink-200 outline-none"
                 >
-                  <option value="sentrilock">SentriLock</option>
+                  <option value="sentrilock">Sentrilock/Supra</option>
                   <option value="mechanical_own">Mechanical (Customer Owned)</option>
                   <option value="mechanical_rent">Mechanical (Rental)</option>
                 </select>
