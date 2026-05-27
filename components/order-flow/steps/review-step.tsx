@@ -25,10 +25,14 @@ export function ReviewStep({
   mode = 'create',
   orderId,
   editMeta,
+  lockboxInstallFee,
 }: StepProps) {
   // Edit mode reuses this step to save changes to an existing order (PATCH,
   // no re-charge) rather than creating + paying for a new one.
   const isEdit = mode === 'edit'
+  // Owned-lockbox install fee (sentri/supra, mechanical-owned, at-property).
+  // Normally $5; $0 for free-install brokers (e.g. Semonin). Rental unaffected.
+  const lockboxInstall = lockboxInstallFee ?? PRICING.lockbox_install
   // Cart + agent-name input are enabled for team-admin accounts AND for
   // Pink Posts internal admins (so admin@pinkposts.com can test/use the
   // same flow). Also enabled when an admin is placing on behalf of a
@@ -112,12 +116,12 @@ export function ReviewStep({
   if (formData.lockbox_option === 'sentrilock' || formData.lockbox_option === 'mechanical_own') {
     orderItems.push({
       description: `${formData.lockbox_option === 'sentrilock' ? 'Sentrilock/Supra' : 'Mechanical Lockbox'} Install`,
-      price: PRICING.lockbox_install,
+      price: lockboxInstall,
     })
   } else if (formData.lockbox_option === 'at_property') {
     orderItems.push({
       description: 'Lockbox Install (at property / pickup)',
-      price: PRICING.lockbox_install,
+      price: lockboxInstall,
     })
   } else if (formData.lockbox_option === 'mechanical_rent') {
     orderItems.push({
@@ -231,7 +235,7 @@ export function ReviewStep({
       items.push({ item_type: 'rider', total_price: price })
     })
     if (formData.lockbox_option === 'sentrilock' || formData.lockbox_option === 'mechanical_own' || formData.lockbox_option === 'at_property') {
-      items.push({ item_type: 'lockbox', total_price: PRICING.lockbox_install })
+      items.push({ item_type: 'lockbox', total_price: lockboxInstall })
     } else if (formData.lockbox_option === 'mechanical_rent') {
       items.push({ item_type: 'lockbox', total_price: PRICING.lockbox_rental })
     }
@@ -573,8 +577,8 @@ export function ReviewStep({
           item_category: 'owned',
           description: 'Sentrilock/Supra Install',
           quantity: 1,
-          unit_price: PRICING.lockbox_install,
-          total_price: PRICING.lockbox_install,
+          unit_price: lockboxInstall,
+          total_price: lockboxInstall,
           customer_lockbox_id: formData.customer_lockbox_id,
           custom_value: formData.lockbox_code || undefined,
         })
@@ -584,8 +588,8 @@ export function ReviewStep({
           item_category: 'owned',
           description: 'Mechanical Lockbox Install',
           quantity: 1,
-          unit_price: PRICING.lockbox_install,
-          total_price: PRICING.lockbox_install,
+          unit_price: lockboxInstall,
+          total_price: lockboxInstall,
           customer_lockbox_id: formData.customer_lockbox_id,
           custom_value: formData.lockbox_code || undefined,
         })
@@ -597,8 +601,8 @@ export function ReviewStep({
             ? `Lockbox Install (at property / pickup) — code ${formData.lockbox_code}`
             : 'Lockbox Install (at property / pickup)',
           quantity: 1,
-          unit_price: PRICING.lockbox_install,
-          total_price: PRICING.lockbox_install,
+          unit_price: lockboxInstall,
+          total_price: lockboxInstall,
           // Persist the code so it round-trips when the order is edited
           custom_value: formData.lockbox_code || undefined,
         })

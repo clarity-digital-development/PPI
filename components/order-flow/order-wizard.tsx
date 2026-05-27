@@ -111,9 +111,11 @@ interface OrderWizardProps {
   // preset (e.g. a team_admin's selected agent name). Merged over defaults.
   initialFormData?: Partial<OrderFormData>
   editMeta?: { orderNumber: string; originalTotal: number }
+  // Per-broker owned-lockbox install fee override ($0 for free-install teams).
+  lockboxInstallFee?: number
 }
 
-export function OrderWizard({ inventory, paymentMethods, onBehalfOf, currentUserRole, mode = 'create', orderId, initialFormData, editMeta }: OrderWizardProps) {
+export function OrderWizard({ inventory, paymentMethods, onBehalfOf, currentUserRole, mode = 'create', orderId, initialFormData, editMeta, lockboxInstallFee }: OrderWizardProps) {
   const isEdit = mode === 'edit'
   const [currentStep, setCurrentStep] = useState(0)
   // In edit mode every step has effectively been "visited" so the customer can
@@ -318,6 +320,7 @@ export function OrderWizard({ inventory, paymentMethods, onBehalfOf, currentUser
               mode={mode}
               orderId={orderId}
               editMeta={editMeta}
+              lockboxInstallFee={lockboxInstallFee}
             />
           </motion.div>
         </AnimatePresence>

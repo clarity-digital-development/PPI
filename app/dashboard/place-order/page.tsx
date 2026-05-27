@@ -73,6 +73,8 @@ function PlaceOrderPageInner() {
   // the "Who is this order for?" gate instead of the wizard.
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([])
   const [hasTeam, setHasTeam] = useState(false)
+  // Per-broker perk: owned-lockbox install is free for this team.
+  const [freeLockboxInstall, setFreeLockboxInstall] = useState(false)
   const [selectedMember, setSelectedMember] = useState<TeamMember | null>(null)
   const [memberInventory, setMemberInventory] = useState<Inventory | undefined>()
   const [memberInventoryLoading, setMemberInventoryLoading] = useState(false)
@@ -136,6 +138,7 @@ function PlaceOrderPageInner() {
           if (teamsRes.ok) {
             const teamsData = await teamsRes.json()
             setHasTeam(!!teamsData.team)
+            setFreeLockboxInstall(!!teamsData.team?.freeLockboxInstall)
             setTeamMembers(Array.isArray(teamsData.members) ? teamsData.members : [])
           }
         }
@@ -223,6 +226,7 @@ function PlaceOrderPageInner() {
                   // Preset the agent name; the wizard merges this over its
                   // full defaults.
                   initialFormData={{ placed_for_agent_name: selectedMember.name }}
+                  lockboxInstallFee={freeLockboxInstall ? 0 : undefined}
                 />
               )}
             </>

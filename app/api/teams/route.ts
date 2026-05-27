@@ -25,7 +25,7 @@ export async function GET() {
   if (!team) return NextResponse.json({ team: null, members: [] })
 
   return NextResponse.json({
-    team: { id: team.id, name: team.name },
+    team: { id: team.id, name: team.name, freeLockboxInstall: team.freeLockboxInstall },
     members: team.teamMembers.map((m) => ({
       id: m.id,
       name: m.name,

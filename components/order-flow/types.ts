@@ -116,6 +116,10 @@ export interface StepProps {
   // Display-only metadata about the order being edited (review step shows the
   // original total alongside the recomputed one).
   editMeta?: { orderNumber: string; originalTotal: number }
+  // Per-broker override for the OWNED-lockbox install fee (sentri/supra,
+  // mechanical-owned, at-property). Defaults to PRICING.lockbox_install ($5).
+  // Some brokers (e.g. Semonin) get it free ($0). Rental is unaffected.
+  lockboxInstallFee?: number
 }
 
 export const PRICING = {

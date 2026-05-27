@@ -129,6 +129,10 @@ enum UserRole {
 model Team {
   id          String   @id @default(cuid())
   name        String   // e.g. "Peggy Heckert Team"
+  // Per-broker perk: when true, installing an OWNED lockbox (sentri/supra,
+  // mechanical-owned, or at-property) is free for this team. Renting one is
+  // still charged normally.
+  freeLockboxInstall Boolean @default(false) @map("free_lockbox_install")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 

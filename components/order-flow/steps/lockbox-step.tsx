@@ -6,9 +6,12 @@ import { cn } from '@/lib/utils'
 import type { StepProps } from '../types'
 import { PRICING } from '../types'
 
-export function LockboxStep({ formData, updateFormData, inventory }: StepProps) {
+export function LockboxStep({ formData, updateFormData, inventory, lockboxInstallFee }: StepProps) {
   const storedLockboxes = inventory?.lockboxes || []
   const hasStored = storedLockboxes.length > 0
+  // Owned-lockbox install fee — normally $5, but $0 for free-install brokers.
+  const installFee = lockboxInstallFee ?? PRICING.lockbox_install
+  const installFeeLabel = installFee === 0 ? 'Free' : `$${installFee.toFixed(2)}`
 
   // Pick a stored lockbox: derive the lockbox_option from its type so pricing
   // (install vs rental) flows through correctly elsewhere.
@@ -41,7 +44,7 @@ export function LockboxStep({ formData, updateFormData, inventory }: StepProps) 
             </h3>
           </div>
           <p className="text-xs text-gray-500 mb-3">
-            Pick the specific lockbox you want installed. Install fee: ${PRICING.lockbox_install.toFixed(2)}.
+            Pick the specific lockbox you want installed. Install fee: {installFeeLabel}.
           </p>
           <div className="space-y-2">
             {storedLockboxes.map((lockbox) => {
@@ -79,7 +82,7 @@ export function LockboxStep({ formData, updateFormData, inventory }: StepProps) 
                     )}
                   </div>
                   <p className="text-sm font-medium text-pink-600 flex-shrink-0">
-                    ${PRICING.lockbox_install.toFixed(2)}
+                    {installFeeLabel}
                   </p>
                 </button>
               )
@@ -125,7 +128,7 @@ export function LockboxStep({ formData, updateFormData, inventory }: StepProps) 
           <div className="flex-1">
             <h3 className="font-semibold text-gray-900">Lockbox at property / available for pickup</h3>
             <p className="text-sm text-gray-600">Your lockbox is on-site or we&apos;ll pick it up — we&apos;ll install it</p>
-            <p className="text-sm font-medium text-pink-600 mt-1">Install fee: ${PRICING.lockbox_install.toFixed(2)}</p>
+            <p className="text-sm font-medium text-pink-600 mt-1">Install fee: {installFeeLabel}</p>
           </div>
         </button>
 
@@ -217,7 +220,7 @@ export function LockboxStep({ formData, updateFormData, inventory }: StepProps) 
       </div>
 
       <div className="p-4 bg-gray-50 rounded-lg text-sm text-gray-600">
-        <p><strong>Note:</strong> Install your own lockbox (Bluetooth or mechanical) for ${PRICING.lockbox_install}, or rent and install our mechanical lockbox for ${PRICING.lockbox_rental} (includes lockbox + installation).</p>
+        <p><strong>Note:</strong> Install your own lockbox (Bluetooth or mechanical) for {installFee === 0 ? 'free' : `$${installFee}`}, or rent and install our mechanical lockbox for ${PRICING.lockbox_rental} (includes lockbox + installation).</p>
       </div>
     </div>
   )

@@ -24,13 +24,16 @@ export default function EditOrderPage() {
   const [formData, setFormData] = useState<OrderFormData | null>(null)
   const [inventory, setInventory] = useState<WizardInventory | undefined>()
   const [editMeta, setEditMeta] = useState<{ orderNumber: string; originalTotal: number } | null>(null)
+  // Per-broker perk: owned-lockbox install free for this team (e.g. Semonin).
+  const [freeLockboxInstall, setFreeLockboxInstall] = useState(false)
 
   useEffect(() => {
     async function fetchData() {
       try {
-        const [orderRes, inventoryRes] = await Promise.all([
+        const [orderRes, inventoryRes, teamsRes] = await Promise.all([
           fetch(`/api/orders/${orderId}`),
           fetch('/api/inventory'),
+          fetch('/api/teams'), // 403 for non-team accounts — handled below
         ])
 
         if (!orderRes.ok) {
@@ -54,6 +57,11 @@ export default function EditOrderPage() {
         setInventory(augmentInventoryWithOrder(rawInventory, order))
         setFormData(orderToFormData(order))
         setEditMeta({ orderNumber: order.orderNumber, originalTotal: Number(order.total) })
+
+        if (teamsRes.ok) {
+          const teamsData = await teamsRes.json()
+          setFreeLockboxInstall(!!teamsData.team?.freeLockboxInstall)
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load order')
       } finally {
@@ -124,6 +132,7 @@ export default function EditOrderPage() {
           initialFormData={formData}
           inventory={inventory}
           editMeta={editMeta ?? undefined}
+          lockboxInstallFee={freeLockboxInstall ? 0 : undefined}
         />
       </div>
     </div>

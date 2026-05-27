@@ -40,7 +40,9 @@ async function main() {
   }
 
   const password = await bcrypt.hash('PinkPosts2026', 10)
-  const team = await prisma.team.create({ data: { name: "Ryan's Test Team" } })
+  // freeLockboxInstall on so the client can see the Semonin-style perk ($0
+  // owned-lockbox install; rental still charged).
+  const team = await prisma.team.create({ data: { name: "Ryan's Test Team", freeLockboxInstall: true } })
   const user = await prisma.user.create({
     data: {
       email, password, role: 'team_admin',

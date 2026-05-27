@@ -128,6 +128,23 @@ customers list, and opening their profile shows their **team roster** with an
 
 ---
 
+## 6. Free lockbox install for Semonin 🆕
+
+For the **Semonin broker account** (Peggy Heckert's team), installing an **owned
+lockbox is now free** — when you choose Sentrilock/Supra, a mechanical lockbox
+you own, or "lockbox at property," it shows **$0** instead of $5. **Renting** a
+mechanical lockbox is still **$10**. Everyone else still pays the normal $5
+install.
+
+It's a per-broker setting, so we can switch it on for other brokerages anytime.
+
+**Try it:** It's live on the Semonin account, and we also turned it on for your
+**test account** so you can see it: Place Order → pick an agent → **Lockbox**
+step → the owned options read **"Free"**, and renting still shows **$10**. The
+Review screen lists the lockbox install at **$0.00**.
+
+---
+
 ## A couple of notes
 
 - **Payments:** Editing an order or "sending an invoice" uses the card already on
