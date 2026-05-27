@@ -21,6 +21,7 @@ import {
   Loader2,
   AlertCircle,
   Eye,
+  DollarSign,
 } from 'lucide-react'
 import { formatDate } from '@/lib/utils'
 
@@ -34,6 +35,9 @@ interface ServiceRequest {
   requestedDate: string | null
   completedAt: string | null
   createdAt: string
+  invoiceAmount: number | string | null
+  invoiceStatus: string | null
+  invoicePaidAt: string | null
   user: {
     id: string
     email: string
@@ -105,6 +109,9 @@ export default function ServiceRequestsPage() {
   const [updating, setUpdating] = useState(false)
   const [adminNotes, setAdminNotes] = useState('')
   const [scheduledDate, setScheduledDate] = useState('')
+  const [invoiceAmount, setInvoiceAmount] = useState('')
+  const [invoicing, setInvoicing] = useState(false)
+  const [invoiceError, setInvoiceError] = useState<string | null>(null)
 
   useEffect(() => {
     fetchRequests()
@@ -134,7 +141,40 @@ export default function ServiceRequestsPage() {
     setSelectedRequest(request)
     setAdminNotes(request.adminNotes || '')
     setScheduledDate(request.requestedDate ? request.requestedDate.split('T')[0] : '')
+    setInvoiceAmount(request.invoiceAmount != null ? String(request.invoiceAmount) : '')
+    setInvoiceError(null)
     setShowModal(true)
+  }
+
+  const handleSendInvoice = async () => {
+    if (!selectedRequest) return
+    const amt = Number(invoiceAmount)
+    if (!Number.isFinite(amt) || amt <= 0) {
+      setInvoiceError('Enter a valid amount greater than $0.')
+      return
+    }
+    setInvoicing(true)
+    setInvoiceError(null)
+    try {
+      const res = await fetch(`/api/admin/service-requests/${selectedRequest.id}/invoice`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount: amt }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data.error || 'Charge failed')
+      }
+      // Merge the updated invoice fields into both the list and the open modal
+      setRequests((prev) =>
+        prev.map((r) => (r.id === selectedRequest.id ? { ...r, ...data.serviceRequest } : r))
+      )
+      setSelectedRequest((prev) => (prev ? { ...prev, ...data.serviceRequest } : prev))
+    } catch (err) {
+      setInvoiceError(err instanceof Error ? err.message : 'Charge failed')
+    } finally {
+      setInvoicing(false)
+    }
   }
 
   const handleUpdateStatus = async (newStatus: string) => {
@@ -423,6 +463,25 @@ export default function ServiceRequestsPage() {
 
             {/* Admin Actions */}
             <div className="border-t pt-4">
+              {/* Direct status control — set any status without stepping through
+                  the workflow buttons below */}
+              <div className="mb-4">
+                <Select
+                  label="Status"
+                  value={selectedRequest.status}
+                  onChange={(e) => handleUpdateStatus(e.target.value)}
+                  options={[
+                    { value: 'pending', label: 'Pending' },
+                    { value: 'acknowledged', label: 'Acknowledged' },
+                    { value: 'scheduled', label: 'Scheduled' },
+                    { value: 'in_progress', label: 'In Progress' },
+                    { value: 'completed', label: 'Completed' },
+                    { value: 'cancelled', label: 'Cancelled' },
+                  ]}
+                  disabled={updating}
+                />
+              </div>
+
               <Input
                 type="date"
                 label="Scheduled Date"
@@ -443,6 +502,55 @@ export default function ServiceRequestsPage() {
                   placeholder="Internal notes about this request..."
                 />
               </div>
+            </div>
+
+            {/* Invoice — charge the customer's card on file for a variable
+                service-trip amount (not always a flat $40) */}
+            <div className="border-t pt-4">
+              <h4 className="font-medium text-gray-900 mb-2 flex items-center gap-2">
+                <DollarSign className="w-4 h-4 text-gray-500" />
+                Invoice
+              </h4>
+              {selectedRequest.invoiceStatus === 'paid' ? (
+                <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-800">
+                  Charged ${Number(selectedRequest.invoiceAmount ?? 0).toFixed(2)} to the customer&apos;s card on file
+                  {selectedRequest.invoicePaidAt ? ` on ${formatDate(selectedRequest.invoicePaidAt)}` : ''}.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-xs text-gray-500">
+                    Enter the amount to charge the customer&apos;s saved default card. They&apos;ll be charged immediately.
+                  </p>
+                  <div className="flex items-end gap-2">
+                    <div className="flex-1">
+                      <Input
+                        type="number"
+                        label="Amount (USD)"
+                        value={invoiceAmount}
+                        onChange={(e) => setInvoiceAmount(e.target.value)}
+                        placeholder="0.00"
+                        icon={<DollarSign className="w-5 h-5" />}
+                      />
+                    </div>
+                    <Button onClick={handleSendInvoice} disabled={invoicing || !invoiceAmount}>
+                      {invoicing ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Charging…
+                        </>
+                      ) : (
+                        'Charge card on file'
+                      )}
+                    </Button>
+                  </div>
+                  {selectedRequest.invoiceStatus === 'failed' && !invoiceError && (
+                    <p className="text-sm text-amber-600">
+                      A previous charge attempt failed. You can try again.
+                    </p>
+                  )}
+                  {invoiceError && <p className="text-sm text-red-600">{invoiceError}</p>}
+                </div>
+              )}
             </div>
 
             {/* Action Buttons */}

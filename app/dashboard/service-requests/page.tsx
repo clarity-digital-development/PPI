@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { Header } from '@/components/dashboard'
-import { Card, CardContent, Badge, Tabs, TabsList, TabsTrigger, TabsContent, Button } from '@/components/ui'
+import { Card, CardContent, Badge, Tabs, TabsList, TabsTrigger, TabsContent, Button, Modal, Input, Select } from '@/components/ui'
 import { ScheduleTripModal } from '@/components/dashboard/installation-modals'
 import {
   Loader2,
@@ -17,6 +17,8 @@ import {
   RefreshCw,
   FileText,
   Truck,
+  Pencil,
+  Ban,
 } from 'lucide-react'
 
 interface ServiceRequest {
@@ -30,6 +32,9 @@ interface ServiceRequest {
   completedAt: string | null
   createdAt: string
   updatedAt: string
+  // team view: which member the request belongs to
+  userId?: string
+  userName?: string | null
   installation: {
     id: string
     address: string
@@ -69,13 +74,32 @@ export default function ServiceRequestsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showTripModal, setShowTripModal] = useState(false)
+  const [editing, setEditing] = useState<ServiceRequest | null>(null)
+  const [editDate, setEditDate] = useState('')
+  const [editNotes, setEditNotes] = useState('')
+  const [editDescription, setEditDescription] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
+  const [cancellingId, setCancellingId] = useState<string | null>(null)
+
+  // team_admin only: roster (members with logins) for the "filter by agent"
+  // control, which narrows to one member's requests.
+  const [isTeamAdmin, setIsTeamAdmin] = useState(false)
+  const [members, setMembers] = useState<Array<{ userId: string; name: string }>>([])
+  const [memberFilter, setMemberFilter] = useState('') // '' = all, else a member's userId
+
+  const ACTIVE_STATUSES = ['pending', 'acknowledged', 'scheduled']
+  const isActive = (status: string) => ACTIVE_STATUSES.includes(status)
 
   const fetchRequests = async () => {
     setLoading(true)
     setError(null)
 
     try {
-      const res = await fetch('/api/service-requests')
+      const url = memberFilter
+        ? `/api/service-requests?member_id=${encodeURIComponent(memberFilter)}`
+        : '/api/service-requests'
+      const res = await fetch(url)
       if (!res.ok) {
         throw new Error('Failed to fetch service requests')
       }
@@ -91,9 +115,36 @@ export default function ServiceRequestsPage() {
     }
   }
 
+  // Resolve role + roster once (team_admins get the agent filter). Only members
+  // with a login account can own service requests, so only those are listed.
+  useEffect(() => {
+    async function fetchRoleAndRoster() {
+      try {
+        const profileRes = await fetch('/api/profile')
+        const role = profileRes.ok ? (await profileRes.json()).user?.role : null
+        if (role === 'team_admin') {
+          setIsTeamAdmin(true)
+          const teamsRes = await fetch('/api/teams')
+          if (teamsRes.ok) {
+            const data = await teamsRes.json()
+            const withLogin = (Array.isArray(data.members) ? data.members : [])
+              .filter((m: { hasLogin: boolean; userId: string | null }) => m.hasLogin && m.userId)
+              .map((m: { userId: string; name: string }) => ({ userId: m.userId, name: m.name }))
+            setMembers(withLogin)
+          }
+        }
+      } catch (err) {
+        console.error('Error loading team roster:', err)
+      }
+    }
+    fetchRoleAndRoster()
+  }, [])
+
+  // (Re)load requests on mount and whenever the agent filter changes.
   useEffect(() => {
     fetchRequests()
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [memberFilter])
 
   const formatDate = (date: string) => {
     return new Date(date).toLocaleDateString('en-US', {
@@ -111,6 +162,77 @@ export default function ServiceRequestsPage() {
       hour: 'numeric',
       minute: '2-digit',
     })
+  }
+
+  const openEdit = (request: ServiceRequest) => {
+    setEditError(null)
+    setEditing(request)
+    // requestedDate comes back as an ISO string stored at noon UTC — take the
+    // YYYY-MM-DD portion so the date input shows the calendar date the customer picked.
+    setEditDate(request.requestedDate ? request.requestedDate.slice(0, 10) : '')
+    setEditNotes(request.notes || '')
+    setEditDescription(request.description || '')
+  }
+
+  const closeEdit = () => {
+    setEditing(null)
+    setEditError(null)
+  }
+
+  const saveEdit = async () => {
+    if (!editing) return
+    setSaving(true)
+    setEditError(null)
+
+    try {
+      const res = await fetch(`/api/service-requests/${editing.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requested_date: editDate || null,
+          notes: editNotes,
+          description: editDescription,
+        }),
+      })
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to update request')
+      }
+
+      closeEdit()
+      await fetchRequests()
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : 'Failed to update request')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const cancelRequest = async (request: ServiceRequest) => {
+    if (!window.confirm('Cancel this service request? This cannot be undone.')) {
+      return
+    }
+
+    setCancellingId(request.id)
+    try {
+      const res = await fetch(`/api/service-requests/${request.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cancel: true }),
+      })
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to cancel request')
+      }
+
+      await fetchRequests()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to cancel request')
+    } finally {
+      setCancellingId(null)
+    }
   }
 
   const filterRequests = (status: string | null) => {
@@ -143,6 +265,11 @@ export default function ServiceRequestsPage() {
                   {statusCfg.label}
                 </Badge>
               </div>
+
+              {/* Team view: whose request this is */}
+              {isTeamAdmin && request.userName && (
+                <p className="text-xs text-pink-600 mb-2">Requested by: {request.userName}</p>
+              )}
 
               {/* Address */}
               {request.installation && (
@@ -182,6 +309,30 @@ export default function ServiceRequestsPage() {
                 <div className="mt-3 pt-3 border-t border-gray-100">
                   <p className="text-xs text-gray-500 mb-1">Admin Notes:</p>
                   <p className="text-sm text-gray-700">{request.adminNotes}</p>
+                </div>
+              )}
+
+              {/* Customer actions — only while the request is still active */}
+              {isActive(request.status) && (
+                <div className="mt-4 pt-3 border-t border-gray-100 flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => openEdit(request)}
+                  >
+                    <Pencil className="w-4 h-4 mr-1.5" />
+                    Edit
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                    isLoading={cancellingId === request.id}
+                    onClick={() => cancelRequest(request)}
+                  >
+                    <Ban className="w-4 h-4 mr-1.5" />
+                    Cancel request
+                  </Button>
                 </div>
               )}
             </div>
@@ -226,8 +377,24 @@ export default function ServiceRequestsPage() {
       <Header title="Service Requests" />
 
       <div className="p-6">
-        {/* Action Button */}
-        <div className="flex justify-end mb-6">
+        {/* Action row: team_admin agent filter (left) + Schedule a Trip (right) */}
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3 mb-6">
+          {isTeamAdmin && members.length > 0 ? (
+            <div className="max-w-xs w-full">
+              <Select
+                label="Filter by agent"
+                placeholder=""
+                value={memberFilter}
+                onChange={(e) => setMemberFilter(e.target.value)}
+                options={[
+                  { value: '', label: 'All agents' },
+                  ...members.map((m) => ({ value: m.userId, label: m.name })),
+                ]}
+              />
+            </div>
+          ) : (
+            <div />
+          )}
           <Button onClick={() => setShowTripModal(true)}>
             <Truck className="w-4 h-4 mr-2" />
             Schedule a Trip
@@ -336,6 +503,57 @@ export default function ServiceRequestsPage() {
           fetchRequests()
         }}
       />
+
+      {/* Edit Request Modal */}
+      <Modal isOpen={!!editing} onClose={closeEdit} title="Edit Service Request">
+        <div className="space-y-4">
+          <Input
+            type="date"
+            label="Requested Date"
+            value={editDate}
+            onChange={(e) => setEditDate(e.target.value)}
+          />
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              Description
+            </label>
+            <textarea
+              value={editDescription}
+              onChange={(e) => setEditDescription(e.target.value)}
+              rows={3}
+              className="block w-full rounded-md border border-gray-300 bg-white px-4 py-2.5 text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-pink-500 focus:border-transparent transition-all duration-200"
+              placeholder="What do you need?"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              Notes
+            </label>
+            <textarea
+              value={editNotes}
+              onChange={(e) => setEditNotes(e.target.value)}
+              rows={3}
+              className="block w-full rounded-md border border-gray-300 bg-white px-4 py-2.5 text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-pink-500 focus:border-transparent transition-all duration-200"
+              placeholder="Anything else we should know?"
+            />
+          </div>
+
+          {editError && (
+            <p className="text-sm text-error">{editError}</p>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={closeEdit} disabled={saving}>
+              Cancel
+            </Button>
+            <Button onClick={saveEdit} isLoading={saving}>
+              Save Changes
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }
