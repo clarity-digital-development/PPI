@@ -109,6 +109,13 @@ export interface StepProps {
   onBehalfOf?: string
   // Current user's role — controls team-admin specific UX (cart, agent name input)
   currentUserRole?: string | null
+  // Edit mode: when 'edit', the wizard edits an existing order in place
+  // (PATCH instead of POST, no re-charge) rather than creating a new one.
+  mode?: 'create' | 'edit'
+  orderId?: string
+  // Display-only metadata about the order being edited (review step shows the
+  // original total alongside the recomputed one).
+  editMeta?: { orderNumber: string; originalTotal: number }
 }
 
 export const PRICING = {

@@ -1,45 +1,42 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
+import { orderItemSchema } from '@/lib/validations'
 import { z } from 'zod'
 
-const editOrderItemSchema = z.object({
-  item_type: z.enum(['sign', 'rider', 'lockbox', 'brochure_box']),
-  item_category: z.string().optional(),
-  description: z.string(),
-  quantity: z.number().min(1).default(1),
-  unit_price: z.number().min(0),
-  total_price: z.number().min(0),
-  // IDs are Prisma CUIDs (not UUIDs) — accept any non-empty string
-  customer_sign_id: z.string().optional(),
-  customer_rider_id: z.string().optional(),
-  customer_lockbox_id: z.string().optional(),
-  customer_brochure_box_id: z.string().optional(),
-  custom_value: z.string().optional(),
-})
-
+// Full edit payload. The order is rebuilt from this (mirrors order creation),
+// but is NOT re-charged — the existing payment intent, fuel surcharge and any
+// applied promo code are preserved. Property/scheduling fields are optional and
+// fall back to the existing order when omitted so partial payloads can't wipe
+// data.
 const editOrderSchema = z.object({
-  items: z.array(editOrderItemSchema),
-  // Post — optional. When present, the order's post is changed/added/removed.
-  // Values: a post type name, 'open_house', 'none'/'' (no post), or omitted
-  // (keep the existing post).
+  items: z.array(orderItemSchema).min(1, 'At least one item is required'),
+  // Post: a post type name, 'open_house', or 'none'/'' (no post).
   post_type: z.string().optional(),
-  // Sign options
-  sign_option: z.enum(['stored', 'at_property', 'none']).optional(),
-  stored_sign_id: z.string().optional(),
-  sign_description: z.string().optional(),
-  // Lockbox options
-  lockbox_option: z.enum(['sentrilock', 'mechanical_own', 'mechanical_rent', 'at_property', 'none']).optional(),
-  lockbox_code: z.string().optional(),
-  // Brochure box options
-  brochure_option: z.enum(['purchase', 'own', 'none']).optional(),
-  // Installation notes
+  // Property
+  property_type: z.string().optional(),
+  property_address: z.string().optional(),
+  property_city: z.string().optional(),
+  property_state: z.string().optional(),
+  property_zip: z.string().optional(),
+  installation_location: z.string().optional(),
+  installation_location_image: z.string().optional(),
   installation_notes: z.string().optional(),
+  is_gated_community: z.boolean().optional(),
+  gate_code: z.string().optional(),
+  has_marker_placed: z.boolean().optional(),
+  sign_orientation: z.string().optional(),
+  sign_orientation_other: z.string().optional(),
+  // Scheduling
+  requested_date: z.string().optional(),
+  is_expedited: z.boolean().optional(),
 })
 
-const FUEL_SURCHARGE = 2.47
 const NO_POST_SURCHARGE = 40
+const EXPEDITE_FEE = 50
 const FALLBACK_TAX_RATE = 0.06
+
+const VALID_PROPERTY_TYPES = ['residential', 'commercial', 'land', 'multi_family', 'house', 'construction', 'bare_land']
 
 export async function PATCH(
   request: NextRequest,
@@ -54,16 +51,9 @@ export async function PATCH(
 
     const { id } = await params
 
-    // Get the existing order
     const existingOrder = await prisma.order.findFirst({
-      where: {
-        id,
-        userId: user.id,
-      },
-      include: {
-        orderItems: true,
-        promoCode: true,
-      },
+      where: { id, userId: user.id },
+      include: { orderItems: true, promoCode: true },
     })
 
     if (!existingOrder) {
@@ -90,51 +80,37 @@ export async function PATCH(
 
     const editData = validationResult.data
 
-    // ---- Resolve the post for this edit ----
-    // If post_type is omitted, keep the existing post item untouched. If it's
-    // provided, change/add/remove it and recompute the no-post surcharge.
-    const existingPostItem = existingOrder.orderItems.find(item => item.itemType === 'post')
-    let postItem: { description: string; price: number } | null = existingPostItem
-      ? { description: existingPostItem.description, price: Number(existingPostItem.totalPrice) }
-      : null
-    let newPostTypeId: string | null = existingOrder.postTypeId
-    let noPostSurcharge = Number(existingOrder.noPostSurcharge)
-
-    if (editData.post_type !== undefined) {
-      const pt = editData.post_type
-      if (!pt || pt === 'none') {
-        // No post — service-trip surcharge applies
-        postItem = null
-        newPostTypeId = null
-        noPostSurcharge = NO_POST_SURCHARGE
-      } else if (pt === 'open_house') {
-        // Open house / wire frame only — no post charge, no surcharge
-        postItem = null
-        newPostTypeId = null
-        noPostSurcharge = 0
-      } else {
-        const postType = await prisma.postType.findFirst({ where: { name: pt } })
-        if (!postType) {
-          return NextResponse.json({ error: `Invalid post type: ${pt}` }, { status: 400 })
-        }
-        postItem = { description: `${postType.name} (install & pickup)`, price: Number(postType.price) }
-        newPostTypeId = postType.id
-        noPostSurcharge = 0
+    // ---- Resolve the post ----
+    // post_type is always sent in full-edit mode: a post name, 'open_house', or
+    // 'none'/'' for no post (service trip fee applies).
+    let newPostTypeId: string | null = null
+    let noPostSurcharge = 0
+    const pt = editData.post_type
+    if (!pt || pt === 'none') {
+      newPostTypeId = null
+      noPostSurcharge = NO_POST_SURCHARGE
+    } else if (pt === 'open_house') {
+      newPostTypeId = null
+      noPostSurcharge = 0
+    } else {
+      const postType = await prisma.postType.findFirst({ where: { name: pt } })
+      if (!postType) {
+        return NextResponse.json({ error: `Invalid post type: ${pt}` }, { status: 400 })
       }
+      newPostTypeId = postType.id
+      noPostSurcharge = 0
     }
 
-    // Calculate new subtotal (post + line items)
-    let newSubtotal = 0
-    if (postItem) newSubtotal += postItem.price
-    for (const item of editData.items) {
-      newSubtotal += item.total_price
-    }
+    // ---- Recompute pricing (no re-charge) ----
+    const newSubtotal = editData.items.reduce((sum, item) => sum + item.total_price, 0)
 
-    // Re-use existing order's fuel surcharge + expedite fee (don't re-charge)
+    // Fuel surcharge is preserved from the existing order (never re-charged).
     const fuelSurcharge = Number(existingOrder.fuelSurcharge)
-    const expediteFee = Number(existingOrder.expediteFee)
+    // Expedite fee follows the (editable) scheduling selection.
+    const expediteFee = editData.is_expedited ? EXPEDITE_FEE : 0
 
-    // Re-calculate discount if promo code exists
+    // Recompute discount from the order's existing promo code (promo can't be
+    // changed during an edit).
     let discount = 0
     if (existingOrder.promoCode && existingOrder.promoCode.isActive) {
       if (existingOrder.promoCode.discountType === 'percentage') {
@@ -150,70 +126,55 @@ export async function PATCH(
     const tax = Math.round(taxableAmount * FALLBACK_TAX_RATE * 100) / 100
     const total = discountedSubtotal + fuelSurcharge + expediteFee + noPostSurcharge + tax
 
-    // Collect inventory IDs from the OLD line items (about to be deleted) so we
-    // can restore those records back to inStorage:true — unless they're also
-    // referenced in the NEW items (in which case they should stay out).
-    const oldNonPostItems = existingOrder.orderItems.filter(i => i.itemType !== 'post')
+    // ---- Inventory bookkeeping ----
+    // All existing line items are being replaced. Restore any inventory they
+    // referenced back to inStorage:true, UNLESS the new items reference them too
+    // (then they stay out). Then lock everything the new items reference.
     const newSignIds = new Set(editData.items.map(i => i.customer_sign_id).filter(Boolean) as string[])
     const newRiderIds = new Set(editData.items.map(i => i.customer_rider_id).filter(Boolean) as string[])
     const newLockboxIds = new Set(editData.items.map(i => i.customer_lockbox_id).filter(Boolean) as string[])
     const newBrochureIds = new Set(editData.items.map(i => i.customer_brochure_box_id).filter(Boolean) as string[])
 
     const idsToRestore = {
-      signs: oldNonPostItems.map(i => i.customerSignId).filter((id): id is string => !!id && !newSignIds.has(id)),
-      riders: oldNonPostItems.map(i => i.customerRiderId).filter((id): id is string => !!id && !newRiderIds.has(id)),
-      lockboxes: oldNonPostItems.map(i => i.customerLockboxId).filter((id): id is string => !!id && !newLockboxIds.has(id)),
-      brochureBoxes: oldNonPostItems.map(i => i.customerBrochureBoxId).filter((id): id is string => !!id && !newBrochureIds.has(id)),
+      signs: existingOrder.orderItems.map(i => i.customerSignId).filter((x): x is string => !!x && !newSignIds.has(x)),
+      riders: existingOrder.orderItems.map(i => i.customerRiderId).filter((x): x is string => !!x && !newRiderIds.has(x)),
+      lockboxes: existingOrder.orderItems.map(i => i.customerLockboxId).filter((x): x is string => !!x && !newLockboxIds.has(x)),
+      brochureBoxes: existingOrder.orderItems.map(i => i.customerBrochureBoxId).filter((x): x is string => !!x && !newBrochureIds.has(x)),
     }
 
-    // Update order in a transaction (atomic: items + inventory both update or neither)
-    const postChanged = editData.post_type !== undefined
+    // Resolve property fields, falling back to the existing order when omitted.
+    const propertyType = editData.property_type ?? existingOrder.propertyType
+    if (!VALID_PROPERTY_TYPES.includes(propertyType)) {
+      return NextResponse.json({ error: `Invalid property type: ${propertyType}` }, { status: 400 })
+    }
+
+    const scheduledDate = editData.requested_date
+      ? new Date(editData.requested_date + 'T12:00:00Z')
+      : null
+
     const updatedOrder = await prisma.$transaction(async (tx) => {
-      // Delete line items. If the post is being changed we delete the post too
-      // and recreate it below; otherwise leave the existing post row alone.
-      await tx.orderItem.deleteMany({
-        where: postChanged
-          ? { orderId: id }
-          : { orderId: id, itemType: { not: 'post' } },
+      // Replace ALL line items (the post is included in items[] as item_type
+      // 'post', mirroring order creation)
+      await tx.orderItem.deleteMany({ where: { orderId: id } })
+
+      await tx.orderItem.createMany({
+        data: editData.items.map((item) => ({
+          orderId: id,
+          itemType: item.item_type,
+          itemCategory: item.item_category || null,
+          description: item.description,
+          quantity: item.quantity,
+          unitPrice: item.unit_price,
+          totalPrice: item.total_price,
+          customerSignId: item.customer_sign_id || null,
+          customerRiderId: item.customer_rider_id || null,
+          customerLockboxId: item.customer_lockbox_id || null,
+          customerBrochureBoxId: item.customer_brochure_box_id || null,
+          customValue: item.custom_value || null,
+        })),
       })
 
-      // Recreate the post item if the post changed and there is one
-      if (postChanged && postItem) {
-        await tx.orderItem.create({
-          data: {
-            orderId: id,
-            itemType: 'post',
-            itemCategory: 'new',
-            description: postItem.description,
-            quantity: 1,
-            unitPrice: postItem.price,
-            totalPrice: postItem.price,
-          },
-        })
-      }
-
-      // Create new line items
-      if (editData.items.length > 0) {
-        await tx.orderItem.createMany({
-          data: editData.items.map((item) => ({
-            orderId: id,
-            itemType: item.item_type,
-            itemCategory: item.item_category || null,
-            description: item.description,
-            quantity: item.quantity,
-            unitPrice: item.unit_price,
-            totalPrice: item.total_price,
-            customerSignId: item.customer_sign_id || null,
-            customerRiderId: item.customer_rider_id || null,
-            customerLockboxId: item.customer_lockbox_id || null,
-            customerBrochureBoxId: item.customer_brochure_box_id || null,
-            customValue: item.custom_value || null,
-          })),
-        })
-      }
-
-      // Restore inventory items that were on the OLD order but not the NEW order
-      // (back to inStorage:true so they can be selected again)
+      // Restore inventory referenced only by the OLD order
       if (idsToRestore.signs.length)
         await tx.customerSign.updateMany({ where: { id: { in: idsToRestore.signs } }, data: { inStorage: true } })
       if (idsToRestore.riders.length)
@@ -223,8 +184,7 @@ export async function PATCH(
       if (idsToRestore.brochureBoxes.length)
         await tx.customerBrochureBox.updateMany({ where: { id: { in: idsToRestore.brochureBoxes } }, data: { inStorage: true } })
 
-      // Mark inventory items referenced by the NEW order as inStorage:false
-      // (idempotent — already-out items just stay out)
+      // Lock inventory referenced by the NEW order (idempotent)
       if (newSignIds.size)
         await tx.customerSign.updateMany({ where: { id: { in: Array.from(newSignIds) } }, data: { inStorage: false } })
       if (newRiderIds.size)
@@ -234,31 +194,43 @@ export async function PATCH(
       if (newBrochureIds.size)
         await tx.customerBrochureBox.updateMany({ where: { id: { in: Array.from(newBrochureIds) } }, data: { inStorage: false } })
 
-      // Update order totals and notes (and post type + surcharge if changed)
       const order = await tx.order.update({
         where: { id },
         data: {
+          postTypeId: newPostTypeId,
+          // Property
+          propertyType: propertyType as never,
+          propertyAddress: editData.property_address ?? existingOrder.propertyAddress,
+          propertyCity: editData.property_city ?? existingOrder.propertyCity,
+          propertyState: editData.property_state ?? existingOrder.propertyState,
+          propertyZip: editData.property_zip ?? existingOrder.propertyZip,
+          installationLocation: editData.installation_location ?? existingOrder.installationLocation,
+          installationLocationImage: editData.installation_location_image ?? existingOrder.installationLocationImage,
+          propertyNotes: editData.installation_notes ?? existingOrder.propertyNotes,
+          isGatedCommunity: editData.is_gated_community ?? existingOrder.isGatedCommunity,
+          gateCode: editData.gate_code ?? existingOrder.gateCode,
+          hasMarkerPlaced: editData.has_marker_placed ?? existingOrder.hasMarkerPlaced,
+          signOrientation: editData.sign_orientation ?? existingOrder.signOrientation,
+          signOrientationOther: editData.sign_orientation_other ?? existingOrder.signOrientationOther,
+          // Scheduling
+          scheduledDate,
+          isExpedited: editData.is_expedited ?? existingOrder.isExpedited,
+          // Pricing
           subtotal: newSubtotal,
+          noPostSurcharge,
+          expediteFee,
           discount,
           tax,
           total,
-          noPostSurcharge,
-          ...(postChanged ? { postTypeId: newPostTypeId } : {}),
-          propertyNotes: editData.installation_notes !== undefined
-            ? editData.installation_notes
-            : existingOrder.propertyNotes,
         },
-        include: {
-          orderItems: true,
-          postType: true,
-        },
+        include: { orderItems: true, postType: true },
       })
 
       return order
     })
 
     console.log(
-      `Edited order ${updatedOrder.orderNumber}: restored ${idsToRestore.signs.length} signs, ${idsToRestore.riders.length} riders, ${idsToRestore.lockboxes.length} lockboxes, ${idsToRestore.brochureBoxes.length} brochures; locked ${newSignIds.size} signs, ${newRiderIds.size} riders, ${newLockboxIds.size} lockboxes, ${newBrochureIds.size} brochures`
+      `Edited order ${updatedOrder.orderNumber}: restored ${idsToRestore.signs.length} signs, ${idsToRestore.riders.length} riders, ${idsToRestore.lockboxes.length} lockboxes, ${idsToRestore.brochureBoxes.length} brochures; locked ${newSignIds.size} signs, ${newRiderIds.size} riders, ${newLockboxIds.size} lockboxes, ${newBrochureIds.size} brochures; new total $${total.toFixed(2)}`
     )
 
     return NextResponse.json({ order: updatedOrder })

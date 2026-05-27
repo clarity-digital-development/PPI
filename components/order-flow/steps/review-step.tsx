@@ -22,13 +22,20 @@ export function ReviewStep({
   setIsSubmitting,
   onBehalfOf,
   currentUserRole,
+  mode = 'create',
+  orderId,
+  editMeta,
 }: StepProps) {
+  // Edit mode reuses this step to save changes to an existing order (PATCH,
+  // no re-charge) rather than creating + paying for a new one.
+  const isEdit = mode === 'edit'
   // Cart + agent-name input are enabled for team-admin accounts AND for
   // Pink Posts internal admins (so admin@pinkposts.com can test/use the
   // same flow). Also enabled when an admin is placing on behalf of a
   // specific agent. Regular customers get the classic single-order flow.
+  // Never enabled while editing (an edit is a single in-place update).
   const isTeamAdmin = currentUserRole === 'team_admin' || currentUserRole === 'admin'
-  const cartEnabled = isTeamAdmin || !!onBehalfOf
+  const cartEnabled = (isTeamAdmin || !!onBehalfOf) && !isEdit
   const router = useRouter()
   const [error, setError] = useState<string | null>(null)
   const [promoCodeInput, setPromoCodeInput] = useState(formData.promo_code || '')
@@ -104,7 +111,7 @@ export function ReviewStep({
   // Lockbox
   if (formData.lockbox_option === 'sentrilock' || formData.lockbox_option === 'mechanical_own') {
     orderItems.push({
-      description: `${formData.lockbox_option === 'sentrilock' ? 'SentriLock' : 'Mechanical Lockbox'} Install`,
+      description: `${formData.lockbox_option === 'sentrilock' ? 'Sentrilock/Supra' : 'Mechanical Lockbox'} Install`,
       price: PRICING.lockbox_install,
     })
   } else if (formData.lockbox_option === 'at_property') {
@@ -455,25 +462,9 @@ export function ReviewStep({
     }
   }
 
-  const handleSubmit = async () => {
-    // Ensure at least one item is in the order
-    if (orderItems.length === 0) {
-      setError('Please select at least one item for your order')
-      return
-    }
-
-    // Check for payment method
-    const selectedPaymentMethodId = formData.payment_method_id || defaultPaymentMethod?.id
-    if (!selectedPaymentMethodId) {
-      setError('Please add a payment method before placing your order')
-      return
-    }
-
-    setIsSubmitting?.(true)
-    setError(null)
-
-    try {
-      // Build properly typed order items
+  // Build the typed order items[] array from the current form selections.
+  // Shared by create (POST /api/orders) and edit (PATCH /api/orders/[id]/edit).
+  const buildItems = () => {
       const items: Array<{
         item_type: string
         item_category?: string
@@ -580,11 +571,12 @@ export function ReviewStep({
         items.push({
           item_type: 'lockbox',
           item_category: 'owned',
-          description: 'SentriLock Install',
+          description: 'Sentrilock/Supra Install',
           quantity: 1,
           unit_price: PRICING.lockbox_install,
           total_price: PRICING.lockbox_install,
           customer_lockbox_id: formData.customer_lockbox_id,
+          custom_value: formData.lockbox_code || undefined,
         })
       } else if (formData.lockbox_option === 'mechanical_own') {
         items.push({
@@ -595,6 +587,7 @@ export function ReviewStep({
           unit_price: PRICING.lockbox_install,
           total_price: PRICING.lockbox_install,
           customer_lockbox_id: formData.customer_lockbox_id,
+          custom_value: formData.lockbox_code || undefined,
         })
       } else if (formData.lockbox_option === 'at_property') {
         items.push({
@@ -606,15 +599,20 @@ export function ReviewStep({
           quantity: 1,
           unit_price: PRICING.lockbox_install,
           total_price: PRICING.lockbox_install,
+          // Persist the code so it round-trips when the order is edited
+          custom_value: formData.lockbox_code || undefined,
         })
       } else if (formData.lockbox_option === 'mechanical_rent') {
         items.push({
           item_type: 'lockbox',
           item_category: 'rental',
-          description: 'Mechanical Lockbox Rental',
+          description: formData.lockbox_code
+            ? `Mechanical Lockbox Rental — code ${formData.lockbox_code}`
+            : 'Mechanical Lockbox Rental',
           quantity: 1,
           unit_price: PRICING.lockbox_rental,
           total_price: PRICING.lockbox_rental,
+          custom_value: formData.lockbox_code || undefined,
         })
       }
 
@@ -734,6 +732,80 @@ export function ReviewStep({
         })
       }
 
+    return items
+  }
+
+  // Edit mode: PATCH the full order payload to the edit endpoint. The server
+  // rebuilds the order (items, post, pricing, inventory) but does NOT re-charge
+  // — fuel/delivery fees and the existing payment are preserved.
+  const handleSaveEdit = async () => {
+    if (orderItems.length === 0) {
+      setError('Please keep at least one item on the order')
+      return
+    }
+    setIsSubmitting?.(true)
+    setError(null)
+    try {
+      const items = buildItems()
+
+      const response = await fetch(`/api/orders/${orderId}/edit`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items,
+          // undefined post_type means "no post" — send explicit 'none' so the
+          // server applies the no-post service trip fee
+          post_type: formData.post_type ?? 'none',
+          property_type: formData.property_type,
+          property_address: formData.property_address,
+          property_city: formData.property_city,
+          property_state: formData.property_state,
+          property_zip: formData.property_zip,
+          installation_location: formData.installation_location,
+          installation_location_image: formData.installation_location_image,
+          installation_notes: formData.installation_notes,
+          is_gated_community: formData.is_gated_community,
+          gate_code: formData.gate_code,
+          has_marker_placed: formData.has_marker_placed,
+          sign_orientation: formData.sign_orientation,
+          sign_orientation_other: formData.sign_orientation_other,
+          requested_date: formData.requested_date,
+          is_expedited: formData.schedule_type === 'expedited',
+        }),
+      })
+
+      const data = await response.json()
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to save changes')
+      }
+      router.push(`/dashboard/orders/${orderId}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred')
+    } finally {
+      setIsSubmitting?.(false)
+    }
+  }
+
+  const handleSubmit = async () => {
+    // Ensure at least one item is in the order
+    if (orderItems.length === 0) {
+      setError('Please select at least one item for your order')
+      return
+    }
+
+    // Check for payment method
+    const selectedPaymentMethodId = formData.payment_method_id || defaultPaymentMethod?.id
+    if (!selectedPaymentMethodId) {
+      setError('Please add a payment method before placing your order')
+      return
+    }
+
+    setIsSubmitting?.(true)
+    setError(null)
+
+    try {
+      const items = buildItems()
+
       const response = await fetch('/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -821,8 +893,14 @@ export function ReviewStep({
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">Review & Pay</h2>
-        <p className="text-gray-600">Review your order details and complete payment.</p>
+        <h2 className="text-2xl font-bold text-gray-900 mb-2">
+          {isEdit ? 'Review Changes' : 'Review & Pay'}
+        </h2>
+        <p className="text-gray-600">
+          {isEdit
+            ? `Review your updated order${editMeta ? ` ${editMeta.orderNumber}` : ''} and save your changes.`
+            : 'Review your order details and complete payment.'}
+        </p>
       </div>
 
       {/* Order Summary */}
@@ -858,7 +936,10 @@ export function ReviewStep({
           ))}
         </div>
 
-        {/* Promo Code */}
+        {/* Promo Code — hidden while editing (the server keeps the order's
+            existing promo and recomputes the discount; promo can't be changed
+            during an edit) */}
+        {!isEdit && (
         <div className="mt-4 pt-4 border-t border-gray-200">
           <div className="flex items-center gap-2 mb-2">
             <Tag className="w-4 h-4 text-gray-500" />
@@ -907,6 +988,7 @@ export function ReviewStep({
             <p className="mt-2 text-sm text-red-600">{promoCodeError}</p>
           )}
         </div>
+        )}
 
         {/* Totals */}
         <div className="mt-4 pt-4 border-t border-gray-200 space-y-2">
@@ -947,13 +1029,27 @@ export function ReviewStep({
             <span className="text-gray-900">${tax.toFixed(2)}</span>
           </div>
           <div className="flex justify-between text-lg font-bold pt-2 border-t border-gray-200">
-            <span className="text-gray-900">Total</span>
+            <span className="text-gray-900">{isEdit ? 'New Total' : 'Total'}</span>
             <span className="text-pink-600">${total.toFixed(2)}</span>
           </div>
+          {isEdit && editMeta && Math.abs(total - editMeta.originalTotal) >= 0.01 && (
+            <div className={cn(
+              'flex justify-between text-sm font-medium pt-1',
+              total > editMeta.originalTotal ? 'text-amber-600' : 'text-green-600'
+            )}>
+              <span>{total > editMeta.originalTotal ? 'Additional charge vs. original' : 'Reduced vs. original'}</span>
+              <span>
+                {total > editMeta.originalTotal ? '+' : '-'}${Math.abs(total - editMeta.originalTotal).toFixed(2)}
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Payment Method */}
+      {/* Payment Method — hidden while editing (no re-charge on edit) and
+          hidden for cart accounts (team_admin / on-behalf-of), which select the
+          card on the cart checkout screen for the single combined charge. */}
+      {!isEdit && !cartEnabled && (
       <div className="bg-white border border-gray-200 rounded-xl p-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-semibold text-gray-900 flex items-center gap-2">
@@ -1028,6 +1124,19 @@ export function ReviewStep({
           </label>
         )}
       </div>
+      )}
+
+      {/* Edit mode: explain payment handling in place of the payment selector */}
+      {isEdit && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 flex-shrink-0 text-blue-600 mt-0.5" />
+          <p className="text-sm text-blue-800">
+            Saving updates this order&apos;s details and totals. We do not automatically
+            re-charge your card for edits — the Pink Posts team will reconcile any
+            balance change with you directly.
+          </p>
+        </div>
+      )}
 
       {/* Disclosure & Terms */}
       <div className="bg-gray-50 rounded-lg p-4 text-sm text-gray-600 space-y-3">
@@ -1061,7 +1170,7 @@ export function ReviewStep({
 
       {/* Team admin: ask which agent on the team sold this property so it's
           attributable on the order */}
-      {isTeamAdmin && (
+      {isTeamAdmin && !isEdit && (
         <div className="p-4 bg-pink-50 border border-pink-200 rounded-xl">
           <label className="block text-sm font-semibold text-pink-900 mb-1">
             Agent who sold this property
@@ -1079,8 +1188,18 @@ export function ReviewStep({
         </div>
       )}
 
-      {/* Submit Buttons — cart mode (team_admin or on-behalf-of) shows batching */}
-      {cartEnabled ? (
+      {/* Submit Buttons — edit mode saves in place; cart mode (team_admin or
+          on-behalf-of) shows batching; everyone else places + pays now */}
+      {isEdit ? (
+        <Button
+          size="lg"
+          className="w-full"
+          onClick={handleSaveEdit}
+          disabled={isSubmitting}
+        >
+          {isSubmitting ? 'Saving…' : 'Save Changes'}
+        </Button>
+      ) : cartEnabled ? (
         <div className="space-y-3">
           <Button
             size="lg"
@@ -1091,16 +1210,9 @@ export function ReviewStep({
             {addingToCart ? 'Adding…' : `Add to Cart — $${total.toFixed(2)}`}
           </Button>
           <p className="text-xs text-center text-gray-500">
-            Build a batch of orders, then check out all at once.
+            Build a batch of orders, then check out all at once — a single
+            combined charge is collected on the cart screen.
           </p>
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={isSubmitting || (!activePaymentMethods?.length && !formData.payment_method_id)}
-            className="w-full text-center text-sm text-pink-600 hover:text-pink-700 font-medium py-2 underline disabled:opacity-40"
-          >
-            {isSubmitting ? 'Processing…' : 'Or place this order now'}
-          </button>
         </div>
       ) : (
         <Button

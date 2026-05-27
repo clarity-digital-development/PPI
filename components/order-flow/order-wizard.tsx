@@ -27,7 +27,7 @@ const steps = [
   { id: 'review', title: 'Review & Pay', component: ReviewStep },
 ]
 
-const initialFormData: OrderFormData = {
+const defaultFormData: OrderFormData = {
   // Property
   property_type: undefined,
   property_address: '',
@@ -101,12 +101,30 @@ interface OrderWizardProps {
   // The current user's role — used to enable team-admin specific UX
   // (cart by default, agent-name input on review step).
   currentUserRole?: string | null
+  // Edit mode: reuse the full wizard to edit an existing order page-by-page.
+  // When 'edit', `initialFormData` seeds every field from the existing order,
+  // all steps are unlocked for free navigation, and the review step saves via
+  // PATCH instead of creating a new order.
+  mode?: 'create' | 'edit'
+  orderId?: string
+  // Edit mode passes a full OrderFormData; create mode may pass a partial
+  // preset (e.g. a team_admin's selected agent name). Merged over defaults.
+  initialFormData?: Partial<OrderFormData>
+  editMeta?: { orderNumber: string; originalTotal: number }
 }
 
-export function OrderWizard({ inventory, paymentMethods, onBehalfOf, currentUserRole }: OrderWizardProps) {
+export function OrderWizard({ inventory, paymentMethods, onBehalfOf, currentUserRole, mode = 'create', orderId, initialFormData, editMeta }: OrderWizardProps) {
+  const isEdit = mode === 'edit'
   const [currentStep, setCurrentStep] = useState(0)
-  const [highestStep, setHighestStep] = useState(0) // Track furthest step reached
-  const [formData, setFormData] = useState<OrderFormData>(initialFormData)
+  // In edit mode every step has effectively been "visited" so the customer can
+  // jump straight to any page to make a correction.
+  const [highestStep, setHighestStep] = useState(isEdit ? steps.length - 1 : 0)
+  // Merge any provided initial data over the defaults. Edit mode passes a full
+  // OrderFormData (merge is a no-op over it); create mode may pass a partial
+  // preset (e.g. a team_admin's selected agent name).
+  const [formData, setFormData] = useState<OrderFormData>(
+    initialFormData ? { ...defaultFormData, ...initialFormData } : defaultFormData
+  )
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const updateFormData = useCallback((updates: Partial<OrderFormData>) => {
@@ -172,7 +190,10 @@ export function OrderWizard({ inventory, paymentMethods, onBehalfOf, currentUser
       case 'brochure':
         return true // Optional steps
       case 'scheduling':
-        return formData.schedule_type === 'next_available' || formData.requested_date
+        // Only "specific_date" needs a date chosen. next_available and
+        // expedited (same-day) proceed without one — previously expedited had
+        // no requested_date so this returned false and disabled Continue.
+        return formData.schedule_type !== 'specific_date' || !!formData.requested_date
       case 'review':
         return true
       default:
@@ -294,6 +315,9 @@ export function OrderWizard({ inventory, paymentMethods, onBehalfOf, currentUser
               setIsSubmitting={setIsSubmitting}
               onBehalfOf={onBehalfOf}
               currentUserRole={currentUserRole}
+              mode={mode}
+              orderId={orderId}
+              editMeta={editMeta}
             />
           </motion.div>
         </AnimatePresence>
