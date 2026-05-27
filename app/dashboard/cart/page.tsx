@@ -14,6 +14,7 @@ import {
   Package,
   User,
   MapPin,
+  Plus,
 } from 'lucide-react'
 import { getStripe } from '@/lib/stripe/client'
 
@@ -58,6 +59,15 @@ export default function CartPage() {
   }, [])
 
   const grandTotal = items.reduce((sum, item) => sum + item.estimatedTotal, 0)
+
+  // "Next order" → back to the place-order flow to add another order to the
+  // batch. Preserve the on_behalf_of param if this cart was built on behalf of
+  // a specific agent (cart items store it as agentId; team_admins placing under
+  // their own account leave it empty).
+  const onBehalfOfId = items.find(i => i.agentId)?.agentId || ''
+  const nextOrderHref = onBehalfOfId
+    ? `/dashboard/place-order?on_behalf_of=${encodeURIComponent(onBehalfOfId)}`
+    : '/dashboard/place-order'
 
   async function handleCheckoutAll() {
     if (items.length === 0 || !selectedPaymentMethod) return
@@ -197,8 +207,16 @@ export default function CartPage() {
               <span className="text-gray-400">(approx. — final total includes tax)</span>
             </p>
           </div>
-          {items.length > 0 && !checkingOut && (
-            <Button variant="outline" onClick={clearCart}>Clear cart</Button>
+          {items.length > 0 && !checkingOut && !done && (
+            <div className="flex items-center gap-2">
+              <Link href={nextOrderHref}>
+                <Button variant="outline">
+                  <Plus className="w-4 h-4 mr-1" />
+                  Next order
+                </Button>
+              </Link>
+              <Button variant="outline" onClick={clearCart}>Clear cart</Button>
+            </div>
           )}
         </div>
 
@@ -320,6 +338,12 @@ export default function CartPage() {
               <p className="text-xs text-center text-gray-500">
                 Single charge for the combined total — appears once on your statement.
               </p>
+              <Link href={nextOrderHref} className="block">
+                <Button variant="outline" className="w-full" disabled={checkingOut}>
+                  <Plus className="w-4 h-4 mr-1" />
+                  Add another order
+                </Button>
+              </Link>
             </CardContent>
           </Card>
         )}
