@@ -112,6 +112,7 @@ model User {
   // Orders placed by THIS user on behalf of an agent. The Order's userId is
   // the agent; placedByUserId is the team_admin who actually placed it.
   ordersPlacedFor Order[]   @relation("OrdersPlacedBy")
+  auditLogs       AuditLog[] @relation("AuditActor")
 
   @@index([teamId])
   @@map("users")
@@ -638,4 +639,36 @@ model PromoCodeUsage {
 enum DiscountType {
   percentage
   fixed
+}
+
+// ============================================
+// Audit Log
+// ============================================
+// Append-only record of consequential actions (refunds, cancellations,
+// role changes, inventory reassignments, etc.). Never updated, never deleted.
+// actorEmail/actorRole are denormalized so the record survives user deletion.
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  actorUserId String?  @map("actor_user_id")
+  actorEmail  String?  @map("actor_email")
+  actorRole   String?  @map("actor_role")
+
+  action      String
+  targetType  String?  @map("target_type")
+  targetId    String?  @map("target_id")
+
+  metadata    Json?
+  ipAddress   String?  @map("ip_address")
+  userAgent   String?  @map("user_agent")
+
+  actor       User?    @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([actorUserId])
+  @@index([targetType, targetId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
 }

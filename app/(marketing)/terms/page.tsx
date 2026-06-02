@@ -133,6 +133,10 @@ export default function TermsPage() {
                       a post rental charge of <strong>$18</strong> will be charged every 3 months until pickup
                       is requested and completed.
                     </p>
+                    <p className="text-sm text-gray-600 mt-2">
+                      <strong>Effective June 10, 2026.</strong> Orders placed before this date are not subject
+                      to the extended rental fee until that date.
+                    </p>
                   </div>
                   <p className="text-sm">
                     The extended rental fee will be automatically charged to the credit card on file that was

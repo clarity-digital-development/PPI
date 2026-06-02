@@ -14,7 +14,7 @@ interface CustomerData {
     phone: string
     company_name: string | null
     license_number: string | null
-    role: 'customer' | 'team_admin'
+    role: 'customer' | 'team_admin' | 'admin'
   }
   team: {
     id: string
@@ -70,11 +70,18 @@ export default function CustomerDetailPage() {
     lockbox_type: 'sentrilock',
     lockbox_code: '',
   })
-  const [editData, setEditData] = useState({
+  const [editData, setEditData] = useState<{
+    full_name: string
+    email: string
+    phone: string
+    company_name: string
+    role: 'customer' | 'team_admin' | 'admin'
+  }>({
     full_name: '',
     email: '',
     phone: '',
     company_name: '',
+    role: 'customer',
   })
   const [saving, setSaving] = useState(false)
 
@@ -93,6 +100,7 @@ export default function CustomerDetailPage() {
           email: data.customer.email || '',
           phone: data.customer.phone || '',
           company_name: data.customer.company_name || '',
+          role: data.customer.role,
         })
       }
     } catch (error) {
@@ -113,11 +121,15 @@ export default function CustomerDetailPage() {
           email: editData.email,
           phone: editData.phone,
           company: editData.company_name,
+          role: editData.role,
         }),
       })
       if (res.ok) {
         setShowEditModal(false)
         fetchCustomer()
+      } else {
+        const err = await res.json().catch(() => ({}))
+        alert(err.error || 'Failed to update customer')
       }
     } catch (error) {
       console.error('Error updating customer:', error)
@@ -300,7 +312,15 @@ export default function CustomerDetailPage() {
         </Link>
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">{data.customer.full_name}</h1>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-2xl font-bold text-gray-900">{data.customer.full_name}</h1>
+              {data.customer.role === 'admin' && (
+                <Badge className="bg-purple-100 text-purple-800 border-purple-200">Admin</Badge>
+              )}
+              {data.customer.role === 'team_admin' && (
+                <Badge className="bg-blue-100 text-blue-800 border-blue-200">Team Admin</Badge>
+              )}
+            </div>
             <p className="text-gray-600">{data.customer.email} {data.customer.phone && `\u2022 ${data.customer.phone}`}</p>
             {data.customer.company_name && (
               <p className="text-sm text-gray-500">{data.customer.company_name}</p>
@@ -750,6 +770,28 @@ export default function CustomerDetailPage() {
             value={editData.company_name}
             onChange={(e) => setEditData({ ...editData, company_name: e.target.value })}
           />
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
+            <select
+              value={editData.role}
+              onChange={(e) => setEditData({ ...editData, role: e.target.value as 'customer' | 'team_admin' | 'admin' })}
+              className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-pink-500 focus:outline-none focus:ring-1 focus:ring-pink-500"
+            >
+              <option value="customer">Customer</option>
+              <option value="team_admin">Team Admin (brokerage)</option>
+              <option value="admin">Admin (Pink Posts internal)</option>
+            </select>
+            {editData.role === 'admin' && data.customer.role !== 'admin' && (
+              <p className="mt-1 text-xs text-amber-700">
+                Promoting to <strong>Admin</strong> grants full Pink Posts admin access (all customers, orders, billing).
+              </p>
+            )}
+            {editData.role !== 'admin' && data.customer.role === 'admin' && (
+              <p className="mt-1 text-xs text-amber-700">
+                Demoting from <strong>Admin</strong> will revoke all Pink Posts admin access for this user.
+              </p>
+            )}
+          </div>
           <div className="flex justify-end gap-3 pt-4">
             <Button variant="outline" onClick={() => setShowEditModal(false)}>
               Cancel

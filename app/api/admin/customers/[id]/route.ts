@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser, isAdminOrTeamAdmin, canActOnBehalfOf } from '@/lib/auth-utils'
+import { audit, AuditAction } from '@/lib/audit'
+
+const ALLOWED_ROLES = ['customer', 'admin', 'team_admin'] as const
+type AllowedRole = (typeof ALLOWED_ROLES)[number]
 
 export async function GET(
   request: NextRequest,
@@ -229,10 +233,42 @@ export async function PUT(
     if (body.phone !== undefined) updateData.phone = body.phone
     if (body.company !== undefined) updateData.company = body.company
 
+    let roleChangeAudit: { from: string; to: AllowedRole } | null = null
+    if (body.role !== undefined) {
+      if (!ALLOWED_ROLES.includes(body.role)) {
+        return NextResponse.json(
+          { error: `Invalid role. Must be one of: ${ALLOWED_ROLES.join(', ')}` },
+          { status: 400 }
+        )
+      }
+      if (id === user.id) {
+        return NextResponse.json({ error: 'Cannot change your own role' }, { status: 400 })
+      }
+      const current = await prisma.user.findUnique({ where: { id }, select: { role: true } })
+      if (!current) {
+        return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
+      }
+      if (current.role !== body.role) {
+        updateData.role = body.role
+        roleChangeAudit = { from: current.role, to: body.role }
+      }
+    }
+
     const customer = await prisma.user.update({
       where: { id },
       data: updateData,
     })
+
+    if (roleChangeAudit) {
+      await audit({
+        actor: { id: user.id, email: user.email, role: user.role },
+        action: AuditAction.UserRoleChange,
+        targetType: 'user',
+        targetId: customer.id,
+        metadata: { email: customer.email, ...roleChangeAudit },
+        request,
+      })
+    }
 
     return NextResponse.json({
       customer: {
@@ -241,6 +277,7 @@ export async function PUT(
         full_name: customer.fullName,
         phone: customer.phone,
         company: customer.company,
+        role: customer.role,
       },
     })
   } catch (error) {
