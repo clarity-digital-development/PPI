@@ -235,6 +235,15 @@ export async function PUT(
 
     let roleChangeAudit: { from: string; to: AllowedRole } | null = null
     if (body.role !== undefined) {
+      // Defense in depth: even though the route is already gated to admins
+      // above, re-check at the sensitive operation so future refactors that
+      // loosen the outer gate don't accidentally expose role changes.
+      if (user.role !== 'admin') {
+        return NextResponse.json(
+          { error: 'Only platform admins can change roles' },
+          { status: 403 }
+        )
+      }
       if (!ALLOWED_ROLES.includes(body.role)) {
         return NextResponse.json(
           { error: `Invalid role. Must be one of: ${ALLOWED_ROLES.join(', ')}` },
@@ -249,6 +258,18 @@ export async function PUT(
         return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
       }
       if (current.role !== body.role) {
+        // Prevent last-admin lockout: refuse to demote the only remaining admin.
+        if (current.role === 'admin' && body.role !== 'admin') {
+          const remainingAdmins = await prisma.user.count({
+            where: { role: 'admin', id: { not: id } },
+          })
+          if (remainingAdmins === 0) {
+            return NextResponse.json(
+              { error: 'Cannot demote the last remaining admin. Promote another user to admin first.' },
+              { status: 400 }
+            )
+          }
+        }
         updateData.role = body.role
         roleChangeAudit = { from: current.role, to: body.role }
       }
