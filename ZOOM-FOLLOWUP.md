@@ -1,6 +1,6 @@
 # Pink Posts — Follow-up to our Zoom call
 
-Hi Ryan — here's a plain-English rundown of everything we built from your notes,
+Hi Ryan, here's a rundown of everything we built from your notes,
 where to find each item, and how to try it yourself. Nothing here is final until
 you've kicked the tires, so please test away.
 
@@ -125,23 +125,6 @@ dropdown for team accounts, and each row shows **which agent** it's for.
 In the **admin** area, team accounts now show a **"Team Admin" badge** in the
 customers list, and opening their profile shows their **team roster** with an
 **"Add Member"** button (members you add show up on their My Team page too).
-
----
-
-## 6. Free lockbox install for Semonin 🆕
-
-For the **Semonin broker account** (Peggy Heckert's team), installing an **owned
-lockbox is now free** — when you choose Sentrilock/Supra, a mechanical lockbox
-you own, or "lockbox at property," it shows **$0** instead of $5. **Renting** a
-mechanical lockbox is still **$10**. Everyone else still pays the normal $5
-install.
-
-It's a per-broker setting, so we can switch it on for other brokerages anytime.
-
-**Try it:** It's live on the Semonin account, and we also turned it on for your
-**test account** so you can see it: Place Order → pick an agent → **Lockbox**
-step → the owned options read **"Free"**, and renting still shows **$10**. The
-Review screen lists the lockbox install at **$0.00**.
 
 ---
 
