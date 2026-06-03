@@ -69,6 +69,7 @@ export default function CustomerDetailPage() {
     rider_type: '',
     lockbox_type: 'sentrilock',
     lockbox_code: '',
+    assigned_to_member_id: '',
   })
   const [editData, setEditData] = useState<{
     full_name: string
@@ -203,6 +204,12 @@ export default function CustomerDetailPage() {
     } else if (addType === 'other') {
       body.description = formData.description
     }
+    // Only forward the agent assignment if the customer actually has a
+    // team — non-team customers don't have members to assign to. 'other'
+    // items aren't agent-assignable anyway (no column on the table).
+    if (formData.assigned_to_member_id && addType !== 'other') {
+      body.assigned_to_member_id = formData.assigned_to_member_id
+    }
 
     try {
       const res = await fetch(`/api/admin/customers/${id}/inventory`, {
@@ -220,6 +227,7 @@ export default function CustomerDetailPage() {
           rider_type: '',
           lockbox_type: 'sentrilock',
           lockbox_code: '',
+          assigned_to_member_id: '',
         })
         fetchCustomer()
       } else {
@@ -932,6 +940,28 @@ export default function CustomerDetailPage() {
               value={formData.quantity}
               onChange={(e) => setFormData({ ...formData, quantity: parseInt(e.target.value) || 1 })}
             />
+          )}
+          {/* Assign-at-add: only for team_admin customers with members,
+              and not for "other" items (no assignment column on that table). */}
+          {addType !== 'other' && data.team && data.team.members.length > 0 && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Assign to agent <span className="text-gray-400 font-normal">(optional)</span>
+              </label>
+              <select
+                value={formData.assigned_to_member_id}
+                onChange={(e) => setFormData({ ...formData, assigned_to_member_id: e.target.value })}
+                className="w-full px-4 py-2.5 rounded-lg border border-gray-200 focus:border-pink-500 focus:ring-2 focus:ring-pink-200 outline-none"
+              >
+                <option value="">Unassigned (team pool)</option>
+                {data.team.members.map((m) => (
+                  <option key={m.id} value={m.id}>{m.name}</option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-gray-500">
+                Pre-assigning saves the team admin a step — they won&apos;t need to reassign in &quot;Team Inventory&quot; later.
+              </p>
+            </div>
           )}
           <div className="flex justify-end gap-3 pt-4">
             <Button variant="outline" onClick={() => setShowAddModal(false)}>

@@ -26,6 +26,13 @@ export async function POST(
     }
 
     const quantity = Math.max(1, parseInt(data.quantity) || 1)
+    // Optional: if the admin is adding inventory for a team_admin customer,
+    // they can pre-assign each item to a specific agent on the team.
+    // Empty string from the form means "unassigned" — coerce to null.
+    const assignedToMemberId: string | null =
+      typeof data.assigned_to_member_id === 'string' && data.assigned_to_member_id.length > 0
+        ? data.assigned_to_member_id
+        : null
     let result
 
     switch (type) {
@@ -38,6 +45,7 @@ export async function POST(
           description: data.description,
           imageUrl: data.image_url,
           inStorage: data.in_storage ?? true,
+          assignedToMemberId,
         }))
         if (quantity === 1) {
           result = await prisma.customerSign.create({ data: signData[0] })
@@ -71,6 +79,7 @@ export async function POST(
           riderId: riderId,
           isOwned: data.is_owned ?? true,
           inStorage: data.in_storage ?? true,
+          assignedToMemberId,
         }))
         if (quantity === 1) {
           result = await prisma.customerRider.create({ data: riderData[0] })
@@ -122,6 +131,7 @@ export async function POST(
           code: data.lockbox_code || data.code,
           isOwned: data.is_owned ?? true,
           inStorage: data.in_storage ?? true,
+          assignedToMemberId,
         }))
         if (quantity === 1) {
           result = await prisma.customerLockbox.create({ data: lockboxData[0] })
@@ -135,6 +145,7 @@ export async function POST(
           userId: customerId,
           description: data.description,
           inStorage: data.in_storage ?? true,
+          assignedToMemberId,
         }))
         if (quantity === 1) {
           result = await prisma.customerBrochureBox.create({ data: brochureData[0] })
