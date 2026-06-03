@@ -1,9 +1,9 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
-import { ArrowLeft, Plus, Minus, Trash2, Package, Tag, Lock, FileBox, Pencil, UserX, Archive, Users } from 'lucide-react'
+import { ArrowLeft, Plus, Minus, Trash2, Package, Tag, Lock, FileBox, Pencil, UserX, Archive, Users, X, ChevronDown } from 'lucide-react'
 import { Card, CardContent, Button, Input, Badge, Modal } from '@/components/ui'
 
 interface CustomerData {
@@ -27,6 +27,12 @@ interface CustomerData {
     lockboxes: Array<{ id: string; lockbox_type_id: string; lockbox_type: string; lockbox_code: string | null }>
     brochureBoxes: { id: string; quantity: number } | null
     otherItems: Array<{ id: string; description: string; quantity?: number }>
+    items: {
+      signs: Array<{ id: string; description: string; inStorage: boolean; assignedToMemberId: string | null }>
+      riders: Array<{ id: string; riderName: string; inStorage: boolean; assignedToMemberId: string | null }>
+      lockboxes: Array<{ id: string; type: string; code: string | null; serialNumber: string | null; inStorage: boolean; assignedToMemberId: string | null }>
+      brochureBoxes: Array<{ id: string; description: string | null; inStorage: boolean; assignedToMemberId: string | null }>
+    }
     deployed?: {
       signs: Array<{ id: string; description: string }>
       riders: Array<{ id: string; rider_type: string }>
@@ -85,6 +91,12 @@ export default function CustomerDetailPage() {
     role: 'customer',
   })
   const [saving, setSaving] = useState(false)
+  // Per-row selection for the agent-grouped bulk-reassign action bar.
+  // Maps a composite key `${type}:${id}` to {type, id} so we can both
+  // dedupe and serialize to the bulk endpoint without losing the type.
+  const [selectedItems, setSelectedItems] = useState<Map<string, { type: 'sign' | 'rider' | 'lockbox' | 'brochure_box'; id: string }>>(new Map())
+  const [reassignTargetId, setReassignTargetId] = useState<string>('')
+  const [reassigning, setReassigning] = useState(false)
 
   useEffect(() => {
     fetchCustomer()
@@ -271,6 +283,52 @@ export default function CustomerDetailPage() {
     }
   }
 
+  function toggleItemSelected(type: 'sign' | 'rider' | 'lockbox' | 'brochure_box', itemId: string) {
+    setSelectedItems((prev) => {
+      const next = new Map(prev)
+      const key = `${type}:${itemId}`
+      if (next.has(key)) next.delete(key)
+      else next.set(key, { type, id: itemId })
+      return next
+    })
+  }
+
+  function clearSelection() {
+    setSelectedItems(new Map())
+    setReassignTargetId('')
+  }
+
+  async function handleBulkReassign() {
+    if (selectedItems.size === 0) return
+    setReassigning(true)
+    try {
+      const res = await fetch(`/api/admin/customers/${id}/inventory/bulk-reassign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: Array.from(selectedItems.values()),
+          target_member_id: reassignTargetId || null,
+        }),
+      })
+      if (res.ok) {
+        clearSelection()
+        fetchCustomer()
+      } else {
+        const err = await res.json().catch(() => ({}))
+        if (res.status === 409 && err.code === 'items_held') {
+          alert('One or more selected items are in an active cart. Release the hold first via Admin → Inventory Holds, then try again.')
+        } else {
+          alert(err.error || 'Failed to reassign items')
+        }
+      }
+    } catch (error) {
+      console.error('Error bulk-reassigning items:', error)
+      alert('Failed to reassign items')
+    } finally {
+      setReassigning(false)
+    }
+  }
+
   async function handleReturnToStorage(type: 'sign' | 'rider' | 'lockbox' | 'brochure_box', itemId: string) {
     try {
       const res = await fetch(`/api/admin/customers/${id}/inventory`, {
@@ -288,6 +346,46 @@ export default function CustomerDetailPage() {
       console.error('Error returning item to storage:', error)
     }
   }
+
+  // Group per-row in-storage items by assignedToMemberId (null = Unassigned),
+  // so the per-agent collapsible section renders directly from this map.
+  const grouped = useMemo(() => {
+    type BucketKey = 'unassigned' | string
+    const empty = () => ({
+      signs: [] as Array<{ id: string; description: string }>,
+      riders: [] as Array<{ id: string; riderName: string }>,
+      lockboxes: [] as Array<{ id: string; type: string; code: string | null }>,
+      brochureBoxes: [] as Array<{ id: string; description: string | null }>,
+    })
+    const buckets: Record<BucketKey, ReturnType<typeof empty>> = { unassigned: empty() }
+    if (!data?.inventory.items) return buckets
+    const items = data.inventory.items
+    // Pre-create a bucket per known member so empty-state accordions still render.
+    if (data.team) {
+      for (const m of data.team.members) buckets[m.id] = empty()
+    }
+    const keyFor = (memberId: string | null): BucketKey => (memberId && buckets[memberId]) ? memberId : 'unassigned'
+    for (const s of items.signs) {
+      if (!s.inStorage) continue
+      buckets[keyFor(s.assignedToMemberId)].signs.push({ id: s.id, description: s.description })
+    }
+    for (const r of items.riders) {
+      if (!r.inStorage) continue
+      buckets[keyFor(r.assignedToMemberId)].riders.push({ id: r.id, riderName: r.riderName })
+    }
+    for (const l of items.lockboxes) {
+      if (!l.inStorage) continue
+      buckets[keyFor(l.assignedToMemberId)].lockboxes.push({ id: l.id, type: l.type, code: l.code })
+    }
+    for (const b of items.brochureBoxes) {
+      if (!b.inStorage) continue
+      buckets[keyFor(b.assignedToMemberId)].brochureBoxes.push({ id: b.id, description: b.description })
+    }
+    return buckets
+  }, [data])
+
+  // Per-agent grouping only makes sense when the customer's team has agents to assign to.
+  const useGroupedView = !!(data?.team && data.team.members.length > 0)
 
   if (loading) {
     return (
@@ -403,6 +501,102 @@ export default function CustomerDetailPage() {
         </Card>
       )}
 
+      {useGroupedView && data.team && (
+        <div className="space-y-6">
+          {/* Other items stays a separate card — customer_other_items has no assignedToMemberId column. */}
+          <Card>
+            <CardContent className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <Archive className="w-5 h-5 text-pink-500" />
+                  <h2 className="font-semibold text-gray-900">Other</h2>
+                </div>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setAddType('other')
+                    setFormData({ ...formData, description: '' })
+                    setShowAddModal(true)
+                  }}
+                >
+                  <Plus className="w-4 h-4 mr-1" />
+                  Add
+                </Button>
+              </div>
+              {data.inventory.otherItems && data.inventory.otherItems.length > 0 ? (
+                <div className="space-y-2">
+                  {data.inventory.otherItems.map((item) => (
+                    <div key={item.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                      <p className="font-medium text-gray-900">
+                        {item.description}
+                        {item.quantity && item.quantity > 1 && (
+                          <span className="ml-2 text-sm font-normal text-gray-500">×{item.quantity}</span>
+                        )}
+                      </p>
+                      <button
+                        onClick={() => handleDeleteInventory('other', item.id)}
+                        className="text-gray-400 hover:text-red-500"
+                        title={item.quantity && item.quantity > 1 ? 'Removes one of these items' : 'Delete'}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-gray-500 text-sm">No other items</p>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Top-level "Add Inventory" cluster — pre-assigning at add time means
+              admins don't need to drop down into each section to add. */}
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-medium text-gray-700 mr-2">Add inventory:</span>
+                <Button size="sm" variant="outline" onClick={() => { setAddType('sign'); setShowAddModal(true) }}>
+                  <Plus className="w-4 h-4 mr-1" /> Sign
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => { setAddType('rider'); setShowAddModal(true) }}>
+                  <Plus className="w-4 h-4 mr-1" /> Rider
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => { setAddType('lockbox'); setShowAddModal(true) }}>
+                  <Plus className="w-4 h-4 mr-1" /> Lockbox
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => { setAddType('brochure_box'); setShowAddModal(true) }}>
+                  <Plus className="w-4 h-4 mr-1" /> Brochure Box
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          <AgentInventorySection
+            title="Unassigned"
+            sublabel="Team pool — not yet assigned to any agent"
+            defaultOpen
+            bucket={grouped.unassigned}
+            selectedItems={selectedItems}
+            onToggle={toggleItemSelected}
+            onDelete={handleDeleteInventory}
+          />
+
+          {data.team.members.map((m) => (
+            <AgentInventorySection
+              key={m.id}
+              title={m.name}
+              sublabel={m.email || undefined}
+              defaultOpen={false}
+              bucket={grouped[m.id] || { signs: [], riders: [], lockboxes: [], brochureBoxes: [] }}
+              selectedItems={selectedItems}
+              onToggle={toggleItemSelected}
+              onDelete={handleDeleteInventory}
+            />
+          ))}
+        </div>
+      )}
+
+      {!useGroupedView && (
       <div className="grid lg:grid-cols-2 gap-6">
         {/* Signs */}
         <Card>
@@ -631,6 +825,37 @@ export default function CustomerDetailPage() {
           </CardContent>
         </Card>
       </div>
+      )}
+
+      {/* Sticky bulk-action bar — appears when ≥1 item is selected in the grouped view. */}
+      {useGroupedView && selectedItems.size > 0 && data.team && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 w-[min(720px,calc(100vw-2rem))]">
+          <div className="bg-white border border-pink-300 shadow-lg rounded-xl px-4 py-3 flex flex-wrap items-center gap-3">
+            <span className="text-sm font-medium text-gray-900">
+              {selectedItems.size} item{selectedItems.size === 1 ? '' : 's'} selected
+            </span>
+            <span className="text-sm text-gray-500">·</span>
+            <span className="text-sm text-gray-700">Reassign to:</span>
+            <select
+              value={reassignTargetId}
+              onChange={(e) => setReassignTargetId(e.target.value)}
+              className="px-3 py-1.5 rounded-lg border border-gray-300 text-sm focus:border-pink-500 focus:ring-2 focus:ring-pink-200 outline-none"
+            >
+              <option value="">Unassigned (team pool)</option>
+              {data.team.members.map((m) => (
+                <option key={m.id} value={m.id}>{m.name}</option>
+              ))}
+            </select>
+            <Button size="sm" onClick={handleBulkReassign} disabled={reassigning}>
+              {reassigning ? 'Applying…' : 'Apply'}
+            </Button>
+            <Button size="sm" variant="outline" onClick={clearSelection}>
+              <X className="w-4 h-4 mr-1" />
+              Clear
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Deployed (out of storage) inventory */}
       {data.inventory.deployed && (
@@ -932,7 +1157,7 @@ export default function CustomerDetailPage() {
               placeholder="e.g., Metal frame sign"
             />
           )}
-          {addType !== 'other' && (
+          {addType && (
             <Input
               label="Quantity"
               type="number"
@@ -971,6 +1196,174 @@ export default function CustomerDetailPage() {
           </div>
         </div>
       </Modal>
+    </div>
+  )
+}
+
+interface AgentBucket {
+  signs: Array<{ id: string; description: string }>
+  riders: Array<{ id: string; riderName: string }>
+  lockboxes: Array<{ id: string; type: string; code: string | null }>
+  brochureBoxes: Array<{ id: string; description: string | null }>
+}
+
+interface AgentInventorySectionProps {
+  title: string
+  sublabel?: string
+  defaultOpen?: boolean
+  bucket: AgentBucket
+  selectedItems: Map<string, { type: 'sign' | 'rider' | 'lockbox' | 'brochure_box'; id: string }>
+  onToggle: (type: 'sign' | 'rider' | 'lockbox' | 'brochure_box', id: string) => void
+  onDelete: (type: string, id: string) => void
+}
+
+function AgentInventorySection({
+  title,
+  sublabel,
+  defaultOpen = false,
+  bucket,
+  selectedItems,
+  onToggle,
+  onDelete,
+}: AgentInventorySectionProps) {
+  const [open, setOpen] = useState(defaultOpen)
+  const counts: string[] = []
+  if (bucket.signs.length) counts.push(`${bucket.signs.length} sign${bucket.signs.length === 1 ? '' : 's'}`)
+  if (bucket.riders.length) counts.push(`${bucket.riders.length} rider${bucket.riders.length === 1 ? '' : 's'}`)
+  if (bucket.lockboxes.length) counts.push(`${bucket.lockboxes.length} lockbox${bucket.lockboxes.length === 1 ? '' : 'es'}`)
+  if (bucket.brochureBoxes.length) counts.push(`${bucket.brochureBoxes.length} brochure box${bucket.brochureBoxes.length === 1 ? '' : 'es'}`)
+  const summary = counts.length > 0 ? counts.join(' · ') : 'No items'
+  const total = bucket.signs.length + bucket.riders.length + bucket.lockboxes.length + bucket.brochureBoxes.length
+
+  const isSelected = (type: 'sign' | 'rider' | 'lockbox' | 'brochure_box', id: string) =>
+    selectedItems.has(`${type}:${id}`)
+
+  return (
+    <Card>
+      <CardContent className="p-0">
+        <button
+          type="button"
+          onClick={() => setOpen(o => !o)}
+          className="w-full flex items-center justify-between gap-3 px-6 py-4 text-left hover:bg-gray-50 transition-colors"
+        >
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <h3 className="font-semibold text-gray-900 truncate">{title}</h3>
+              {total > 0 && (
+                <Badge variant="info">{total}</Badge>
+              )}
+            </div>
+            {sublabel && <p className="text-xs text-gray-500 truncate">{sublabel}</p>}
+            <p className="text-sm text-gray-600 mt-0.5">{summary}</p>
+          </div>
+          <ChevronDown className={`w-5 h-5 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+        </button>
+        {open && (
+          <div className="px-6 pb-6 pt-2 space-y-4 border-t border-gray-100">
+            <ItemList
+              icon={<Package className="w-4 h-4 text-pink-500" />}
+              heading="Signs"
+              items={bucket.signs.map(s => ({ id: s.id, primary: s.description }))}
+              type="sign"
+              isSelected={isSelected}
+              onToggle={onToggle}
+              onDelete={onDelete}
+            />
+            <ItemList
+              icon={<Tag className="w-4 h-4 text-pink-500" />}
+              heading="Riders"
+              items={bucket.riders.map(r => ({ id: r.id, primary: r.riderName }))}
+              type="rider"
+              isSelected={isSelected}
+              onToggle={onToggle}
+              onDelete={onDelete}
+            />
+            <ItemList
+              icon={<Lock className="w-4 h-4 text-pink-500" />}
+              heading="Lockboxes"
+              items={bucket.lockboxes.map(l => ({
+                id: l.id,
+                primary: l.type,
+                secondary: l.code ? `Code: ${l.code}` : undefined,
+              }))}
+              type="lockbox"
+              isSelected={isSelected}
+              onToggle={onToggle}
+              onDelete={onDelete}
+            />
+            <ItemList
+              icon={<FileBox className="w-4 h-4 text-pink-500" />}
+              heading="Brochure Boxes"
+              items={bucket.brochureBoxes.map(b => ({ id: b.id, primary: b.description || 'Brochure box' }))}
+              type="brochure_box"
+              isSelected={isSelected}
+              onToggle={onToggle}
+              onDelete={onDelete}
+            />
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+interface ItemListProps {
+  icon: React.ReactNode
+  heading: string
+  items: Array<{ id: string; primary: string; secondary?: string }>
+  type: 'sign' | 'rider' | 'lockbox' | 'brochure_box'
+  isSelected: (type: 'sign' | 'rider' | 'lockbox' | 'brochure_box', id: string) => boolean
+  onToggle: (type: 'sign' | 'rider' | 'lockbox' | 'brochure_box', id: string) => void
+  onDelete: (type: string, id: string) => void
+}
+
+function ItemList({ icon, heading, items, type, isSelected, onToggle, onDelete }: ItemListProps) {
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-2">
+        {icon}
+        <h4 className="text-sm font-semibold text-gray-700">{heading}</h4>
+        <span className="text-xs text-gray-400">({items.length})</span>
+      </div>
+      {items.length === 0 ? (
+        <p className="text-xs text-gray-400 pl-6">No {heading.toLowerCase()}</p>
+      ) : (
+        <div className="space-y-1.5">
+          {items.map(item => (
+            <label
+              key={item.id}
+              className={`flex items-center justify-between gap-3 p-2.5 rounded-lg cursor-pointer transition-colors ${
+                isSelected(type, item.id) ? 'bg-pink-50 ring-1 ring-pink-200' : 'bg-gray-50 hover:bg-gray-100'
+              }`}
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <input
+                  type="checkbox"
+                  checked={isSelected(type, item.id)}
+                  onChange={() => onToggle(type, item.id)}
+                  className="w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
+                />
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-gray-900 truncate">{item.primary}</p>
+                  {item.secondary && <p className="text-xs text-gray-500 truncate">{item.secondary}</p>}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  if (confirm('Delete this item?')) onDelete(type, item.id)
+                }}
+                className="text-gray-400 hover:text-red-500 flex-shrink-0"
+                title="Delete"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </label>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

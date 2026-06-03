@@ -120,6 +120,9 @@ export interface StepProps {
   // mechanical-owned, at-property). Defaults to PRICING.lockbox_install ($5).
   // Some brokers (e.g. Semonin) get it free ($0). Rental is unaffected.
   lockboxInstallFee?: number
+  // When set, the review step updates this existing cart row in place
+  // (with a hold diff) instead of creating a new one.
+  editingCartItemId?: string
 }
 
 export const PRICING = {

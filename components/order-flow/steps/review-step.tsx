@@ -26,6 +26,7 @@ export function ReviewStep({
   orderId,
   editMeta,
   lockboxInstallFee,
+  editingCartItemId,
 }: StepProps) {
   // Edit mode reuses this step to save changes to an existing order (PATCH,
   // no re-charge) rather than creating + paying for a new one.
@@ -412,7 +413,9 @@ export function ReviewStep({
 
   const handleAddToCart = async () => {
     if (orderItems.length === 0) {
-      setError('Please select at least one item for the order')
+      setError(editingCartItemId
+        ? 'Please keep at least one item on the order'
+        : 'Please select at least one item for the order')
       return
     }
     if (!cartEnabled) {
@@ -427,33 +430,63 @@ export function ReviewStep({
       // we threw all of these away, so the cart was untrackable.
       const items = buildItems() as Array<Record<string, unknown>>
 
-      // Mint a cart row id up front so we can attach holds to it BEFORE
-      // writing to localStorage. If hold acquisition fails partway, we
-      // unwind cleanly.
-      const cartItemId = `cart_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
       const { getOrCreateCartSessionId } = await import('@/lib/cart-session')
       const cartSessionId = getOrCreateCartSessionId()
 
+      // Edit flow: reuse the existing row id so the new holds attach to the
+      // same cart_item_id. Create flow: mint a fresh id.
+      const cartItemId = editingCartItemId
+        || `cart_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+
+      // Existing row (only meaningful in edit mode) — used for the hold diff.
+      const existingRow = editingCartItemId
+        ? cart.items.find(i => i.id === editingCartItemId)
+        : undefined
+      // If the heartbeat marked the row's holds dead server-side, treat every
+      // pick as a fresh acquire and skip the release step.
+      const existingHoldsAreDead = !!editingCartItemId
+        && !!existingRow?.holdsExpireAt
+        && new Date(existingRow.holdsExpireAt).getTime() < Date.now()
+      const oldHoldIds: Record<string, string> = existingHoldsAreDead
+        ? {}
+        : (existingRow?.holdIds || {})
+
       // Each Customer*-typed line item needs a hold. Brochure boxes don't
       // participate in the hold infrastructure (quantity-aggregated).
-      const holdRequests: Array<{ field: 'customer_sign_id' | 'customer_rider_id' | 'customer_lockbox_id'; itemType: 'sign' | 'rider' | 'lockbox'; itemId: string }> = []
+      const holdRequests: Array<{ key: string; field: 'customer_sign_id' | 'customer_rider_id' | 'customer_lockbox_id'; itemType: 'sign' | 'rider' | 'lockbox'; itemId: string }> = []
       for (const it of items) {
         if (it.customer_sign_id) {
-          holdRequests.push({ field: 'customer_sign_id', itemType: 'sign', itemId: String(it.customer_sign_id) })
+          const id = String(it.customer_sign_id)
+          holdRequests.push({ key: `customer_sign_id:${id}`, field: 'customer_sign_id', itemType: 'sign', itemId: id })
         }
         if (it.customer_rider_id) {
-          holdRequests.push({ field: 'customer_rider_id', itemType: 'rider', itemId: String(it.customer_rider_id) })
+          const id = String(it.customer_rider_id)
+          holdRequests.push({ key: `customer_rider_id:${id}`, field: 'customer_rider_id', itemType: 'rider', itemId: id })
         }
         if (it.customer_lockbox_id) {
-          holdRequests.push({ field: 'customer_lockbox_id', itemType: 'lockbox', itemId: String(it.customer_lockbox_id) })
+          const id = String(it.customer_lockbox_id)
+          holdRequests.push({ key: `customer_lockbox_id:${id}`, field: 'customer_lockbox_id', itemType: 'lockbox', itemId: id })
         }
       }
 
+      const newKeys = new Set(holdRequests.map(r => r.key))
+      const toAcquire = holdRequests.filter(r => !oldHoldIds[r.key])
+      const toReleaseHoldIds = Object.entries(oldHoldIds)
+        .filter(([k]) => !newKeys.has(k))
+        .map(([, hid]) => hid)
+
       const holdIds: Record<string, string> = {}
+      // Carry forward unchanged keys reusing their existing hold id.
+      for (const r of holdRequests) {
+        if (oldHoldIds[r.key]) holdIds[r.key] = oldHoldIds[r.key]
+      }
+
+      // ACQUIRE FIRST — if any new pick conflicts we unwind only the holds
+      // we just minted, leaving the user's pre-edit reservations intact.
       const acquired: string[] = []
-      let holdsExpireAt: string | undefined
+      let holdsExpireAt: string | undefined = existingRow?.holdsExpireAt
       try {
-        for (const req of holdRequests) {
+        for (const req of toAcquire) {
           const res = await fetch('/api/inventory/holds', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -477,12 +510,14 @@ export function ReviewStep({
             throw new Error(errBody.error || 'Could not reserve item for cart')
           }
           const body = (await res.json()) as { hold_id: string; expires_at: string }
-          holdIds[`${req.field}:${req.itemId}`] = body.hold_id
+          holdIds[req.key] = body.hold_id
           acquired.push(body.hold_id)
           if (!holdsExpireAt || body.expires_at < holdsExpireAt) holdsExpireAt = body.expires_at
         }
       } catch (acqErr) {
-        // Unwind any holds we managed to grab so we don't strand inventory.
+        // Unwind any holds we just acquired so we don't strand inventory.
+        // toRelease (the user's original picks they're swapping away) is
+        // untouched so they can recover by cancelling out of the wizard.
         await Promise.all(
           acquired.map(holdId =>
             fetch(`/api/inventory/holds?id=${encodeURIComponent(holdId)}`, { method: 'DELETE' }).catch(() => undefined)
@@ -490,6 +525,14 @@ export function ReviewStep({
         )
         throw acqErr
       }
+
+      // THEN release stale holds. 404s on already-dead holds are harmless —
+      // swallow them so the save still completes for expired-row edits.
+      await Promise.all(
+        toReleaseHoldIds.map(holdId =>
+          fetch(`/api/inventory/holds?id=${encodeURIComponent(holdId)}`, { method: 'DELETE' }).catch(() => undefined)
+        )
+      )
 
       // Use the typed agent name if provided; otherwise fall back to the
       // agent's full name from /api/admin/customers (legacy on-behalf-of flow)
@@ -508,30 +551,44 @@ export function ReviewStep({
         }
       }
 
-      // Manually write the cart row with the pre-minted id so the hold's
-      // cart_item_id matches.
-      const newItem = {
-        id: cartItemId,
-        agentId: onBehalfOf || '',
-        agentName: agentName || 'Unassigned',
-        agentEmail,
-        formData,
-        items,
-        estimatedTotal: total,
-        propertyAddress: `${formData.property_address}, ${formData.property_city}`,
-        addedAt: new Date().toISOString(),
-        holdIds,
-        holdsExpireAt,
+      if (editingCartItemId && existingRow) {
+        // Update in place — preserve original agentId/agentEmail/addedAt so
+        // the row's identity stays stable. Refresh display fields and holds.
+        cart.updateItem(editingCartItemId, {
+          agentName: agentName || existingRow.agentName || 'Unassigned',
+          formData,
+          items,
+          estimatedTotal: total,
+          propertyAddress: `${formData.property_address}, ${formData.property_city}`,
+          holdIds,
+          holdsExpireAt,
+        })
+      } else {
+        // Create flow — write the row with the pre-minted id so the hold's
+        // cart_item_id matches.
+        const newItem = {
+          id: cartItemId,
+          agentId: onBehalfOf || '',
+          agentName: agentName || 'Unassigned',
+          agentEmail,
+          formData,
+          items,
+          estimatedTotal: total,
+          propertyAddress: `${formData.property_address}, ${formData.property_city}`,
+          addedAt: new Date().toISOString(),
+          holdIds,
+          holdsExpireAt,
+        }
+        const raw = window.localStorage.getItem('pp_cart_v1')
+        const existing = raw ? (JSON.parse(raw) as unknown[]) : []
+        const next = Array.isArray(existing) ? [...existing, newItem] : [newItem]
+        window.localStorage.setItem('pp_cart_v1', JSON.stringify(next))
+        window.dispatchEvent(new Event('pp_cart_change'))
       }
-      const raw = window.localStorage.getItem('pp_cart_v1')
-      const existing = raw ? (JSON.parse(raw) as unknown[]) : []
-      const next = Array.isArray(existing) ? [...existing, newItem] : [newItem]
-      window.localStorage.setItem('pp_cart_v1', JSON.stringify(next))
-      window.dispatchEvent(new Event('pp_cart_change'))
 
       router.push('/dashboard/cart')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not add to cart')
+      setError(err instanceof Error ? err.message : editingCartItemId ? 'Could not save changes' : 'Could not add to cart')
     } finally {
       setAddingToCart(false)
     }
@@ -1243,26 +1300,6 @@ export function ReviewStep({
         </div>
       )}
 
-      {/* Team admin: ask which agent on the team sold this property so it's
-          attributable on the order */}
-      {isTeamAdmin && !isEdit && (
-        <div className="p-4 bg-pink-50 border border-pink-200 rounded-xl">
-          <label className="block text-sm font-semibold text-pink-900 mb-1">
-            Agent who sold this property
-          </label>
-          <input
-            type="text"
-            value={formData.placed_for_agent_name || ''}
-            onChange={(e) => updateFormData({ placed_for_agent_name: e.target.value })}
-            placeholder="e.g. Ashley Smith"
-            className="w-full px-3 py-2 rounded-lg border border-pink-200 focus:ring-2 focus:ring-pink-500 focus:border-transparent text-sm"
-          />
-          <p className="text-xs text-pink-700 mt-1">
-            Optional — labels the order so you can track which agent it&apos;s for.
-          </p>
-        </div>
-      )}
-
       {/* Submit Buttons — edit mode saves in place; cart mode (team_admin or
           on-behalf-of) shows batching; everyone else places + pays now */}
       {isEdit ? (
@@ -1282,11 +1319,16 @@ export function ReviewStep({
             onClick={handleAddToCart}
             disabled={isSubmitting || addingToCart}
           >
-            {addingToCart ? 'Adding…' : `Add to Cart — $${total.toFixed(2)}`}
+            {addingToCart
+              ? (editingCartItemId ? 'Saving…' : 'Adding…')
+              : editingCartItemId
+                ? `Update cart item — $${total.toFixed(2)}`
+                : `Add to Cart — $${total.toFixed(2)}`}
           </Button>
           <p className="text-xs text-center text-gray-500">
-            Build a batch of orders, then check out all at once — a single
-            combined charge is collected on the cart screen.
+            {editingCartItemId
+              ? 'Saves your changes back to the cart — your reserved inventory is adjusted to match.'
+              : 'Build a batch of orders, then check out all at once — a single combined charge is collected on the cart screen.'}
           </p>
         </div>
       ) : (

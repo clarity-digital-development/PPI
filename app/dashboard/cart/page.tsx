@@ -17,6 +17,7 @@ import {
   MapPin,
   Plus,
   Clock,
+  Pencil,
 } from 'lucide-react'
 import { getStripe } from '@/lib/stripe/client'
 
@@ -297,22 +298,31 @@ export default function CartPage() {
                       </p>
                     )}
                     {!checkingOut && !done && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          removeItem(item.id)
-                          setExpiredRows(prev => {
-                            if (!prev.has(item.id)) return prev
-                            const next = new Set(prev)
-                            next.delete(item.id)
-                            return next
-                          })
-                        }}
-                        className="mt-2 text-sm text-gray-400 hover:text-red-500 inline-flex items-center gap-1"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                        Remove
-                      </button>
+                      <div className="mt-2 flex items-center justify-end gap-3">
+                        <Link
+                          href={`/dashboard/place-order?cart_item_id=${encodeURIComponent(item.id)}`}
+                          className="text-sm text-gray-400 hover:text-pink-600 inline-flex items-center gap-1"
+                        >
+                          <Pencil className="w-4 h-4" />
+                          Edit
+                        </Link>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            removeItem(item.id)
+                            setExpiredRows(prev => {
+                              if (!prev.has(item.id)) return prev
+                              const next = new Set(prev)
+                              next.delete(item.id)
+                              return next
+                            })
+                          }}
+                          className="text-sm text-gray-400 hover:text-red-500 inline-flex items-center gap-1"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                          Remove
+                        </button>
+                      </div>
                     )}
                   </div>
                 </div>

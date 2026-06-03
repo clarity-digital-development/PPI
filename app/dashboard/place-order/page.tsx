@@ -1,11 +1,12 @@
 'use client'
 
-import { useState, useEffect, Suspense } from 'react'
+import { useState, useEffect, useMemo, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { Header } from '@/components/dashboard'
 import { OrderWizard } from '@/components/order-flow'
-import { Button, Card } from '@/components/ui'
+import { Button, Card, Input } from '@/components/ui'
+import { useCart } from '@/lib/cart'
 
 interface AgentBrief {
   id: string
@@ -53,6 +54,12 @@ export default function PlaceOrderPage() {
 function PlaceOrderPageInner() {
   const searchParams = useSearchParams()
   const onBehalfOf = searchParams.get('on_behalf_of') || undefined
+  const cartItemId = searchParams.get('cart_item_id') || undefined
+
+  // Editing an existing cart row: hydrate the wizard from its snapshot rather
+  // than running the agent-picker gate.
+  const { items: cartItems, loaded: cartLoaded } = useCart()
+  const editingItem = cartItemId ? cartItems.find(i => i.id === cartItemId) : undefined
 
   const [inventory, setInventory] = useState<Inventory | undefined>()
 
@@ -78,18 +85,35 @@ function PlaceOrderPageInner() {
   const [selectedMember, setSelectedMember] = useState<TeamMember | null>(null)
   const [memberInventory, setMemberInventory] = useState<Inventory | undefined>()
   const [memberInventoryLoading, setMemberInventoryLoading] = useState(false)
+  // Search filter for the team-admin agent picker (name or email).
+  const [agentQuery, setAgentQuery] = useState('')
+  const filteredMembers = useMemo(() => {
+    const q = agentQuery.trim().toLowerCase()
+    return q
+      ? teamMembers.filter(m =>
+          m.name.toLowerCase().includes(q) ||
+          (m.email?.toLowerCase().includes(q) ?? false))
+      : teamMembers
+  }, [teamMembers, agentQuery])
 
   // Whether we should render the team_admin member-selection gate rather than
   // the standard (own/inventory or on_behalf_of) flow. Only when a team_admin
   // is placing an order without an explicit ?on_behalf_of target.
-  const isTeamAdminGate = currentUserRole === 'team_admin' && !onBehalfOf
+  // Editing an existing cart row bypasses the gate — we already know the agent.
+  const isTeamAdminGate = currentUserRole === 'team_admin' && !onBehalfOf && !editingItem
 
   useEffect(() => {
     async function fetchData() {
       try {
+        // Editing path: load inventory for the agent the cart row belongs to.
+        // agentId is empty for self-placed team-admin rows, in which case the
+        // default /api/inventory (current user's) is what we want.
+        const editingAgentId = editingItem?.agentId || undefined
         const inventoryUrl = onBehalfOf
           ? `/api/inventory?on_behalf_of=${encodeURIComponent(onBehalfOf)}`
-          : '/api/inventory'
+          : editingAgentId
+            ? `/api/inventory?member_id=${encodeURIComponent(editingAgentId)}`
+            : '/api/inventory'
 
         const requests: Promise<Response>[] = [
           fetch(inventoryUrl),
@@ -149,8 +173,12 @@ function PlaceOrderPageInner() {
       }
     }
 
+    // Wait until the cart finishes loading before firing — otherwise editing
+    // path resolves editingItem to undefined on first render and we'd fetch
+    // the wrong inventory scope.
+    if (!cartLoaded) return
     fetchData()
-  }, [onBehalfOf])
+  }, [onBehalfOf, cartLoaded, editingItem?.agentId])
 
   // Load the selected team member's filtered inventory, then drop into the wizard.
   async function handleSelectMember(member: TeamMember) {
@@ -176,11 +204,13 @@ function PlaceOrderPageInner() {
     setMemberInventoryLoading(false)
   }
 
-  const headerTitle = agent
-    ? `Place Order for ${agent.fullName || agent.email}`
-    : isTeamAdminGate && selectedMember
-      ? `Place Order for ${selectedMember.name}`
-      : 'Place New Order'
+  const headerTitle = editingItem
+    ? `Edit Cart Order — ${editingItem.agentName || editingItem.agentEmail || ''}`.trim()
+    : agent
+      ? `Place Order for ${agent.fullName || agent.email}`
+      : isTeamAdminGate && selectedMember
+        ? `Place Order for ${selectedMember.name}`
+        : 'Place New Order'
 
   return (
     <div>
@@ -249,38 +279,105 @@ function PlaceOrderPageInner() {
                   </Link>
                 </Card>
               ) : (
-                <div className="space-y-3">
-                  {teamMembers.map((member) => (
-                    <Card
-                      key={member.id}
-                      variant="interactive"
-                      className="p-4 border border-gray-200 flex items-center justify-between gap-4"
-                      onClick={() => handleSelectMember(member)}
-                    >
-                      <div>
-                        <p className="font-semibold text-gray-900">{member.name}</p>
-                        {member.email && <p className="text-sm text-gray-500">{member.email}</p>}
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          handleSelectMember(member)
-                        }}
-                      >
-                        Select
-                      </Button>
+                <>
+                  <div className="mb-3">
+                    <Input
+                      type="search"
+                      autoFocus
+                      placeholder="Search agents by name or email…"
+                      value={agentQuery}
+                      onChange={(e) => setAgentQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        // Enter selects the first visible match for fast keyboard flow.
+                        if (e.key === 'Enter' && filteredMembers.length > 0) {
+                          e.preventDefault()
+                          handleSelectMember(filteredMembers[0])
+                        }
+                      }}
+                    />
+                    {agentQuery.trim() && (
+                      <p className="mt-1.5 text-xs text-gray-500">
+                        {filteredMembers.length} of {teamMembers.length} agents
+                      </p>
+                    )}
+                  </div>
+                  {filteredMembers.length === 0 ? (
+                    <Card variant="bordered" className="p-6 text-center">
+                      <p className="text-gray-900 font-medium">
+                        No agents match &ldquo;{agentQuery}&rdquo;
+                      </p>
+                      <p className="text-sm text-gray-600 mt-1">
+                        Try a different name or email.
+                      </p>
                     </Card>
-                  ))}
-                </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {filteredMembers.map((member) => (
+                        <Card
+                          key={member.id}
+                          variant="interactive"
+                          className="p-4 border border-gray-200 flex items-center justify-between gap-4"
+                          onClick={() => handleSelectMember(member)}
+                        >
+                          <div>
+                            <p className="font-semibold text-gray-900">{member.name}</p>
+                            {member.email && <p className="text-sm text-gray-500">{member.email}</p>}
+                          </div>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleSelectMember(member)
+                            }}
+                          >
+                            Select
+                          </Button>
+                        </Card>
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )
+        ) : cartItemId && !editingItem ? (
+          // Cart row id in the URL but no matching row — likely already
+          // removed/checked out in another tab. Send the user back to the cart.
+          <div className="max-w-2xl">
+            <Card variant="bordered" className="p-6 text-center">
+              <p className="text-gray-900 font-medium">This cart order is no longer available.</p>
+              <p className="text-sm text-gray-600 mt-1 mb-4">
+                It may have been removed or already placed.
+              </p>
+              <Link href="/dashboard/cart">
+                <Button variant="primary" size="md">Back to cart</Button>
+              </Link>
+            </Card>
+          </div>
         ) : (
-          // Regular customers AND the existing ?on_behalf_of admin flow — unchanged.
+          // Regular customers AND the existing ?on_behalf_of admin flow,
+          // PLUS the edit-cart-row flow which lands here with editingItem set.
           <>
-            {agent && (
+            {editingItem ? (
+              <div className="mb-6 p-4 bg-pink-50 border border-pink-200 rounded-xl flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold text-pink-700 uppercase tracking-wide">Editing cart order</p>
+                  <p className="font-semibold text-gray-900">
+                    {editingItem.agentName || editingItem.agentEmail || 'Unassigned'}
+                    {editingItem.propertyAddress && (
+                      <span className="text-gray-500 font-normal"> · {editingItem.propertyAddress}</span>
+                    )}
+                  </p>
+                  <p className="text-xs text-gray-600 mt-0.5">
+                    Update the order details — your reserved inventory will be adjusted to match.
+                  </p>
+                </div>
+                <Link href="/dashboard/cart">
+                  <Button variant="outline" size="sm">Back to cart</Button>
+                </Link>
+              </div>
+            ) : agent && (
               <div className="mb-6 p-4 bg-pink-50 border border-pink-200 rounded-xl flex items-center justify-between">
                 <div>
                   <p className="text-xs font-semibold text-pink-700 uppercase tracking-wide">Placing on behalf of</p>
@@ -295,10 +392,16 @@ function PlaceOrderPageInner() {
               </div>
             )}
             <OrderWizard
+              // key forces a fresh wizard mount per cart row so useState seeds
+              // are correctly reinitialized when switching between rows.
+              key={cartItemId || 'new'}
               inventory={inventory}
               paymentMethods={paymentMethods}
-              onBehalfOf={onBehalfOf}
+              onBehalfOf={editingItem?.agentId || onBehalfOf}
               currentUserRole={currentUserRole}
+              initialFormData={editingItem?.formData}
+              editingCartItemId={editingItem?.id}
+              lockboxInstallFee={editingItem && freeLockboxInstall ? 0 : undefined}
             />
           </>
         )}

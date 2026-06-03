@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { Header } from '@/components/dashboard'
-import { Card, CardContent, Badge, Select } from '@/components/ui'
+import { Card, CardContent, SearchableSelect } from '@/components/ui'
 import { Package, FileImage, Tag, Lock, Archive, Info } from 'lucide-react'
 
 interface InventoryData {
@@ -208,11 +208,6 @@ export default function InventoryPage() {
 
   // ----- Team-admin helpers -----
 
-  const memberName = (memberId: string | null) => {
-    if (!memberId) return 'Unassigned'
-    return teamInventory?.members.find((m) => m.id === memberId)?.name ?? 'Unassigned'
-  }
-
   // Assign (or unassign) a single item. Optimistically updates local state and
   // rolls back on failure.
   async function assignItem(type: AssignableType, item: TeamItem, rawValue: string) {
@@ -318,18 +313,15 @@ export default function InventoryPage() {
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <Badge variant={item.assignedToMemberId ? 'info' : 'neutral'}>
-                {memberName(item.assignedToMemberId)}
-              </Badge>
+            <div className="flex items-center gap-2 flex-shrink-0 min-w-0">
               {hasMembers && (
-                <Select
-                  className="py-1.5 text-sm"
-                  placeholder=""
+                <SearchableSelect
+                  className="py-1.5 text-sm min-w-[180px]"
                   options={memberOptions}
                   value={item.assignedToMemberId ?? ''}
                   disabled={saving}
-                  onChange={(e) => assignItem(type, item, e.target.value)}
+                  onChange={(next) => assignItem(type, item, next)}
+                  searchPlaceholder="Search agents..."
                   aria-label={`Assign ${item.label}`}
                 />
               )}
@@ -376,11 +368,11 @@ export default function InventoryPage() {
                   Filter by agent
                 </label>
                 <div className="sm:max-w-xs w-full">
-                  <Select
-                    placeholder=""
+                  <SearchableSelect
                     options={filterOptions}
                     value={agentFilter}
-                    onChange={(e) => setAgentFilter(e.target.value)}
+                    onChange={(next) => setAgentFilter(next)}
+                    searchPlaceholder="Search agents..."
                   />
                 </div>
               </div>

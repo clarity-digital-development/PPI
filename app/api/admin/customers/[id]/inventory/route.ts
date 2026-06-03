@@ -158,9 +158,15 @@ export async function POST(
         if (!data.description) {
           return NextResponse.json({ error: 'Description is required' }, { status: 400 })
         }
-        result = await prisma.customerOtherItem.create({
-          data: { userId: customerId, description: data.description },
-        })
+        const otherData = Array.from({ length: quantity }, () => ({
+          userId: customerId,
+          description: data.description,
+        }))
+        if (quantity === 1) {
+          result = await prisma.customerOtherItem.create({ data: otherData[0] })
+        } else {
+          result = await prisma.customerOtherItem.createMany({ data: otherData })
+        }
         break
       }
       default:

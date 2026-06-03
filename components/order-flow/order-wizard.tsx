@@ -113,9 +113,13 @@ interface OrderWizardProps {
   editMeta?: { orderNumber: string; originalTotal: number }
   // Per-broker owned-lockbox install fee override ($0 for free-install teams).
   lockboxInstallFee?: number
+  // When set, the review step saves changes back to this cart row (replace,
+  // not append) and runs the inventory-hold diff against the row's existing
+  // holds. Threaded through to ReviewStep via StepProps.
+  editingCartItemId?: string
 }
 
-export function OrderWizard({ inventory, paymentMethods, onBehalfOf, currentUserRole, mode = 'create', orderId, initialFormData, editMeta, lockboxInstallFee }: OrderWizardProps) {
+export function OrderWizard({ inventory, paymentMethods, onBehalfOf, currentUserRole, mode = 'create', orderId, initialFormData, editMeta, lockboxInstallFee, editingCartItemId }: OrderWizardProps) {
   const isEdit = mode === 'edit'
   const [currentStep, setCurrentStep] = useState(0)
   // In edit mode every step has effectively been "visited" so the customer can
@@ -321,6 +325,7 @@ export function OrderWizard({ inventory, paymentMethods, onBehalfOf, currentUser
               orderId={orderId}
               editMeta={editMeta}
               lockboxInstallFee={lockboxInstallFee}
+              editingCartItemId={editingCartItemId}
             />
           </motion.div>
         </AnimatePresence>

@@ -153,10 +153,10 @@ export async function GET(
       installation_date: inst.installedAt.toISOString(),
     }))
 
-    // If this customer is a team_admin, include their team roster so admins can
-    // view/manage the agents they manage.
+    // Include the team roster for any team-member customer (admin OR agent)
+    // so the per-agent inventory grouping works regardless of role.
     let team: { id: string; name: string; members: Array<{ id: string; name: string; email: string | null; hasLogin: boolean }> } | null = null
-    if (customer.role === 'team_admin' && customer.teamId) {
+    if (customer.teamId) {
       const t = await prisma.team.findUnique({
         where: { id: customer.teamId },
         include: { teamMembers: { where: { removedAt: null }, orderBy: { createdAt: 'asc' } } },
@@ -186,6 +186,35 @@ export async function GET(
         riders,
         lockboxes,
         brochureBoxes,
+        // Per-row data for the per-agent grouped UI (additive — aggregated shapes above remain for other consumers)
+        items: {
+          signs: signsRaw.map(s => ({
+            id: s.id,
+            description: s.description,
+            inStorage: s.inStorage,
+            assignedToMemberId: s.assignedToMemberId,
+          })),
+          riders: ridersRaw.map(r => ({
+            id: r.id,
+            riderName: r.rider.name,
+            inStorage: r.inStorage,
+            assignedToMemberId: r.assignedToMemberId,
+          })),
+          lockboxes: lockboxesRaw.map(l => ({
+            id: l.id,
+            type: l.lockboxType.name,
+            code: l.code,
+            serialNumber: l.serialNumber,
+            inStorage: l.inStorage,
+            assignedToMemberId: l.assignedToMemberId,
+          })),
+          brochureBoxes: brochureBoxesRaw.map(b => ({
+            id: b.id,
+            description: b.description,
+            inStorage: b.inStorage,
+            assignedToMemberId: b.assignedToMemberId,
+          })),
+        },
         // Group duplicate descriptions onto one line with a quantity count
         otherItems: (() => {
           const grouped: Record<string, { id: string; description: string; quantity: number }> = {}
