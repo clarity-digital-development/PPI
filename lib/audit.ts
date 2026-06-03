@@ -77,5 +77,16 @@ export const AuditAction = {
   CartCheckoutBegin: 'cart.checkout.begin',
   CartCheckoutSucceed: 'cart.checkout.succeed',
   CartCheckoutFail: 'cart.checkout.fail',
+  // Inventory hold lifecycle. Note: we DELIBERATELY do NOT audit each
+  // heartbeat-driven hold extension — a busy team_admin's cart would
+  // generate ~200 audit rows per checkout if we did. The hold row's own
+  // expiresAt is the source of truth for hold age; audit captures only
+  // the meaningful state transitions.
+  InventoryHoldCreated:    'inventory_hold.created',
+  InventoryHoldReleased:   'inventory_hold.released',
+  InventoryHoldExpired:    'inventory_hold.expired',
+  InventoryHoldConflict:   'inventory_hold.conflict',
+  InventoryHoldConsumed:   'inventory_hold.consumed',
+  InventoryHoldOverridden: 'inventory_hold.overridden',
 } as const
 export type AuditActionName = (typeof AuditAction)[keyof typeof AuditAction]

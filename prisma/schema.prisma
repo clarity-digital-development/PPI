@@ -113,6 +113,9 @@ model User {
   // the agent; placedByUserId is the team_admin who actually placed it.
   ordersPlacedFor Order[]   @relation("OrdersPlacedBy")
   auditLogs       AuditLog[] @relation("AuditActor")
+  heldInventoryAsOwner      InventoryHold[] @relation("InventoryHoldOwner")
+  heldInventoryAsActor      InventoryHold[] @relation("InventoryHoldActor")
+  heldInventoryOnBehalfOfMe InventoryHold[] @relation("InventoryHoldOnBehalfOf")
 
   @@index([teamId])
   @@map("users")
@@ -267,11 +270,18 @@ model CustomerSign {
   // Team feature: when a team_admin assigns this item to one of their agents,
   // this points at the TeamMember it belongs to (null = unassigned / pool).
   assignedToMemberId String? @map("assigned_to_member_id")
+  // Soft-hold: when this item is reserved in someone's cart, heldByHoldId
+  // points at the InventoryHold row. heldUntil is a denormalized copy of
+  // InventoryHold.expiresAt — both columns must be kept in sync.
+  heldByHoldId String?   @map("held_by_hold_id")
+  heldUntil    DateTime? @map("held_until")
   createdAt   DateTime @default(now()) @map("created_at")
 
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([assignedToMemberId])
+  @@index([heldByHoldId])
+  @@index([heldUntil])
   @@map("customer_signs")
 }
 
@@ -282,12 +292,16 @@ model CustomerRider {
   isOwned     Boolean  @default(true) @map("is_owned")
   inStorage   Boolean  @default(true) @map("in_storage")
   assignedToMemberId String? @map("assigned_to_member_id")
+  heldByHoldId String?   @map("held_by_hold_id")
+  heldUntil    DateTime? @map("held_until")
   createdAt   DateTime @default(now()) @map("created_at")
 
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   rider       RiderCatalog @relation(fields: [riderId], references: [id])
 
   @@index([assignedToMemberId])
+  @@index([heldByHoldId])
+  @@index([heldUntil])
   @@map("customer_riders")
 }
 
@@ -300,12 +314,16 @@ model CustomerLockbox {
   isOwned     Boolean  @default(true) @map("is_owned")
   inStorage   Boolean  @default(true) @map("in_storage")
   assignedToMemberId String? @map("assigned_to_member_id")
+  heldByHoldId String?   @map("held_by_hold_id")
+  heldUntil    DateTime? @map("held_until")
   createdAt   DateTime @default(now()) @map("created_at")
 
   user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   lockboxType LockboxType @relation(fields: [lockboxTypeId], references: [id])
 
   @@index([assignedToMemberId])
+  @@index([heldByHoldId])
+  @@index([heldUntil])
   @@map("customer_lockboxes")
 }
 
@@ -402,6 +420,7 @@ model Order {
   promoCode         PromoCode?    @relation(fields: [promoCodeId], references: [id])
   orderItems        OrderItem[]
   installation      Installation?
+  consumedHolds     InventoryHold[] @relation("InventoryHoldConsumer")
 
   @@index([placedByUserId])
   @@map("orders")
@@ -639,6 +658,78 @@ model PromoCodeUsage {
 enum DiscountType {
   percentage
   fixed
+}
+
+// ============================================
+// Inventory Holds (soft-reservation for cart)
+// ============================================
+// When a team_admin or customer adds a specific physical inventory item to
+// their cart, an InventoryHold row reserves it for 15 minutes so concurrent
+// adders (other team members, the same user in another tab) can't double-
+// claim it before checkout. Holds are released on explicit cart-remove,
+// extended by a heartbeat, swept on TTL expiry, and consumed at checkout.
+//
+// The polymorphic (itemType, itemId) target points at one of CustomerSign /
+// CustomerRider / CustomerLockbox — brochure boxes are intentionally
+// excluded (they're quantity-aggregated, not picked per-row).
+//
+// Correctness:
+//   - Partial unique index on (itemType, itemId) WHERE consumedByOrderId IS
+//     NULL AND releasedAt IS NULL prevents two live holds per item at the
+//     DB level. Added via raw SQL after `prisma db push` (Prisma can't
+//     express the WHERE clause natively).
+//   - Each Customer* row also carries denormalized heldByHoldId + heldUntil
+//     so visibility queries and conditional-UPDATE claims don't have to
+//     join. The bump operation MUST update both columns atomically — see
+//     lib/inventory-holds.ts for the invariant.
+
+enum HoldItemType {
+  sign
+  rider
+  lockbox
+}
+
+model InventoryHold {
+  id                String        @id @default(cuid())
+  itemType          HoldItemType  @map("item_type")
+  itemId            String        @map("item_id")
+  // The user who "owns" the cart (charged Stripe customer / cart owner).
+  ownerUserId       String        @map("owner_user_id")
+  // The user who clicked. Usually = ownerUserId, except when admin or
+  // team_admin acts on behalf of a customer.
+  actorUserId       String        @map("actor_user_id")
+  // When admin/team_admin acts for a customer, this is that customer.
+  onBehalfOfUserId  String?       @map("on_behalf_of_user_id")
+  // The TeamMember (agent) this item is/was assigned to, snapshotted at
+  // hold creation. Lets us refuse mid-cart reassignment without a join.
+  assignedToMemberIdSnapshot String? @map("assigned_to_member_id_snapshot")
+  // localStorage uuid today; swaps to server Cart.id when track #4 lands.
+  cartSessionId     String?       @map("cart_session_id")
+  // The CartItem-level id (one cart entry that this hold belongs to), so
+  // removeItem() can release precisely without scanning the whole cart.
+  cartItemId        String?       @map("cart_item_id")
+  // Server-computed expiry. Use Postgres NOW() + interval, never Node.now,
+  // to avoid clock skew. See acquireHold helper.
+  expiresAt         DateTime      @map("expires_at")
+  // Set when claimed at checkout; sweeper reaps these on next pass.
+  consumedByOrderId String?       @map("consumed_by_order_id")
+  // Set on explicit release (cart remove / clearCart); sweeper reaps.
+  releasedAt        DateTime?     @map("released_at")
+  createdAt         DateTime      @default(now()) @map("created_at")
+
+  owner           User   @relation("InventoryHoldOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  actor           User   @relation("InventoryHoldActor", fields: [actorUserId], references: [id], onDelete: Cascade)
+  onBehalfOf      User?  @relation("InventoryHoldOnBehalfOf", fields: [onBehalfOfUserId], references: [id], onDelete: Cascade)
+  consumedByOrder Order? @relation("InventoryHoldConsumer", fields: [consumedByOrderId], references: [id], onDelete: SetNull)
+
+  @@index([itemType, itemId])
+  @@index([ownerUserId, expiresAt])
+  @@index([cartItemId])
+  @@index([cartSessionId])
+  @@index([expiresAt])
+  @@index([consumedByOrderId])
+  @@index([releasedAt])
+  @@map("inventory_holds")
 }
 
 // ============================================
