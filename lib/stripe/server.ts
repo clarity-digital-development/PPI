@@ -139,6 +139,61 @@ export async function capturePaymentIntent(paymentIntentId: string) {
   return getStripe().paymentIntents.capture(paymentIntentId)
 }
 
+export interface CreateRefundParams {
+  paymentIntentId: string
+  /** Used to mint a deterministic idempotency key — same order can never double-refund. */
+  orderId: string
+  reason?: 'requested_by_customer' | 'duplicate' | 'fraudulent'
+  metadata?: Record<string, string>
+}
+
+export interface CreateRefundResult {
+  refundId: string
+  /** Cents. */
+  amount: number
+  status: string
+  raw: Stripe.Refund
+}
+
+/**
+ * Create a FULL refund for a PaymentIntent.
+ *
+ * Idempotency: SHA-256 of `${orderId}:refund_v1` is sent as Stripe's
+ * idempotency key, so a retry/replay returns the same Refund object
+ * instead of creating a second refund. The `_v1` suffix gives us room
+ * to invalidate if we ever need to retry-with-different-params.
+ *
+ * Does NOT mutate any DB state. Caller persists refundId.
+ */
+export async function refundPaymentIntent(
+  params: CreateRefundParams
+): Promise<CreateRefundResult> {
+  const cryptoMod = await import('node:crypto')
+  const idempotencyKey = cryptoMod
+    .createHash('sha256')
+    .update(`${params.orderId}:refund_v1`)
+    .digest('hex')
+
+  const refund = await getStripe().refunds.create(
+    {
+      payment_intent: params.paymentIntentId,
+      reason: params.reason ?? 'requested_by_customer',
+      metadata: {
+        order_id: params.orderId,
+        ...(params.metadata ?? {}),
+      },
+    },
+    { idempotencyKey }
+  )
+
+  return {
+    refundId: refund.id,
+    amount: refund.amount,
+    status: refund.status ?? 'pending',
+    raw: refund,
+  }
+}
+
 export async function confirmPaymentIntent(
   paymentIntentId: string,
   paymentMethodId: string

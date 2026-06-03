@@ -433,3 +433,70 @@ export async function sendInstallationCompleteEmail(
     html,
   })
 }
+
+export interface RefundConfirmationEmailProps {
+  recipientName: string
+  recipientEmail: string
+  orderNumber: string
+  propertyAddress: string
+  refundAmount: number
+  refundReason?: string
+  refundedAt: Date
+  refundedBy: 'customer' | 'admin'
+  /** True if processed automatically (under-threshold) — surfaces in body copy. */
+  auto: boolean
+}
+
+export async function sendRefundConfirmationEmail(props: RefundConfirmationEmailProps) {
+  const formattedDate = props.refundedAt.toLocaleDateString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  })
+  const headerCopy = props.refundedBy === 'customer'
+    ? 'Your order has been cancelled and a refund has been initiated.'
+    : 'Your order has been cancelled by our team and a refund has been initiated.'
+  const processingCopy = props.auto
+    ? 'This refund was processed automatically. Funds typically appear on your statement in 5-10 business days.'
+    : 'This refund was approved by our team. Funds typically appear on your statement in 5-10 business days.'
+
+  const html = `
+    <div style="background:#FFF0F3;padding:32px 16px;font-family:'Poppins',Arial,sans-serif">
+      <div style="max-width:600px;margin:0 auto;background:white;border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,0.06);overflow:hidden">
+        <div style="background:#E84A7A;padding:24px;text-align:center">
+          <h1 style="margin:0;color:white;font-size:24px">Refund Confirmation</h1>
+        </div>
+        <div style="padding:32px 24px;color:#333;line-height:1.6">
+          <p>Hi ${props.recipientName},</p>
+          <p>${headerCopy}</p>
+          <div style="background:#FFF0F3;padding:16px;border-radius:8px;margin:24px 0">
+            <p style="margin:0 0 8px"><strong>Order:</strong> ${props.orderNumber}</p>
+            <p style="margin:0 0 8px"><strong>Property:</strong> ${props.propertyAddress}</p>
+            <p style="margin:0 0 8px"><strong>Refund Amount:</strong> $${props.refundAmount.toFixed(2)}</p>
+            <p style="margin:0"><strong>Cancelled On:</strong> ${formattedDate}</p>
+            ${props.refundReason ? `<p style="margin:8px 0 0"><strong>Reason:</strong> ${escapeHtml(props.refundReason)}</p>` : ''}
+          </div>
+          <p style="color:#666;font-size:14px">${processingCopy}</p>
+          <p>Questions? Contact us at <a href="mailto:support@pinkposts.com" style="color:#E84A7A">support@pinkposts.com</a> or 859-395-8188.</p>
+        </div>
+        <div style="padding:16px;text-align:center;color:#999;font-size:12px;border-top:1px solid #eee">
+          Pink Posts Installations
+        </div>
+      </div>
+    </div>
+  `
+
+  return getResend().emails.send({
+    from: 'Pink Posts Installations <orders@pinkposts.com>',
+    to: props.recipientEmail,
+    subject: `Refund Confirmation - ${props.orderNumber}`,
+    html,
+  })
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}

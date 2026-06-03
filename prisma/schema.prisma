@@ -112,6 +112,7 @@ model User {
   // Orders placed by THIS user on behalf of an agent. The Order's userId is
   // the agent; placedByUserId is the team_admin who actually placed it.
   ordersPlacedFor Order[]   @relation("OrdersPlacedBy")
+  ordersCancelled Order[]   @relation("OrderCancelledBy")
   auditLogs       AuditLog[] @relation("AuditActor")
   heldInventoryAsOwner      InventoryHold[] @relation("InventoryHoldOwner")
   heldInventoryAsActor      InventoryHold[] @relation("InventoryHoldActor")
@@ -411,11 +412,26 @@ model Order {
   // as one user account and label each order with the responsible agent.
   placedForAgentName String?      @map("placed_for_agent_name")
 
+  // Refund / cancellation lifecycle (v1: full refund only). All nullable;
+  // additive migration. paymentStatus flips to 'refunded' only via the
+  // charge.refunded webhook (single source of truth — survives both our
+  // explicit refunds.create calls AND Stripe-dashboard-initiated refunds).
+  refundId             String?   @unique @map("refund_id")
+  refundInitiatedAt    DateTime? @map("refund_initiated_at")
+  refundedAt           DateTime? @map("refunded_at")
+  refundedAmount       Decimal?  @db.Decimal(10, 2) @map("refunded_amount")
+  refundReason         String?   @map("refund_reason")
+  refundEmailSentAt    DateTime? @map("refund_email_sent_at")
+  cancelledAt          DateTime? @map("cancelled_at")
+  cancelledByUserId    String?   @map("cancelled_by_user_id")
+  cancelReason         String?   @map("cancel_reason")
+
   createdAt         DateTime      @default(now()) @map("created_at")
   updatedAt         DateTime      @updatedAt @map("updated_at")
 
   user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   placedBy          User?         @relation("OrdersPlacedBy", fields: [placedByUserId], references: [id])
+  cancelledBy       User?         @relation("OrderCancelledBy", fields: [cancelledByUserId], references: [id])
   postType          PostType?     @relation(fields: [postTypeId], references: [id])
   promoCode         PromoCode?    @relation(fields: [promoCodeId], references: [id])
   orderItems        OrderItem[]
@@ -423,6 +439,7 @@ model Order {
   consumedHolds     InventoryHold[] @relation("InventoryHoldConsumer")
 
   @@index([placedByUserId])
+  @@index([cancelledByUserId])
   @@map("orders")
 }
 
