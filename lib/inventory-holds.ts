@@ -255,10 +255,16 @@ export async function bumpHolds(args: BumpHoldsArgs): Promise<BumpHoldsResult> {
 
     if (live.length === 0) return
 
+    // Defense in depth: an admin override or releaseHolds running between
+    // our findMany and this UPDATE will have set released_at; if that
+    // happens we MUST NOT re-extend the dead hold's TTL (else the partial
+    // unique index blocks acquires on that item until the sweeper reaps).
     const updated = await tx.$queryRaw<Array<{ id: string; expires_at: Date; cart_item_id: string | null }>>`
       UPDATE inventory_holds
       SET expires_at = NOW() + (${TTL_MINUTES} * INTERVAL '1 minute')
       WHERE id IN (${Prisma.join(live.map((h) => h.id))})
+        AND released_at IS NULL
+        AND consumed_by_order_id IS NULL
       RETURNING id, expires_at, cart_item_id
     `
 

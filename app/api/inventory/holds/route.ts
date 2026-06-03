@@ -113,8 +113,10 @@ export async function POST(request: NextRequest) {
             { status: 409 }
           )
         }
+        // Hardcoded code so a cross-team attacker can't use the response
+        // to distinguish "held by competitor" from "vanished/never existed."
         return NextResponse.json(
-          { error: 'item_unavailable', code: err.code },
+          { error: 'item_unavailable', code: 'item_unavailable' },
           { status: 409 }
         )
       }

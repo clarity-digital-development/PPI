@@ -91,7 +91,23 @@ export async function getCustomer(customerId: string) {
 export async function createPaymentIntent(
   amount: number,
   customerId?: string,
-  paymentMethodId?: string
+  paymentMethodId?: string,
+  opts?: {
+    /**
+     * 'automatic' (default) captures the charge as soon as the PI is
+     * confirmed. 'manual' authorizes only — caller MUST call capture()
+     * after the order tx commits, or cancel() on rollback. Use 'manual'
+     * any time the route does work between PI create and "we know the
+     * order is safe to charge for."
+     */
+    captureMethod?: 'automatic' | 'manual'
+    /**
+     * Stripe-side idempotency key. Two requests with the same key within
+     * 24h get the SAME PaymentIntent — protects against double-click /
+     * retry from creating two PIs (and thus two charges).
+     */
+    idempotencyKey?: string
+  }
 ) {
   const params: Stripe.PaymentIntentCreateParams = {
     amount: Math.round(amount * 100), // Convert to cents
@@ -99,6 +115,9 @@ export async function createPaymentIntent(
     automatic_payment_methods: {
       enabled: true,
     },
+  }
+  if (opts?.captureMethod) {
+    params.capture_method = opts.captureMethod
   }
 
   if (customerId) {
@@ -111,7 +130,13 @@ export async function createPaymentIntent(
     params.return_url = `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/order-confirmation`
   }
 
-  return getStripe().paymentIntents.create(params)
+  const requestOpts: Stripe.RequestOptions = {}
+  if (opts?.idempotencyKey) requestOpts.idempotencyKey = opts.idempotencyKey
+  return getStripe().paymentIntents.create(params, requestOpts)
+}
+
+export async function capturePaymentIntent(paymentIntentId: string) {
+  return getStripe().paymentIntents.capture(paymentIntentId)
 }
 
 export async function confirmPaymentIntent(

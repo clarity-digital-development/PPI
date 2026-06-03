@@ -66,8 +66,15 @@ export async function POST(request: NextRequest) {
         })
 
         if (existingOrders.length === 0) {
-          console.error('No orders found for payment intent:', paymentIntent.id)
-          break
+          // Race: the orders/batch route stamps paymentIntentId AFTER creating
+          // the PI. If the webhook arrives before that stamp lands, no orders
+          // are visible yet. Return 500 → Stripe retries with exponential
+          // backoff (up to 24h), giving the stamp time to commit.
+          console.warn('Webhook: no orders yet for PI', paymentIntent.id, '— returning 500 to trigger Stripe retry')
+          return NextResponse.json(
+            { error: 'orders_not_ready', paymentIntentId: paymentIntent.id },
+            { status: 500 }
+          )
         }
 
         await prisma.order.updateMany({

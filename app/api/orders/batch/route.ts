@@ -3,7 +3,8 @@ import { prisma } from '@/lib/prisma'
 import { getCurrentUser, generateOrderNumber } from '@/lib/auth-utils'
 import { createPaymentIntent, createCustomer, getStripeErrorMessage, stripe } from '@/lib/stripe/server'
 import { computeOrderPricing } from '@/lib/orders/pricing'
-import { claimHoldsInTx, HoldConflictError, type HoldClaim } from '@/lib/inventory-holds'
+import { claimHoldsInTx, HoldConflictError, releaseHolds, type HoldClaim } from '@/lib/inventory-holds'
+import crypto from 'node:crypto'
 import { audit, AuditAction } from '@/lib/audit'
 import type { HoldItemType } from '@prisma/client'
 
@@ -212,21 +213,16 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // ---- Step 3: create ONE PaymentIntent for the combined total ----
-    let paymentIntent
-    try {
-      paymentIntent = await createPaymentIntent(grandTotal, stripeCustomerId, paymentMethodId)
-    } catch (err) {
-      console.error('Batch: payment intent creation failed:', err)
-      return NextResponse.json(
-        { error: getStripeErrorMessage(err) || 'Payment failed. Please check your card details and try again.' },
-        { status: 400 }
-      )
-    }
-
-    // ---- Step 4: create all orders in a transaction, sharing the PI ----
-    const piId = paymentIntent.id
-    const piSucceeded = paymentIntent.status === 'succeeded'
+    // ---- Step 3: create all orders in a transaction (NO PaymentIntent yet) ----
+    //
+    // Tx-first is the headline money-safety guarantee. Creating the PI BEFORE
+    // the order tx means a tx failure leaves a captured PI with no order —
+    // customer is charged for nothing. Creating it AFTER means a PI failure
+    // leaves un-billed orders, which an operator can charge manually or
+    // cancel. Un-billed orders are dramatically safer than un-ordered charges.
+    //
+    // Orders are created with paymentIntentId: null and paymentStatus: 'pending',
+    // then updated with the real PI id once Stripe accepts it (Step 5).
 
     // Track which item ids were claimed-via-hold so the blind path skips them.
     const heldItemIds = new Set<string>()
@@ -266,9 +262,9 @@ export async function POST(request: NextRequest) {
               discount: c.pricing.discount,
               tax: c.pricing.tax,
               total: c.pricing.total,
-              paymentIntentId: piId,
-              paymentStatus: piSucceeded ? 'succeeded' : 'processing',
-              paidAt: piSucceeded ? new Date() : null,
+              paymentIntentId: null,
+              paymentStatus: 'pending',
+              paidAt: null,
               orderItems: {
                 create: o.items.map((item) => ({
                   itemType: item.item_type,
@@ -323,69 +319,149 @@ export async function POST(request: NextRequest) {
         return out
       })
     } catch (txError) {
-      // CRITICAL: cancel the PI so the customer is not charged for orders
-      // that never existed. Swallow errors from cancel itself — never throw.
-      try {
-        await stripe().paymentIntents.cancel(piId, { cancellation_reason: 'abandoned' })
-      } catch (cancelErr) {
-        console.error('Batch: failed to cancel PI after tx rollback:', piId, cancelErr)
+      // Tx failed → no orders, no PI, no charge. Release any holds the user
+      // managed to acquire so they aren't locked out for 15 min on a retry.
+      // (releaseHolds.{actor} expects the AuditActor shape.)
+      if (allClaims.length > 0) {
+        await Promise.all(
+          allClaims.map((c) =>
+            releaseHolds(
+              { actor: { id: actor.id, email: actor.email, role: actor.role }, holdId: c.holdId },
+              { reason: 'tx_rollback' }
+            ).catch((err) => console.error('Batch: release after tx fail:', c.holdId, err))
+          )
+        )
       }
 
       if (txError instanceof HoldConflictError) {
-        // Redact holder identity if cross-team. The helper only puts
-        // itemType/itemId/holdId in details — no holder name — so we just
-        // re-emit code + details + a single-conflict shape consistent with
-        // the prevalidate response.
         const conflict = {
           code: txError.code,
           item_type: (txError.details.itemType as HoldItemType) ?? null,
           item_id: (txError.details.itemId as string) ?? null,
           hold_id: (txError.details.holdId as string) ?? null,
         }
-        await audit({
-          actor: { id: actor.id, email: actor.email, role: actor.role },
-          action: AuditAction.CartCheckoutFail,
-          targetType: 'cart',
-          targetId: cartSessionId,
-          metadata: { stage: 'tx_claim', conflict, paymentIntentId: piId },
-          request,
-        })
+        try {
+          await audit({
+            actor: { id: actor.id, email: actor.email, role: actor.role },
+            action: AuditAction.CartCheckoutFail,
+            targetType: 'cart',
+            targetId: cartSessionId,
+            metadata: { stage: 'tx_claim', conflict },
+            request,
+          })
+        } catch (auditErr) {
+          console.error('Batch: failed to audit tx_claim conflict:', auditErr)
+        }
         return NextResponse.json(
           { error: 'item_unavailable', code: 'hold_conflict', conflicts: [conflict] },
           { status: 409 }
         )
       }
 
-      // Non-hold tx failure: audit + bubble to the outer catch as a 500.
-      await audit({
-        actor: { id: actor.id, email: actor.email, role: actor.role },
-        action: AuditAction.CartCheckoutFail,
-        targetType: 'cart',
-        targetId: cartSessionId,
-        metadata: { stage: 'tx_other', paymentIntentId: piId, message: (txError as Error)?.message ?? null },
-        request,
-      })
+      try {
+        await audit({
+          actor: { id: actor.id, email: actor.email, role: actor.role },
+          action: AuditAction.CartCheckoutFail,
+          targetType: 'cart',
+          targetId: cartSessionId,
+          metadata: { stage: 'tx_other', message: (txError as Error)?.message ?? null },
+          request,
+        })
+      } catch (auditErr) {
+        console.error('Batch: failed to audit tx_other failure:', auditErr)
+      }
       throw txError
+    }
+
+    // ---- Step 4: create the PaymentIntent NOW that orders exist ----
+    //
+    // Deterministic idempotency key — same cart + same actor + same total
+    // within 24h returns the same PI from Stripe, so a network-retry double-
+    // submit can't create two PIs and double-charge. (The hold-claim race
+    // already prevents double-orders at the DB level; this is belt-and-
+    // suspenders for the rarer "client retried, server already responded"
+    // case.)
+    const idemKey = crypto
+      .createHash('sha256')
+      .update(`${actor.id}|${cartSessionId ?? createdOrders.map((o) => o.id).sort().join(',')}|${grandTotal.toFixed(2)}`)
+      .digest('hex')
+      .slice(0, 64)
+
+    let paymentIntent
+    try {
+      paymentIntent = await createPaymentIntent(grandTotal, stripeCustomerId, paymentMethodId, { idempotencyKey: idemKey })
+    } catch (err) {
+      console.error('Batch: PI creation failed AFTER tx commit. Orders exist unpaid:', createdOrders.map((o) => o.id), err)
+      try {
+        await audit({
+          actor: { id: actor.id, email: actor.email, role: actor.role },
+          action: AuditAction.CartCheckoutFail,
+          targetType: 'cart',
+          targetId: cartSessionId,
+          metadata: {
+            stage: 'pi_create_failed_after_tx',
+            orderIds: createdOrders.map((o) => o.id),
+            grandTotal,
+            stripeMessage: getStripeErrorMessage(err) ?? null,
+          },
+          request,
+        })
+      } catch (auditErr) {
+        console.error('Batch: failed to audit pi_create_failed_after_tx:', auditErr)
+      }
+      return NextResponse.json(
+        {
+          error: getStripeErrorMessage(err) || 'Payment failed. Your orders were saved but not charged. Please contact support.',
+          orders_pending_payment: createdOrders.map((o) => ({ id: o.id, orderNumber: o.orderNumber })),
+        },
+        { status: 502 }
+      )
+    }
+
+    const piId = paymentIntent.id
+    const piSucceeded = paymentIntent.status === 'succeeded'
+
+    // Stamp the PI id on every order so the webhook can find them.
+    try {
+      await prisma.order.updateMany({
+        where: { id: { in: createdOrders.map((o) => o.id) } },
+        data: {
+          paymentIntentId: piId,
+          paymentStatus: piSucceeded ? 'succeeded' : 'processing',
+          paidAt: piSucceeded ? new Date() : null,
+        },
+      })
+    } catch (updErr) {
+      console.error('Batch: failed to stamp PI on orders. Webhook will not find them:', updErr)
+      // Don't fail the response — the customer's charge is real; the orders
+      // exist; only the linkage failed. The webhook will log "no orders found"
+      // and operations can reconcile from the audit log.
     }
 
     console.log(
       `Batch order placed: ${createdOrders.length} orders, $${grandTotal.toFixed(2)} total, PI ${piId} status=${paymentIntent.status}`
     )
 
-    await audit({
-      actor: { id: actor.id, email: actor.email, role: actor.role },
-      action: AuditAction.CartCheckoutSucceed,
-      targetType: 'cart',
-      targetId: cartSessionId,
-      metadata: {
-        orderIds: createdOrders.map((o) => o.id),
-        orderCount: createdOrders.length,
-        grandTotal,
-        paymentIntentId: piId,
-        paymentStatus: paymentIntent.status,
-      },
-      request,
-    })
+    try {
+      await audit({
+        actor: { id: actor.id, email: actor.email, role: actor.role },
+        action: AuditAction.CartCheckoutSucceed,
+        targetType: 'cart',
+        targetId: cartSessionId,
+        metadata: {
+          orderIds: createdOrders.map((o) => o.id),
+          orderCount: createdOrders.length,
+          grandTotal,
+          paymentIntentId: piId,
+          paymentStatus: paymentIntent.status,
+        },
+        request,
+      })
+    } catch (auditErr) {
+      // Audit must never break the response. Orders exist, PI succeeded —
+      // the user gets their confirmation.
+      console.error('Batch: failed to audit success:', auditErr)
+    }
 
     return NextResponse.json({
       status: paymentIntent.status, // 'succeeded' | 'requires_action' | etc.

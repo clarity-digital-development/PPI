@@ -188,7 +188,10 @@ export function useHoldHeartbeat(opts: {
         const r = data.byCartItem?.[ci]
         if (r?.extended) {
           updateItemRef.current(ci, { holdsExpireAt: r.expiresAt })
-        } else if (r && !r.extended) {
+        } else {
+          // Missing entry OR explicit extended:false → treat as conflict.
+          // The previous "ignore missing" path created silent zombie rows
+          // that passed client-side checks and 409'd at checkout.
           onConflictRef.current?.(ci)
         }
       }
