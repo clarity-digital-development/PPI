@@ -121,6 +121,26 @@ export async function PATCH(request: NextRequest) {
     }
   }
 
+  // Refuse reassignment while item is live-held in a cart. Brochure boxes have
+  // no hold infrastructure, so skip the guard for them.
+  if (type !== 'brochure_box' && item.heldByHoldId && item.heldUntil && item.heldUntil > new Date()) {
+    const hold = await prisma.inventoryHold.findUnique({
+      where: { id: item.heldByHoldId },
+      include: { owner: { select: { email: true, fullName: true, teamId: true } } },
+    })
+    const sameTeam =
+      !!hold?.owner?.teamId && !!user.teamId && hold.owner.teamId === user.teamId
+    const payload: Record<string, unknown> = {
+      error: 'Item is in an active cart. Release the hold or wait until expires_at.',
+      code: 'item_held',
+      expires_at: item.heldUntil.toISOString(),
+    }
+    if (user.role === 'admin' || sameTeam) {
+      payload.holder = { email: hold?.owner?.email ?? null, fullName: hold?.owner?.fullName ?? null }
+    }
+    return NextResponse.json(payload, { status: 409 })
+  }
+
   await model.update({ where: { id }, data: { assignedToMemberId: memberId } })
   return NextResponse.json({ success: true })
 }

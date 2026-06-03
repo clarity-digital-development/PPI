@@ -4,38 +4,27 @@ import Stripe from 'stripe'
 import { stripe } from '@/lib/stripe/server'
 import { prisma } from '@/lib/prisma'
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
+import { releaseOrderHoldsAndRestoreInventory } from '@/lib/inventory-holds'
 
 /**
  * Restore inventory items linked to an order whose payment failed/cancelled,
  * so a stuck 3DS or declined card doesn't leave the customer's signs locked
  * out of their inventory forever. Idempotent — safe to call multiple times.
  */
-async function restoreOrderInventory(paymentIntentId: string, reason: string) {
+async function restoreOrderInventory(
+  paymentIntentId: string,
+  reason: string,
+  request: NextRequest,
+) {
   try {
-    const order = await prisma.order.findFirst({
+    const orders = await prisma.order.findMany({
       where: { paymentIntentId },
-      include: { orderItems: true },
+      select: { id: true },
     })
-    if (!order) return
+    if (orders.length === 0) return
 
-    const restores: Promise<unknown>[] = []
-    for (const item of order.orderItems) {
-      if (item.customerSignId) {
-        restores.push(prisma.customerSign.update({ where: { id: item.customerSignId }, data: { inStorage: true } }))
-      }
-      if (item.customerRiderId) {
-        restores.push(prisma.customerRider.update({ where: { id: item.customerRiderId }, data: { inStorage: true } }))
-      }
-      if (item.customerLockboxId) {
-        restores.push(prisma.customerLockbox.update({ where: { id: item.customerLockboxId }, data: { inStorage: true } }))
-      }
-      if (item.customerBrochureBoxId) {
-        restores.push(prisma.customerBrochureBox.update({ where: { id: item.customerBrochureBoxId }, data: { inStorage: true } }))
-      }
-    }
-    if (restores.length > 0) {
-      await Promise.all(restores)
-      console.log(`Webhook (${reason}): restored ${restores.length} inventory item(s) for order ${order.orderNumber}`)
+    for (const order of orders) {
+      await releaseOrderHoldsAndRestoreInventory(order.id, reason, { system: true }, request)
     }
   } catch (err) {
     console.error(`Webhook (${reason}): failed to restore inventory for ${paymentIntentId}:`, err)
@@ -142,7 +131,7 @@ export async function POST(request: NextRequest) {
 
         // Restore any inventory that was marked out-of-storage at order creation
         // so a failed payment doesn't leave the customer's signs/riders locked
-        await restoreOrderInventory(paymentIntent.id, 'payment_failed')
+        await restoreOrderInventory(paymentIntent.id, 'payment_failed', request)
         break
       }
 
@@ -157,7 +146,7 @@ export async function POST(request: NextRequest) {
           },
         })
 
-        await restoreOrderInventory(paymentIntent.id, 'canceled')
+        await restoreOrderInventory(paymentIntent.id, 'canceled', request)
         break
       }
 

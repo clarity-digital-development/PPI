@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { stripe, getStripeErrorMessage } from '@/lib/stripe/server'
+import { releaseOrderHoldsAndRestoreInventory } from '@/lib/inventory-holds'
+import { audit, AuditAction } from '@/lib/audit'
 
 /**
  * Admin: Cancel a stuck/unpaid order.
@@ -59,38 +61,18 @@ export async function POST(
       }
     }
 
-    // Restore any inventory items linked to this order (in case the old code
-    // path locked them before payment confirmed)
-    const inventoryRestores: Promise<unknown>[] = []
-    for (const item of order.orderItems) {
-      if (item.customerSignId) {
-        inventoryRestores.push(
-          prisma.customerSign.update({ where: { id: item.customerSignId }, data: { inStorage: true } })
-        )
-      }
-      if (item.customerRiderId) {
-        inventoryRestores.push(
-          prisma.customerRider.update({ where: { id: item.customerRiderId }, data: { inStorage: true } })
-        )
-      }
-      if (item.customerLockboxId) {
-        inventoryRestores.push(
-          prisma.customerLockbox.update({ where: { id: item.customerLockboxId }, data: { inStorage: true } })
-        )
-      }
-      if (item.customerBrochureBoxId) {
-        inventoryRestores.push(
-          prisma.customerBrochureBox.update({ where: { id: item.customerBrochureBoxId }, data: { inStorage: true } })
-        )
-      }
-    }
-    if (inventoryRestores.length > 0) {
-      try {
-        await Promise.all(inventoryRestores)
-      } catch (invErr) {
-        console.error('Could not restore inventory:', invErr)
-        // Continue with cancellation
-      }
+    // Guarded inventory restore + consumed-hold cleanup (won't clobber a
+    // successful re-allocation)
+    try {
+      await releaseOrderHoldsAndRestoreInventory(
+        order.id,
+        'admin_cancel',
+        { id: user.id, email: user.email, role: user.role },
+        request
+      )
+    } catch (invErr) {
+      console.error('Could not restore inventory:', invErr)
+      // Continue with cancellation
     }
 
     const updatedOrder = await prisma.order.update({
@@ -101,11 +83,19 @@ export async function POST(
       },
     })
 
+    await audit({
+      actor: { id: user.id, email: user.email, role: user.role },
+      action: AuditAction.OrderCancel,
+      targetType: 'order',
+      targetId: order.id,
+      metadata: { reason: 'admin_cancel', stripeCancelled },
+      request,
+    })
+
     return NextResponse.json({
       success: true,
       order: updatedOrder,
       stripe_cancelled: stripeCancelled,
-      inventory_restored: inventoryRestores.length,
     })
   } catch (error) {
     console.error('Error cancelling order:', error)
