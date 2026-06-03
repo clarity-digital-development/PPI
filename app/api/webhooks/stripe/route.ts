@@ -188,6 +188,14 @@ export async function POST(request: NextRequest) {
         const refundedCents = charge.amount_refunded
         const isFullRefund = refundedCents === charge.amount
         if (!isFullRefund) {
+          // v1 only acts on full refunds. We still persist refundedAmount so
+          // the audit trail accurately reflects what the customer's bank shows
+          // and so a later full-refund event can compute a correct delta
+          // (avoids overstating the email amount on the cumulative event).
+          await prisma.order.update({
+            where: { id: order.id },
+            data: { refundedAmount: refundedCents / 100 },
+          })
           await audit({
             actor: { system: true },
             action: AuditAction.OrderRefundWebhook,
@@ -206,7 +214,11 @@ export async function POST(request: NextRequest) {
 
         const latestRefund = charge.refunds?.data?.[0]
         const stripeRefundId = latestRefund?.id ?? order.refundId
-        const dashboardInitiated = !order.refundId
+        // Dashboard-initiated detection (R2 fix): gate on refundInitiatedAt,
+        // NOT just refundId. refundOrder reserves refundInitiatedAt BEFORE
+        // calling Stripe, so a webhook racing mid-flight will correctly see
+        // "refundOrder is in charge here" and skip this branch.
+        const dashboardInitiated = !order.refundInitiatedAt
 
         const now = new Date()
         await prisma.order.update({
@@ -215,9 +227,12 @@ export async function POST(request: NextRequest) {
             paymentStatus: 'refunded',
             refundedAt: now,
             refundedAmount: refundedCents / 100,
+            // Always stamp refundId if it's still null (covers the rare case
+            // where refundOrder reserved + called Stripe but its post-Stripe
+            // DB update failed — webhook now backfills the id).
+            ...(order.refundId ? {} : { refundId: stripeRefundId }),
             ...(dashboardInitiated
               ? {
-                  refundId: stripeRefundId,
                   refundInitiatedAt: now,
                   status: 'cancelled',
                   cancelledAt: now,
@@ -243,7 +258,14 @@ export async function POST(request: NextRequest) {
           }
         }
 
-        if (!order.refundEmailSentAt) {
+        // Reserve email slot via conditional update so refundOrder (route-
+        // initiated path) and this webhook can't double-send. Whichever
+        // updateMany lands first wins; the other gets count=0 and no-ops.
+        const emailReserved = await prisma.order.updateMany({
+          where: { id: order.id, refundEmailSentAt: null },
+          data: { refundEmailSentAt: now },
+        })
+        if (emailReserved.count > 0) {
           try {
             const recipient = await resolveRefundRecipient(order)
             await sendRefundConfirmationEmail({
@@ -257,15 +279,16 @@ export async function POST(request: NextRequest) {
               refundedBy: 'admin',
               auto: false,
             })
-            await prisma.order.update({
-              where: { id: order.id },
-              data: { refundEmailSentAt: new Date() },
-            })
           } catch (err) {
             console.error(
               `Webhook charge.refunded: failed to send refund email for order ${order.id}:`,
               err,
             )
+            // Roll back the reservation so an operator (or replay) can retry.
+            await prisma.order.updateMany({
+              where: { id: order.id, refundEmailSentAt: { not: null } },
+              data: { refundEmailSentAt: null },
+            })
           }
         }
 

@@ -41,20 +41,26 @@ export type RefundOrderResult =
 
 /**
  * Full-refund-and-cancel orchestration. Pure server-side: no auth, no
- * threshold check — those are the route handler's job. By the time we
- * get here, the decision to refund has been made.
+ * threshold check — those are the route handler's job.
  *
- * Ordering (matters):
- *   1. Eligibility pre-check (idempotency: already-refunded → no-op)
- *   2. Stripe refunds.create (idempotent via SHA-256 of order id)
- *   3. Persist refundId + cancellation columns on Order
- *   4. Audit OrderRefundCreate
- *   5. Release inventory holds + restore inStorage (best-effort)
- *   6. Audit OrderCancel
- *   7. Resolve recipient → sendRefundConfirmationEmail (best-effort)
+ * Concurrency model (R1/R2/R5 from refund-verify-punchlist):
  *
- * Steps 5–7 can fail without rolling back the refund (money already
- * moved). Failures are audited but never thrown to the caller.
+ *   Step 0 — RESERVE: conditional updateMany sets refundInitiatedAt + actor
+ *   metadata atomically. Only one caller wins; the rest get ALREADY_REFUNDED
+ *   without ever touching Stripe. This makes the DB row the lock — closes
+ *   the customer/admin race, the double-click race, AND the webhook
+ *   misclassification race (charge.refunded webhook now checks
+ *   refundInitiatedAt to know "refundOrder is in charge here").
+ *
+ *   Step 1 — Load fresh + final eligibility (paymentIntentId etc.)
+ *   Step 2 — Stripe refunds.create (idempotent via SHA-256 of orderId)
+ *   Step 3 — Stamp refundId + status='cancelled' + cancelledAt + refundReason
+ *   Step 4 — Audit OrderRefundCreate
+ *   Step 5 — Inventory restore (helper idempotent + self-auditing)
+ *   Step 6 — Audit OrderCancel
+ *   Step 7 — Reserve refundEmailSentAt via conditional update; if our
+ *            reserve wins, send the email. Webhook does the same reserve;
+ *            whichever fires first sends, the other becomes a no-op.
  *
  * paymentStatus is NOT flipped to 'refunded' here — the charge.refunded
  * webhook owns that transition (single source of truth across explicit
@@ -64,23 +70,60 @@ export async function refundOrder(
   orderId: string,
   options: RefundOrderOptions
 ): Promise<RefundOrderResult> {
-  // ── 1. Load order + eligibility check ──
+  const actorId = options.actor && 'id' in options.actor ? options.actor.id : null
+
+  // ── Step 0: RESERVE the refund slot via conditional update ──
+  // updateMany returns count > 0 only if a row matched the WHERE; this
+  // turns the read-then-write window into one atomic DB operation.
+  const reserved = await prisma.order.updateMany({
+    where: {
+      id: orderId,
+      refundInitiatedAt: null,
+      refundId: null,
+      paymentStatus: 'succeeded',
+    },
+    data: {
+      refundInitiatedAt: new Date(),
+      cancelReason: options.reason,
+      cancelledByUserId: actorId,
+      refundReason: options.customerReason ?? null,
+    },
+  })
+  if (reserved.count === 0) {
+    // Lost the race. Distinguish "already refunded" from other reasons via
+    // a follow-up read so the caller can render a useful message.
+    const existing = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, paymentStatus: true, refundId: true, refundInitiatedAt: true, paymentIntentId: true },
+    })
+    if (!existing) return { ok: false, error: 'Order not found', code: 'NOT_REFUNDABLE' }
+    if (existing.refundId || existing.refundInitiatedAt) {
+      return { ok: false, error: 'Order already refunded', code: 'ALREADY_REFUNDED' }
+    }
+    if (existing.paymentStatus !== 'succeeded') {
+      return { ok: false, error: 'Order is not in a refundable state', code: 'NOT_REFUNDABLE' }
+    }
+    if (!existing.paymentIntentId) {
+      return { ok: false, error: 'Order has no payment to refund', code: 'NOT_REFUNDABLE' }
+    }
+    return { ok: false, error: 'Order is not in a refundable state', code: 'NOT_REFUNDABLE' }
+  }
+
+  // ── Step 1: load fresh order (now that we own the slot) ──
   const order = await prisma.order.findUnique({
     where: { id: orderId },
     include: { user: true, orderItems: true },
   })
-  if (!order) return { ok: false, error: 'Order not found', code: 'NOT_REFUNDABLE' }
-  if (order.refundId || order.paymentStatus === 'refunded') {
-    return { ok: false, error: 'Order already refunded', code: 'ALREADY_REFUNDED' }
-  }
-  if (order.paymentStatus !== 'succeeded') {
-    return { ok: false, error: 'Order is not in a refundable state', code: 'NOT_REFUNDABLE' }
-  }
-  if (!order.paymentIntentId) {
+  if (!order || !order.paymentIntentId) {
+    // Belt-and-suspenders: the reserve only matches paymentStatus='succeeded'
+    // which implies paymentIntentId is set, but defend anyway.
     return { ok: false, error: 'Order has no payment to refund', code: 'NOT_REFUNDABLE' }
   }
 
-  // ── 2. Stripe refund (idempotent — retries return same Refund) ──
+  // ── Step 2: Stripe refund (idempotent via deterministic key) ──
+  // Metadata kept minimal: order_id only. The cancel_reason and actor_user_id
+  // live in our audit log — including them in Stripe metadata caused R3
+  // (key+different-params collision returns 400 on a concurrent retry).
   let refundId: string
   let refundAmountCents: number
   try {
@@ -88,10 +131,6 @@ export async function refundOrder(
       paymentIntentId: order.paymentIntentId,
       orderId: order.id,
       reason: 'requested_by_customer',
-      metadata: {
-        cancel_reason: options.reason,
-        actor_user_id: options.actor && 'id' in options.actor ? options.actor.id : 'system',
-      },
     })
     refundId = result.refundId
     refundAmountCents = result.amount
@@ -107,22 +146,17 @@ export async function refundOrder(
     return { ok: false, error: getStripeErrorMessage(err) ?? 'Refund failed', code: 'STRIPE_ERROR' }
   }
 
-  // ── 3. Persist refund metadata + cancel the order ──
-  const actorId = options.actor && 'id' in options.actor ? options.actor.id : null
+  // ── Step 3: stamp refundId + cancellation. Step 0 reserved us; no race. ──
   await prisma.order.update({
     where: { id: order.id },
     data: {
       refundId,
-      refundInitiatedAt: new Date(),
-      refundReason: options.customerReason ?? null,
       status: 'cancelled',
       cancelledAt: new Date(),
-      cancelledByUserId: actorId,
-      cancelReason: options.reason,
     },
   })
 
-  // ── 4. Audit refund creation ──
+  // ── Step 4: refund-create audit ──
   await audit({
     actor: options.actor,
     action: AuditAction.OrderRefundCreate,
@@ -132,14 +166,14 @@ export async function refundOrder(
     request: options.request,
   })
 
-  // ── 5. Restore inventory (helper is idempotent + writes its own audit) ──
+  // ── Step 5: inventory restore (best-effort, idempotent helper) ──
   try {
     await releaseOrderHoldsAndRestoreInventory(order.id, options.reason, options.actor, options.request)
   } catch (err) {
     console.error(`[refundOrder] inventory restore failed for ${order.id}:`, err)
   }
 
-  // ── 6. Order-cancel audit (separate from refund audit; parallels admin cancel) ──
+  // ── Step 6: order-cancel audit ──
   await audit({
     actor: options.actor,
     action: AuditAction.OrderCancel,
@@ -149,38 +183,48 @@ export async function refundOrder(
     request: options.request,
   })
 
-  // ── 7. Resolve recipient + email (best-effort; both webhook + route may try) ──
+  // ── Step 7: reserve email slot + send ──
+  // Reserve via conditional update before sending so a concurrent webhook
+  // can't double-send. If reserve fails, webhook already sent (or will);
+  // we no-op the email here.
   let emailed = false
   if (!options.skipEmail) {
-    try {
-      const recipient = await resolveRefundRecipient(order)
-      const propertyAddress = `${order.propertyAddress}, ${order.propertyCity}, ${order.propertyState} ${order.propertyZip}`
-      await sendRefundConfirmationEmail({
-        recipientName: recipient.fullName,
-        recipientEmail: recipient.email,
-        orderNumber: order.orderNumber,
-        propertyAddress,
-        refundAmount: refundAmountCents / 100,
-        refundReason: options.customerReason ?? undefined,
-        refundedAt: new Date(),
-        refundedBy: options.reason === 'customer_cancel' ? 'customer' : 'admin',
-        auto: options.auto,
-      })
-      await prisma.order.update({
-        where: { id: order.id },
-        data: { refundEmailSentAt: new Date() },
-      })
-      emailed = true
-    } catch (err) {
-      console.error(`[refundOrder] email send failed for ${order.id}:`, err)
-      await audit({
-        actor: options.actor,
-        action: AuditAction.OrderRefundFail,
-        targetType: 'order',
-        targetId: order.id,
-        metadata: { stage: 'email', error: err instanceof Error ? err.message : String(err) },
-        request: options.request,
-      })
+    const emailReserved = await prisma.order.updateMany({
+      where: { id: order.id, refundEmailSentAt: null },
+      data: { refundEmailSentAt: new Date() },
+    })
+    if (emailReserved.count > 0) {
+      try {
+        const recipient = await resolveRefundRecipient(order)
+        const propertyAddress = `${order.propertyAddress}, ${order.propertyCity}, ${order.propertyState} ${order.propertyZip}`
+        await sendRefundConfirmationEmail({
+          recipientName: recipient.fullName,
+          recipientEmail: recipient.email,
+          orderNumber: order.orderNumber,
+          propertyAddress,
+          refundAmount: refundAmountCents / 100,
+          refundReason: options.customerReason ?? undefined,
+          refundedAt: new Date(),
+          refundedBy: options.reason === 'customer_cancel' ? 'customer' : 'admin',
+          auto: options.auto,
+        })
+        emailed = true
+      } catch (err) {
+        console.error(`[refundOrder] email send failed for ${order.id}:`, err)
+        // Roll back the reservation so an operator (or a retry) can re-send.
+        await prisma.order.updateMany({
+          where: { id: order.id, refundEmailSentAt: { not: null } },
+          data: { refundEmailSentAt: null },
+        })
+        await audit({
+          actor: options.actor,
+          action: AuditAction.OrderRefundFail,
+          targetType: 'order',
+          targetId: order.id,
+          metadata: { stage: 'email', error: err instanceof Error ? err.message : String(err) },
+          request: options.request,
+        })
+      }
     }
   }
 
