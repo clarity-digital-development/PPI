@@ -3,8 +3,10 @@ import { headers } from 'next/headers'
 import Stripe from 'stripe'
 import { stripe } from '@/lib/stripe/server'
 import { prisma } from '@/lib/prisma'
-import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
+import { sendOrderConfirmationEmail, sendAdminOrderNotification, sendRefundConfirmationEmail } from '@/lib/email'
 import { releaseOrderHoldsAndRestoreInventory } from '@/lib/inventory-holds'
+import { resolveRefundRecipient } from '@/lib/orders/refund-recipient'
+import { audit, AuditAction } from '@/lib/audit'
 
 /**
  * Restore inventory items linked to an order whose payment failed/cancelled,
@@ -154,6 +156,131 @@ export async function POST(request: NextRequest) {
         })
 
         await restoreOrderInventory(paymentIntent.id, 'canceled', request)
+        break
+      }
+
+      case 'charge.refunded': {
+        const charge = event.data.object as Stripe.Charge
+        const paymentIntentId =
+          typeof charge.payment_intent === 'string'
+            ? charge.payment_intent
+            : charge.payment_intent?.id
+        if (!paymentIntentId) {
+          console.warn('Webhook charge.refunded: charge has no payment_intent', charge.id)
+          break
+        }
+
+        const order = await prisma.order.findFirst({
+          where: { paymentIntentId },
+          include: { user: true },
+        })
+        if (!order) {
+          // Not every charge in the Stripe account belongs to an order in this DB
+          // (e.g. test charges, deleted orders). Don't force Stripe to retry forever.
+          console.warn('Webhook charge.refunded: no order for PI', paymentIntentId)
+          break
+        }
+
+        if (order.paymentStatus === 'refunded' && order.refundedAt) {
+          break
+        }
+
+        const refundedCents = charge.amount_refunded
+        const isFullRefund = refundedCents === charge.amount
+        if (!isFullRefund) {
+          await audit({
+            actor: { system: true },
+            action: AuditAction.OrderRefundWebhook,
+            targetType: 'order',
+            targetId: order.id,
+            metadata: {
+              partial: true,
+              refunded_cents: refundedCents,
+              charge_amount: charge.amount,
+              note: 'partial refunds not handled in v1',
+            },
+            request,
+          })
+          break
+        }
+
+        const latestRefund = charge.refunds?.data?.[0]
+        const stripeRefundId = latestRefund?.id ?? order.refundId
+        const dashboardInitiated = !order.refundId
+
+        const now = new Date()
+        await prisma.order.update({
+          where: { id: order.id },
+          data: {
+            paymentStatus: 'refunded',
+            refundedAt: now,
+            refundedAmount: refundedCents / 100,
+            ...(dashboardInitiated
+              ? {
+                  refundId: stripeRefundId,
+                  refundInitiatedAt: now,
+                  status: 'cancelled',
+                  cancelledAt: now,
+                  cancelReason: 'stripe_dashboard',
+                }
+              : {}),
+          },
+        })
+
+        if (dashboardInitiated) {
+          try {
+            await releaseOrderHoldsAndRestoreInventory(
+              order.id,
+              'stripe_dashboard',
+              { system: true },
+              request,
+            )
+          } catch (err) {
+            console.error(
+              `Webhook charge.refunded: failed to release holds for order ${order.id}:`,
+              err,
+            )
+          }
+        }
+
+        if (!order.refundEmailSentAt) {
+          try {
+            const recipient = await resolveRefundRecipient(order)
+            await sendRefundConfirmationEmail({
+              recipientName: recipient.fullName,
+              recipientEmail: recipient.email,
+              orderNumber: order.orderNumber,
+              propertyAddress: `${order.propertyAddress}, ${order.propertyCity}, ${order.propertyState} ${order.propertyZip}`,
+              refundAmount: refundedCents / 100,
+              refundReason: order.refundReason ?? undefined,
+              refundedAt: now,
+              refundedBy: 'admin',
+              auto: false,
+            })
+            await prisma.order.update({
+              where: { id: order.id },
+              data: { refundEmailSentAt: new Date() },
+            })
+          } catch (err) {
+            console.error(
+              `Webhook charge.refunded: failed to send refund email for order ${order.id}:`,
+              err,
+            )
+          }
+        }
+
+        await audit({
+          actor: { system: true },
+          action: AuditAction.OrderRefundWebhook,
+          targetType: 'order',
+          targetId: order.id,
+          metadata: {
+            refundId: stripeRefundId,
+            amountCents: refundedCents,
+            dashboard_initiated: dashboardInitiated,
+          },
+          request,
+        })
         break
       }
 

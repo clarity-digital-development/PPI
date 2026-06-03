@@ -458,6 +458,9 @@ export async function sendRefundConfirmationEmail(props: RefundConfirmationEmail
     ? 'This refund was processed automatically. Funds typically appear on your statement in 5-10 business days.'
     : 'This refund was approved by our team. Funds typically appear on your statement in 5-10 business days.'
 
+  // All user/order-supplied strings are HTML-escaped — recipientName comes
+  // from User.fullName (user-supplied at signup), orderNumber and
+  // propertyAddress are server-controlled but escaping is defense in depth.
   const html = `
     <div style="background:#FFF0F3;padding:32px 16px;font-family:'Poppins',Arial,sans-serif">
       <div style="max-width:600px;margin:0 auto;background:white;border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,0.06);overflow:hidden">
@@ -465,13 +468,13 @@ export async function sendRefundConfirmationEmail(props: RefundConfirmationEmail
           <h1 style="margin:0;color:white;font-size:24px">Refund Confirmation</h1>
         </div>
         <div style="padding:32px 24px;color:#333;line-height:1.6">
-          <p>Hi ${props.recipientName},</p>
+          <p>Hi ${escapeHtml(props.recipientName)},</p>
           <p>${headerCopy}</p>
           <div style="background:#FFF0F3;padding:16px;border-radius:8px;margin:24px 0">
-            <p style="margin:0 0 8px"><strong>Order:</strong> ${props.orderNumber}</p>
-            <p style="margin:0 0 8px"><strong>Property:</strong> ${props.propertyAddress}</p>
+            <p style="margin:0 0 8px"><strong>Order:</strong> ${escapeHtml(props.orderNumber)}</p>
+            <p style="margin:0 0 8px"><strong>Property:</strong> ${escapeHtml(props.propertyAddress)}</p>
             <p style="margin:0 0 8px"><strong>Refund Amount:</strong> $${props.refundAmount.toFixed(2)}</p>
-            <p style="margin:0"><strong>Cancelled On:</strong> ${formattedDate}</p>
+            <p style="margin:0"><strong>Cancelled On:</strong> ${escapeHtml(formattedDate)}</p>
             ${props.refundReason ? `<p style="margin:8px 0 0"><strong>Reason:</strong> ${escapeHtml(props.refundReason)}</p>` : ''}
           </div>
           <p style="color:#666;font-size:14px">${processingCopy}</p>

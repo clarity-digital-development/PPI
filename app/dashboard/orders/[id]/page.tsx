@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import { Header, CompletePaymentButton } from '@/components/dashboard'
-import { Card, CardContent, Button, Badge } from '@/components/ui'
+import { Card, CardContent, Button, Badge, Modal } from '@/components/ui'
 import {
   MapPin,
   Calendar,
@@ -18,6 +18,7 @@ import {
   Truck,
   FileText,
   Pencil,
+  AlertTriangle,
 } from 'lucide-react'
 
 interface OrderItem {
@@ -55,6 +56,12 @@ interface Order {
   paymentStatus: string
   createdAt: string
   updatedAt: string
+  paidAt: string | null
+  refundId: string | null
+  refundInitiatedAt: string | null
+  refundedAt: string | null
+  refundedAmount: number | null
+  cancelledAt: string | null
   orderItems: OrderItem[]
   postType: {
     name: string
@@ -79,33 +86,35 @@ export default function OrderDetailsPage() {
   const [order, setOrder] = useState<Order | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [cancelOpen, setCancelOpen] = useState(false)
 
-  useEffect(() => {
-    async function fetchOrder() {
-      if (!orderId) {
-        setError('No order ID provided')
-        setLoading(false)
-        return
-      }
-
-      try {
-        const res = await fetch(`/api/orders/${orderId}`)
-        if (!res.ok) {
-          if (res.status === 404) {
-            throw new Error('Order not found')
-          }
-          throw new Error('Failed to fetch order')
-        }
-        const data = await res.json()
-        setOrder(data.order)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Could not load order details')
-      } finally {
-        setLoading(false)
-      }
+  async function fetchOrder() {
+    if (!orderId) {
+      setError('No order ID provided')
+      setLoading(false)
+      return
     }
 
+    try {
+      const res = await fetch(`/api/orders/${orderId}`)
+      if (!res.ok) {
+        if (res.status === 404) {
+          throw new Error('Order not found')
+        }
+        throw new Error('Failed to fetch order')
+      }
+      const data = await res.json()
+      setOrder(data.order)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load order details')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
     fetchOrder()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderId])
 
   // createdAt is a real timestamp — render in local time ("Placed on …")
@@ -127,6 +136,19 @@ export default function OrderDetailsPage() {
       year: 'numeric',
       timeZone: 'UTC',
     })
+  }
+
+  // 24h cutoff is measured against UTC midnight of the scheduled date for safety.
+  // Null scheduledDate (Next Available) skips the cutoff.
+  const canCancel = (o: Order): boolean => {
+    if (['in_progress', 'completed', 'cancelled'].includes(o.status)) return false
+    if (o.paymentStatus !== 'succeeded') return false
+    if (o.refundId) return false
+    if (!o.scheduledDate) return true
+    const scheduledUtcMidnight = new Date(o.scheduledDate)
+    scheduledUtcMidnight.setUTCHours(0, 0, 0, 0)
+    const cutoff = scheduledUtcMidnight.getTime() - 24 * 60 * 60 * 1000
+    return cutoff > new Date().getTime()
   }
 
   if (loading) {
@@ -273,9 +295,22 @@ export default function OrderDetailsPage() {
                 </div>
                 <div>
                   <h3 className="text-lg font-semibold text-red-800">Order Cancelled</h3>
-                  <p className="text-red-700">
-                    This order was cancelled. Please contact support if you have questions.
-                  </p>
+                  {order.cancelledAt && order.refundedAt && order.refundedAmount !== null ? (
+                    <p className="text-red-700">
+                      Cancelled on {formatDate(order.cancelledAt)} — Refund of $
+                      {Number(order.refundedAmount).toFixed(2)} processed on{' '}
+                      {formatDate(order.refundedAt)}
+                    </p>
+                  ) : order.cancelledAt && order.refundInitiatedAt ? (
+                    <p className="text-red-700">
+                      Cancelled on {formatDate(order.cancelledAt)} — Refund of $
+                      {Number(order.total).toFixed(2)} processing (5-10 business days)
+                    </p>
+                  ) : (
+                    <p className="text-red-700">
+                      This order was cancelled. Please contact support if you have questions.
+                    </p>
+                  )}
                 </div>
               </div>
             </CardContent>
@@ -449,8 +484,155 @@ export default function OrderDetailsPage() {
               <Button className="w-full">Place Another Order</Button>
             </Link>
           )}
+          {canCancel(order) && (
+            <Button
+              variant="outline"
+              className="flex-1 border-red-500 text-red-600 hover:bg-red-50 focus:ring-red-500"
+              onClick={() => setCancelOpen(true)}
+            >
+              <XCircle className="w-4 h-4 mr-2" />
+              Cancel Order
+            </Button>
+          )}
         </div>
       </div>
+
+      <CancelOrderModal
+        isOpen={cancelOpen}
+        onClose={() => setCancelOpen(false)}
+        orderId={order.id}
+        amount={Number(order.total)}
+        onSuccess={() => {
+          setCancelOpen(false)
+          fetchOrder()
+        }}
+      />
     </div>
+  )
+}
+
+interface CancelOrderModalProps {
+  isOpen: boolean
+  onClose: () => void
+  orderId: string
+  amount: number
+  onSuccess: () => void
+}
+
+type CancelStep = 'initial' | 'high-value' | 'submitting' | 'done' | 'error'
+
+function CancelOrderModal({ isOpen, onClose, orderId, amount, onSuccess }: CancelOrderModalProps) {
+  const [step, setStep] = useState<CancelStep>('initial')
+  const [reason, setReason] = useState('')
+  const [confirmMessage, setConfirmMessage] = useState<string | null>(null)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  // Reset state whenever the modal is reopened
+  useEffect(() => {
+    if (isOpen) {
+      setStep('initial')
+      setReason('')
+      setConfirmMessage(null)
+      setErrorMessage(null)
+    }
+  }, [isOpen])
+
+  async function submit(confirmed: boolean) {
+    setStep('submitting')
+    setErrorMessage(null)
+    try {
+      const res = await fetch(`/api/orders/${orderId}/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmed, reason: reason.trim() || undefined }),
+      })
+      const data = await res.json().catch(() => ({}))
+
+      if (res.status === 409 && data?.requiresConfirmation) {
+        setConfirmMessage(data.message || 'This order is $250 or more. Please confirm the refund.')
+        setStep('high-value')
+        return
+      }
+
+      if (!res.ok) {
+        throw new Error(data?.error || 'Failed to cancel order')
+      }
+
+      setStep('done')
+      onSuccess()
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Something went wrong')
+      setStep('error')
+    }
+  }
+
+  const submitting = step === 'submitting'
+
+  return (
+    <Modal isOpen={isOpen} onClose={submitting ? () => {} : onClose} title="Cancel Order">
+      {step === 'high-value' ? (
+        <div className="space-y-4">
+          <div className="flex items-start gap-3 p-4 rounded-md bg-amber-50 border border-amber-200">
+            <AlertTriangle className="w-5 h-5 text-amber-600 mt-0.5 shrink-0" />
+            <p className="text-sm text-amber-800">{confirmMessage}</p>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={onClose} disabled={submitting}>
+              Keep Order
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => submit(true)}
+              isLoading={submitting}
+            >
+              Yes, Refund ${amount.toFixed(2)}
+            </Button>
+          </div>
+        </div>
+      ) : step === 'error' ? (
+        <div className="space-y-4">
+          <p className="text-sm text-error">{errorMessage}</p>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={onClose}>
+              Close
+            </Button>
+            <Button onClick={() => setStep('initial')}>Try Again</Button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <p className="text-sm text-gray-700">
+            Cancel this order? This will refund{' '}
+            <span className="font-semibold">${amount.toFixed(2)}</span> to your card.
+          </p>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              Reason (optional)
+            </label>
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value.slice(0, 500))}
+              rows={3}
+              maxLength={500}
+              className="block w-full rounded-md border border-gray-300 bg-white px-4 py-2.5 text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-pink-500 focus:border-transparent transition-all duration-200"
+              placeholder="Tell us why you're cancelling (optional)"
+            />
+            <p className="text-xs text-gray-400 mt-1">{reason.length} / 500</p>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={onClose} disabled={submitting}>
+              Keep Order
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => submit(false)}
+              isLoading={submitting}
+            >
+              Confirm Cancellation
+            </Button>
+          </div>
+        </div>
+      )}
+    </Modal>
   )
 }

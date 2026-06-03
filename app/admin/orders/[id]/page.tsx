@@ -16,8 +16,9 @@ import {
   CheckCircle,
   AlertCircle,
   DollarSign,
+  RotateCcw,
 } from 'lucide-react'
-import { Button, Badge, Card, CardContent } from '@/components/ui'
+import { Button, Badge, Card, CardContent, Modal } from '@/components/ui'
 
 interface OrderItem {
   id: string
@@ -62,6 +63,11 @@ interface Order {
     code: string
   } | null
   paymentIntentId: string | null
+  refundId: string | null
+  refundInitiatedAt: string | null
+  refundedAt: string | null
+  refundedAmount: number | string | null
+  cancelledAt: string | null
   user: {
     id: string
     fullName: string | null
@@ -113,40 +119,40 @@ export default function AdminOrderDetailPage() {
   const [chargeError, setChargeError] = useState<string | null>(null)
   const [chargeSuccess, setChargeSuccess] = useState(false)
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<string>('')
+  const [refundModalOpen, setRefundModalOpen] = useState(false)
+  const [refundReason, setRefundReason] = useState('')
+  const [refunding, setRefunding] = useState(false)
+  const [refundError, setRefundError] = useState<string | null>(null)
+  const [refundBanner, setRefundBanner] = useState<string | null>(null)
 
-  useEffect(() => {
-    async function fetchOrder() {
-      try {
-        const res = await fetch(`/api/admin/orders/${orderId}`)
-        if (!res.ok) {
-          throw new Error('Failed to fetch order')
-        }
-        const data = await res.json()
-        setOrder(data.order)
+  async function loadOrder() {
+    const res = await fetch(`/api/admin/orders/${orderId}`)
+    if (!res.ok) {
+      throw new Error('Failed to fetch order')
+    }
+    const data = await res.json()
+    setOrder(data.order)
 
-        // If there's a customer, fetch their payment methods
-        if (data.order.user?.stripeCustomerId) {
-          const pmRes = await fetch(`/api/admin/customers/${data.order.user.id}/payment-methods`)
-          if (pmRes.ok) {
-            const pmData = await pmRes.json()
-            setPaymentMethods(pmData.paymentMethods || [])
-            // Set default payment method
-            const defaultPm = pmData.paymentMethods?.find((pm: PaymentMethod) => pm.isDefault)
-            if (defaultPm) {
-              setSelectedPaymentMethod(defaultPm.id)
-            } else if (pmData.paymentMethods?.length > 0) {
-              setSelectedPaymentMethod(pmData.paymentMethods[0].id)
-            }
-          }
+    if (data.order.user?.stripeCustomerId) {
+      const pmRes = await fetch(`/api/admin/customers/${data.order.user.id}/payment-methods`)
+      if (pmRes.ok) {
+        const pmData = await pmRes.json()
+        setPaymentMethods(pmData.paymentMethods || [])
+        const defaultPm = pmData.paymentMethods?.find((pm: PaymentMethod) => pm.isDefault)
+        if (defaultPm) {
+          setSelectedPaymentMethod(defaultPm.id)
+        } else if (pmData.paymentMethods?.length > 0) {
+          setSelectedPaymentMethod(pmData.paymentMethods[0].id)
         }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load order')
-      } finally {
-        setLoading(false)
       }
     }
+  }
 
-    fetchOrder()
+  useEffect(() => {
+    loadOrder()
+      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load order'))
+      .finally(() => setLoading(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderId])
 
   async function handleChargeCard() {
@@ -191,6 +197,31 @@ export default function AdminOrderDetailPage() {
       }
     } catch (err) {
       console.error('Error updating order status:', err)
+    }
+  }
+
+  async function handleRefundOrder() {
+    if (!order) return
+    setRefunding(true)
+    setRefundError(null)
+    try {
+      const res = await fetch(`/api/admin/orders/${orderId}/refund`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: refundReason.trim() || undefined }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data?.error || 'Failed to refund order')
+      }
+      setRefundModalOpen(false)
+      setRefundReason('')
+      setRefundBanner(`Refund of $${Number(order.total).toFixed(2)} initiated. The broker will be notified once Stripe confirms.`)
+      await loadOrder()
+    } catch (err) {
+      setRefundError(err instanceof Error ? err.message : 'Failed to refund order')
+    } finally {
+      setRefunding(false)
     }
   }
 
@@ -250,6 +281,22 @@ export default function AdminOrderDetailPage() {
 
   return (
     <div className="p-6">
+      {/* Refund success banner */}
+      {refundBanner && (
+        <div className="mb-4 flex items-start justify-between gap-3 bg-green-50 border border-green-200 rounded-lg px-4 py-3">
+          <div className="flex items-start gap-2 text-sm text-green-800">
+            <CheckCircle className="w-5 h-5 mt-0.5 flex-shrink-0" />
+            <span>{refundBanner}</span>
+          </div>
+          <button
+            onClick={() => setRefundBanner(null)}
+            className="text-green-700 hover:text-green-900 text-sm font-medium"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
@@ -292,6 +339,33 @@ export default function AdminOrderDetailPage() {
               Cancel Order
             </Button>
           )}
+
+          {/* Refund processing badge — refund initiated but not yet reconciled by webhook */}
+          {order.refundInitiatedAt && !order.refundedAt && (
+            <Badge variant="warning" className="flex items-center gap-1">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              Refund processing
+            </Badge>
+          )}
+
+          {/* Refund button — only for paid, non-cancelled, not-yet-refunded orders */}
+          {order.paymentStatus === 'succeeded' &&
+            !order.refundId &&
+            order.status !== 'cancelled' && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setRefundError(null)
+                  setRefundReason('')
+                  setRefundModalOpen(true)
+                }}
+                className="text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300"
+              >
+                <RotateCcw className="w-4 h-4 mr-2" />
+                Refund Order
+              </Button>
+            )}
 
           {/* Status dropdown */}
           <select
@@ -634,6 +708,78 @@ export default function AdminOrderDetailPage() {
           </Card>
         </div>
       </div>
+
+      {/* Refund confirmation modal */}
+      <Modal
+        isOpen={refundModalOpen}
+        onClose={() => {
+          if (refunding) return
+          setRefundModalOpen(false)
+          setRefundError(null)
+        }}
+        title="Refund Order"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-700">
+            Refund <span className="font-semibold">${Number(order.total).toFixed(2)}</span> to the
+            customer&rsquo;s card? This cancels the order and notifies the broker. Refunds take
+            5&ndash;10 business days.
+          </p>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Reason <span className="text-gray-400 font-normal">(optional, internal note)</span>
+            </label>
+            <textarea
+              value={refundReason}
+              onChange={(e) => setRefundReason(e.target.value.slice(0, 500))}
+              rows={3}
+              maxLength={500}
+              placeholder="e.g. Duplicate order, customer request"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pink-500 focus:border-transparent"
+              disabled={refunding}
+            />
+            <p className="text-xs text-gray-400 mt-1 text-right">{refundReason.length}/500</p>
+          </div>
+
+          {refundError && (
+            <div className="flex items-start gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <span>{refundError}</span>
+            </div>
+          )}
+
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setRefundModalOpen(false)
+                setRefundError(null)
+              }}
+              disabled={refunding}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleRefundOrder}
+              disabled={refunding}
+              className="bg-red-600 hover:bg-red-700 text-white"
+            >
+              {refunding ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Refunding...
+                </>
+              ) : (
+                <>
+                  <RotateCcw className="w-4 h-4 mr-2" />
+                  Refund ${Number(order.total).toFixed(2)}
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

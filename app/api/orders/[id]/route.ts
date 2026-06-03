@@ -18,11 +18,18 @@ export async function GET(
 
     const { id } = await params
 
+    // Admins can read any order; everyone else is scoped to orders they own
+    // or orders they placed on behalf of someone (team_admin acting for an agent).
+    const where =
+      user.role === 'admin'
+        ? { id }
+        : {
+            id,
+            OR: [{ userId: user.id }, { placedByUserId: user.id }],
+          }
+
     const order = await prisma.order.findFirst({
-      where: {
-        id,
-        userId: user.id,
-      },
+      where,
       include: {
         orderItems: true,
         postType: true,
@@ -34,7 +41,18 @@ export async function GET(
       return NextResponse.json({ error: 'Order not found' }, { status: 404 })
     }
 
-    return NextResponse.json({ order })
+    const orderResponse = {
+      ...order,
+      paid_at: order.paidAt ? order.paidAt.toISOString() : null,
+      scheduled_date: order.scheduledDate ? order.scheduledDate.toISOString() : null,
+      refund_id: order.refundId ?? null,
+      refund_initiated_at: order.refundInitiatedAt ? order.refundInitiatedAt.toISOString() : null,
+      refunded_at: order.refundedAt ? order.refundedAt.toISOString() : null,
+      refunded_amount: order.refundedAmount !== null && order.refundedAmount !== undefined ? Number(order.refundedAmount) : null,
+      cancelled_at: order.cancelledAt ? order.cancelledAt.toISOString() : null,
+    }
+
+    return NextResponse.json({ order: orderResponse })
   } catch (error) {
     console.error('Error fetching order:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
