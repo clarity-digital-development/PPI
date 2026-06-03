@@ -13,6 +13,7 @@ interface Installation {
   propertyState: string
   propertyZip: string
   status: string
+  installedAt?: string
 }
 
 interface ScheduleTripModalProps {
@@ -61,14 +62,18 @@ export function ScheduleTripModal({
   async function fetchInstallations() {
     setLoadingInstallations(true)
     try {
-      const res = await fetch('/api/inventory')
+      // /api/installations is the right endpoint — /api/inventory was a typo
+      // that returned undefined.installations and left the dropdown empty.
+      const res = await fetch('/api/installations')
       if (res.ok) {
         const data = await res.json()
-        // Filter to only active installations
-        const activeInstallations = (data.installations || []).filter(
-          (inst: Installation) => inst.status === 'active'
+        // Show active AND removal_scheduled — a customer with a removal
+        // booked may still want to add a lockbox before pickup day.
+        // Hide fully-removed installations.
+        const eligible = (data.installations || []).filter(
+          (inst: Installation) => inst.status === 'active' || inst.status === 'removal_scheduled'
         )
-        setInstallations(activeInstallations)
+        setInstallations(eligible)
       }
     } catch (err) {
       console.error('Error fetching installations:', err)
@@ -190,7 +195,10 @@ export function ScheduleTripModal({
 
   const installationOptions = installations.map((inst) => ({
     value: inst.id,
-    label: `${inst.propertyAddress}, ${inst.propertyCity}`,
+    label:
+      inst.status === 'removal_scheduled'
+        ? `${inst.propertyAddress}, ${inst.propertyCity} (removal scheduled)`
+        : `${inst.propertyAddress}, ${inst.propertyCity}`,
   }))
 
   return (
@@ -254,8 +262,16 @@ export function ScheduleTripModal({
                     <Loader2 className="w-5 h-5 animate-spin text-pink-500" />
                   </div>
                 ) : installations.length === 0 ? (
-                  <div className="p-4 bg-gray-50 rounded-lg text-center text-gray-500 text-sm">
-                    No active installations found. Use &quot;Other Address&quot; to schedule a trip.
+                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900 space-y-1.5">
+                    <p className="font-medium">No completed installations on your account yet.</p>
+                    <p className="text-amber-800">
+                      If you have an order being installed in the next few days, switch to <strong>Other Address</strong>{' '}
+                      and reference the order in the notes — our crew will combine it with the install visit.
+                    </p>
+                    <p className="text-amber-800">
+                      To <strong>cancel</strong> or change a pending order, use <strong>Order History</strong> — removal
+                      service isn&apos;t applicable before install.
+                    </p>
                   </div>
                 ) : (
                   <Select
