@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { orderItemSchema } from '@/lib/validations'
+import { validateScheduling } from '@/lib/scheduling'
 import { z } from 'zod'
 
 // Full edit payload. The order is rebuilt from this (mirrors order creation),
@@ -79,6 +80,28 @@ export async function PATCH(
     }
 
     const editData = validationResult.data
+
+    // Server-side schedule gate. Only apply when the edit actually CHANGES
+    // the schedule — otherwise an order placed yesterday couldn't be edited
+    // today just because its original date is now in the past.
+    const originalDateStr = existingOrder.scheduledDate
+      ? existingOrder.scheduledDate.toISOString().slice(0, 10)
+      : null
+    const newDateStr = editData.requested_date ?? null
+    const dateChanged = newDateStr !== originalDateStr
+    const expeditedChanged = (editData.is_expedited ?? false) !== existingOrder.isExpedited
+    if (dateChanged || expeditedChanged) {
+      const scheduleCheck = validateScheduling({
+        requestedDate: newDateStr,
+        isExpedited: editData.is_expedited ?? existingOrder.isExpedited,
+      })
+      if (!scheduleCheck.ok) {
+        return NextResponse.json(
+          { error: scheduleCheck.error, code: scheduleCheck.code },
+          { status: 400 }
+        )
+      }
+    }
 
     // ---- Resolve the post ----
     // post_type is always sent in full-edit mode: a post name, 'open_house', or

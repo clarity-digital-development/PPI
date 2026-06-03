@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser, generateOrderNumber, canActOnBehalfOf } from '@/lib/auth-utils'
 import { createOrderSchema } from '@/lib/validations'
+import { validateScheduling } from '@/lib/scheduling'
 import { createPaymentIntent, createCustomer, calculateTax, getStripeErrorMessage } from '@/lib/stripe/server'
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 
@@ -114,6 +115,20 @@ export async function POST(request: NextRequest) {
     }
 
     const orderData = validationResult.data
+
+    // Server-side schedule gate. The wizard's date picker min= is purely
+    // client-side; without this, a stale tab or dev-tools edit can submit
+    // a past-cutoff date and get a same-day install booked at 10pm.
+    const scheduleCheck = validateScheduling({
+      requestedDate: orderData.requested_date,
+      isExpedited: orderData.is_expedited,
+    })
+    if (!scheduleCheck.ok) {
+      return NextResponse.json(
+        { error: scheduleCheck.error, code: scheduleCheck.code },
+        { status: 400 }
+      )
+    }
 
     // Calculate totals
     const subtotal = orderData.items.reduce((sum, item) => sum + item.total_price, 0)

@@ -4,6 +4,7 @@ import { getCurrentUser, generateOrderNumber } from '@/lib/auth-utils'
 import { createPaymentIntent, createCustomer, getStripeErrorMessage, stripe } from '@/lib/stripe/server'
 import { computeOrderPricing } from '@/lib/orders/pricing'
 import { claimHoldsInTx, HoldConflictError, releaseHolds, type HoldClaim } from '@/lib/inventory-holds'
+import { validateScheduling } from '@/lib/scheduling'
 import crypto from 'node:crypto'
 import { audit, AuditAction } from '@/lib/audit'
 import type { HoldItemType } from '@prisma/client'
@@ -104,6 +105,19 @@ export async function POST(request: NextRequest) {
       }
       if (!o.property_address || !o.property_city || !o.property_zip || !o.property_type) {
         return NextResponse.json({ error: `Order ${i + 1} is missing a required property field` }, { status: 400 })
+      }
+
+      // Server-side schedule gate (same reason as /api/orders POST — wizard
+      // min= is client-side decoration, can't be trusted).
+      const scheduleCheck = validateScheduling({
+        requestedDate: o.requested_date,
+        isExpedited: o.is_expedited,
+      })
+      if (!scheduleCheck.ok) {
+        return NextResponse.json(
+          { error: `Order ${i + 1}: ${scheduleCheck.error}`, code: scheduleCheck.code },
+          { status: 400 }
+        )
       }
 
       // Look up the post type (skip 'open_house' and missing post_type)
