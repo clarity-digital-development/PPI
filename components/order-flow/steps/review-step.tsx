@@ -422,15 +422,74 @@ export function ReviewStep({
     setAddingToCart(true)
     setError(null)
     try {
-      // Build the items array exactly like handleSubmit does so we can replay
-      // it at checkout time without recomputing
-      const items: Array<Record<string, unknown>> = orderItems.map(oi => ({
-        item_type: 'misc',
-        description: oi.description,
-        quantity: 1,
-        unit_price: oi.price,
-        total_price: oi.price,
-      }))
+      // Use the FULL-fidelity items shape (with customer_*_id refs preserved)
+      // so the cart can carry inventory ids through to checkout. Previously
+      // we threw all of these away, so the cart was untrackable.
+      const items = buildItems() as Array<Record<string, unknown>>
+
+      // Mint a cart row id up front so we can attach holds to it BEFORE
+      // writing to localStorage. If hold acquisition fails partway, we
+      // unwind cleanly.
+      const cartItemId = `cart_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+      const { getOrCreateCartSessionId } = await import('@/lib/cart-session')
+      const cartSessionId = getOrCreateCartSessionId()
+
+      // Each Customer*-typed line item needs a hold. Brochure boxes don't
+      // participate in the hold infrastructure (quantity-aggregated).
+      const holdRequests: Array<{ field: 'customer_sign_id' | 'customer_rider_id' | 'customer_lockbox_id'; itemType: 'sign' | 'rider' | 'lockbox'; itemId: string }> = []
+      for (const it of items) {
+        if (it.customer_sign_id) {
+          holdRequests.push({ field: 'customer_sign_id', itemType: 'sign', itemId: String(it.customer_sign_id) })
+        }
+        if (it.customer_rider_id) {
+          holdRequests.push({ field: 'customer_rider_id', itemType: 'rider', itemId: String(it.customer_rider_id) })
+        }
+        if (it.customer_lockbox_id) {
+          holdRequests.push({ field: 'customer_lockbox_id', itemType: 'lockbox', itemId: String(it.customer_lockbox_id) })
+        }
+      }
+
+      const holdIds: Record<string, string> = {}
+      const acquired: string[] = []
+      let holdsExpireAt: string | undefined
+      try {
+        for (const req of holdRequests) {
+          const res = await fetch('/api/inventory/holds', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              item_type: req.itemType,
+              item_id: req.itemId,
+              cart_session_id: cartSessionId,
+              cart_item_id: cartItemId,
+              on_behalf_of_user_id: onBehalfOf || undefined,
+            }),
+          })
+          if (!res.ok) {
+            const errBody = await res.json().catch(() => ({}))
+            if (res.status === 409) {
+              throw new Error(
+                errBody.code === 'item_already_held'
+                  ? 'One of these items is already in another cart. Please refresh the inventory list and re-pick.'
+                  : `Could not reserve item: ${errBody.error || errBody.code || 'conflict'}`
+              )
+            }
+            throw new Error(errBody.error || 'Could not reserve item for cart')
+          }
+          const body = (await res.json()) as { hold_id: string; expires_at: string }
+          holdIds[`${req.field}:${req.itemId}`] = body.hold_id
+          acquired.push(body.hold_id)
+          if (!holdsExpireAt || body.expires_at < holdsExpireAt) holdsExpireAt = body.expires_at
+        }
+      } catch (acqErr) {
+        // Unwind any holds we managed to grab so we don't strand inventory.
+        await Promise.all(
+          acquired.map(holdId =>
+            fetch(`/api/inventory/holds?id=${encodeURIComponent(holdId)}`, { method: 'DELETE' }).catch(() => undefined)
+          )
+        )
+        throw acqErr
+      }
 
       // Use the typed agent name if provided; otherwise fall back to the
       // agent's full name from /api/admin/customers (legacy on-behalf-of flow)
@@ -449,15 +508,27 @@ export function ReviewStep({
         }
       }
 
-      cart.addItem({
-        agentId: onBehalfOf || '', // empty string when team_admin places under own account
+      // Manually write the cart row with the pre-minted id so the hold's
+      // cart_item_id matches.
+      const newItem = {
+        id: cartItemId,
+        agentId: onBehalfOf || '',
         agentName: agentName || 'Unassigned',
         agentEmail,
         formData,
         items,
         estimatedTotal: total,
         propertyAddress: `${formData.property_address}, ${formData.property_city}`,
-      })
+        addedAt: new Date().toISOString(),
+        holdIds,
+        holdsExpireAt,
+      }
+      const raw = window.localStorage.getItem('pp_cart_v1')
+      const existing = raw ? (JSON.parse(raw) as unknown[]) : []
+      const next = Array.isArray(existing) ? [...existing, newItem] : [newItem]
+      window.localStorage.setItem('pp_cart_v1', JSON.stringify(next))
+      window.dispatchEvent(new Event('pp_cart_change'))
+
       router.push('/dashboard/cart')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not add to cart')

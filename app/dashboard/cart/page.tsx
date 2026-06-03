@@ -4,7 +4,8 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { Header } from '@/components/dashboard'
 import { Card, CardContent, Button, Select } from '@/components/ui'
-import { useCart } from '@/lib/cart'
+import { useCart, useHoldHeartbeat } from '@/lib/cart'
+import { getOrCreateCartSessionId } from '@/lib/cart-session'
 import {
   ShoppingCart,
   Trash2,
@@ -15,6 +16,7 @@ import {
   User,
   MapPin,
   Plus,
+  Clock,
 } from 'lucide-react'
 import { getStripe } from '@/lib/stripe/client'
 
@@ -33,12 +35,30 @@ interface CheckoutResult {
 }
 
 export default function CartPage() {
-  const { items, loaded, removeItem, clearCart } = useCart()
+  const { items, loaded, updateItem, removeItem, clearCart } = useCart()
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([])
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<string>('')
   const [checkingOut, setCheckingOut] = useState(false)
   const [results, setResults] = useState<CheckoutResult[]>([])
   const [done, setDone] = useState(false)
+  // Rows where the bump heartbeat returned extended:false — checkout for
+  // these is blocked until the user re-picks (we don't auto-reacquire to
+  // avoid silently re-grabbing inventory that may have changed hands).
+  const [expiredRows, setExpiredRows] = useState<Set<string>>(new Set())
+
+  useHoldHeartbeat({
+    items,
+    updateItem,
+    enabled: !checkingOut && !done,
+    onConflict: (cartItemId) => {
+      setExpiredRows(prev => {
+        if (prev.has(cartItemId)) return prev
+        const next = new Set(prev)
+        next.add(cartItemId)
+        return next
+      })
+    },
+  })
 
   useEffect(() => {
     async function fetchPayments() {
@@ -78,10 +98,26 @@ export default function CartPage() {
     try {
       // Build the batch payload — every cart row becomes one order in the batch,
       // all sharing a SINGLE Stripe charge for the combined total
+      // Each item carries its hold_id so the server can claim it atomically.
       const batchPayload = {
         payment_method_id: selectedPaymentMethod,
+        cart_session_id: getOrCreateCartSessionId(),
         orders: items.map(cartItem => {
           const fd = cartItem.formData
+          const holdIds = cartItem.holdIds || {}
+          const itemsWithHolds = cartItem.items.map(item => {
+            const itemHolds: Record<string, string> = {}
+            for (const field of ['customer_sign_id', 'customer_rider_id', 'customer_lockbox_id']) {
+              const id = item[field]
+              if (typeof id === 'string') {
+                const holdId = holdIds[`${field}:${id}`]
+                if (holdId) itemHolds[field] = holdId
+              }
+            }
+            return Object.keys(itemHolds).length > 0
+              ? { ...item, hold_ids: itemHolds }
+              : item
+          })
           return {
             property_type: fd.property_type,
             property_address: fd.property_address,
@@ -97,7 +133,7 @@ export default function CartPage() {
             sign_orientation: fd.sign_orientation,
             sign_orientation_other: fd.sign_orientation_other,
             post_type: fd.post_type,
-            items: cartItem.items,
+            items: itemsWithHolds,
             requested_date: fd.requested_date,
             is_expedited: fd.schedule_type === 'expedited',
             placed_for_agent_name: fd.placed_for_agent_name?.trim() || cartItem.agentName || undefined,
@@ -248,10 +284,30 @@ export default function CartPage() {
                   </div>
                   <div className="text-right flex-shrink-0">
                     <p className="text-lg font-bold text-gray-900">${item.estimatedTotal.toFixed(2)}</p>
+                    {item.holdsExpireAt && !expiredRows.has(item.id) && (
+                      <p className="mt-1 text-xs text-gray-500 inline-flex items-center gap-1">
+                        <Clock className="w-3 h-3" />
+                        Reserved for <HoldCountdown until={item.holdsExpireAt} />
+                      </p>
+                    )}
+                    {expiredRows.has(item.id) && (
+                      <p className="mt-1 text-xs text-red-600 inline-flex items-center gap-1">
+                        <AlertCircle className="w-3 h-3" />
+                        Reservation expired — remove & re-pick
+                      </p>
+                    )}
                     {!checkingOut && !done && (
                       <button
                         type="button"
-                        onClick={() => removeItem(item.id)}
+                        onClick={() => {
+                          removeItem(item.id)
+                          setExpiredRows(prev => {
+                            if (!prev.has(item.id)) return prev
+                            const next = new Set(prev)
+                            next.delete(item.id)
+                            return next
+                          })
+                        }}
                         className="mt-2 text-sm text-gray-400 hover:text-red-500 inline-flex items-center gap-1"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -301,6 +357,16 @@ export default function CartPage() {
           </Card>
         )}
 
+        {/* Re-pick prompt for expired rows */}
+        {expiredRows.size > 0 && !checkingOut && !done && (
+          <Card className="border-amber-200 bg-amber-50">
+            <CardContent className="p-4 text-sm text-amber-900">
+              <p className="font-semibold mb-1">Some reservations expired while your cart was open.</p>
+              <p>Remove the affected orders above and re-add them from the customer&apos;s page. Inventory may have changed in the meantime.</p>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Payment method + checkout */}
         {items.length > 0 && !done && (
           <Card>
@@ -324,11 +390,16 @@ export default function CartPage() {
                 />
               )}
 
+              {expiredRows.size > 0 && (
+                <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">
+                  {expiredRows.size === 1 ? 'One order has' : `${expiredRows.size} orders have`} expired reservations. Remove and re-add to continue.
+                </div>
+              )}
               <Button
                 size="lg"
                 className="w-full"
                 onClick={handleCheckoutAll}
-                disabled={checkingOut || !selectedPaymentMethod || paymentMethods.length === 0}
+                disabled={checkingOut || !selectedPaymentMethod || paymentMethods.length === 0 || expiredRows.size > 0}
               >
                 {checkingOut
                   ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Placing {items.length} orders…</>
@@ -350,4 +421,18 @@ export default function CartPage() {
       </div>
     </div>
   )
+}
+
+function HoldCountdown({ until }: { until: string }) {
+  const target = new Date(until).getTime()
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(t)
+  }, [])
+  const remainingMs = Math.max(0, target - now)
+  const totalSec = Math.floor(remainingMs / 1000)
+  const m = Math.floor(totalSec / 60)
+  const s = totalSec % 60
+  return <span>{m}:{s.toString().padStart(2, '0')}</span>
 }
