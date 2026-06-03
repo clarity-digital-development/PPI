@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { refundOrder, CLICK_THROUGH_THRESHOLD_CENTS } from '@/lib/refunds'
+import { easternMidnightMs } from '@/lib/scheduling'
 
 /**
  * Customer-initiated order cancel + full refund.
@@ -70,15 +71,11 @@ export async function POST(
     }
 
     if (order.scheduledDate) {
-      // UTC midnight of the scheduled date — gives the customer the full
-      // 24h regardless of installer timezone.
-      const scheduled = new Date(order.scheduledDate)
-      const utcMidnight = Date.UTC(
-        scheduled.getUTCFullYear(),
-        scheduled.getUTCMonth(),
-        scheduled.getUTCDate()
-      )
-      const cutoff = utcMidnight - 24 * 60 * 60 * 1000
+      // Eastern midnight (NOT UTC midnight) — the crew dispatches in Eastern
+      // time, so the customer's "24 hours before the install day" is measured
+      // against ET, not UTC. Previously this used UTC midnight and customers
+      // in EDT lost ~4 hours of their cancellation window.
+      const cutoff = easternMidnightMs(new Date(order.scheduledDate)) - 24 * 60 * 60 * 1000
       if (Date.now() > cutoff) {
         return NextResponse.json(
           { error: 'Cancellation window closed (must cancel at least 24 hours before install date)' },

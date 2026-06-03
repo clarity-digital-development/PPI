@@ -61,6 +61,56 @@ export function isSunday(dateStr: string): boolean {
   return d.getDay() === 0
 }
 
+/**
+ * Returns the Unix-millis instant for Eastern-time midnight at the start of
+ * the calendar day that `at` falls on (in Eastern time). Used by the cancel
+ * route's 24h cutoff so customers don't lose hours of their window to
+ * UTC-vs-ET drift.
+ *
+ * Implementation note: Date constructor doesn't accept a timezone arg, so we
+ * iteratively probe to find the UTC millis that lands on the right ET-day at
+ * 00:00. The iteration is at most 2-3 hops (initial guess is offset-based).
+ */
+export function easternMidnightMs(at: Date): number {
+  // Get the ET wall-clock for this instant.
+  const etString = at.toLocaleString('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  })
+  // en-US locale: "MM/DD/YYYY"
+  const match = etString.match(/^(\d{2})\/(\d{2})\/(\d{4})/)
+  if (!match) return at.getTime() // fall back — shouldn't happen
+  const [, mm, dd, yyyy] = match
+  // Construct a UTC instant for ET midnight by binary-search-ish: try both
+  // common offsets (5h for EST, 4h for EDT), pick the one whose ET projection
+  // matches the target day.
+  const target = `${yyyy}-${mm}-${dd}`
+  for (const offsetHours of [5, 4]) {
+    const candidate = Date.UTC(
+      parseInt(yyyy, 10),
+      parseInt(mm, 10) - 1,
+      parseInt(dd, 10),
+      offsetHours, 0, 0, 0,
+    )
+    const projected = new Date(candidate).toLocaleString('en-US', {
+      timeZone: 'America/New_York',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    })
+    // Want target day AND hour=00
+    if (projected.startsWith(`${mm}/${dd}/${yyyy}`) && projected.includes(' 00:')) {
+      return candidate
+    }
+  }
+  // Fallback: 5h offset (EST) — the older offset.
+  return Date.UTC(
+    parseInt(yyyy, 10),
+    parseInt(mm, 10) - 1,
+    parseInt(dd, 10),
+    5, 0, 0, 0,
+  )
+}
+
 export interface SchedulingValidationOk {
   ok: true
 }
@@ -91,19 +141,22 @@ export function validateScheduling(args: {
 }): SchedulingValidationOk | SchedulingValidationErr {
   const isExpedited = !!args.isExpedited
 
-  if (isExpedited) {
-    if (!canExpediteNow()) {
-      return {
-        ok: false,
-        code: 'expedite_unavailable',
-        error: 'Same-day service is unavailable after 4pm Eastern. Please pick a future date.',
-      }
+  // Expedited adds an ADDITIONAL same-day-cutoff constraint; it is NOT a
+  // bypass of the date check. If isExpedited is true and a requestedDate
+  // is also supplied, BOTH must pass. (Adversarial review caught this:
+  // expedited:true with a past requestedDate used to silently slip
+  // through and persist a past Order.scheduledDate.)
+  if (isExpedited && !canExpediteNow()) {
+    return {
+      ok: false,
+      code: 'expedite_unavailable',
+      error: 'Same-day service is unavailable after 4pm Eastern. Please pick a future date.',
     }
-    return { ok: true }
   }
 
   if (!args.requestedDate) {
-    // Next-available — server computes downstream. No date check needed.
+    // No specific date — either expedited (which we just validated) or
+    // next-available (server computes downstream). Nothing more to check.
     return { ok: true }
   }
 
@@ -119,7 +172,12 @@ export function validateScheduling(args: {
     }
   }
 
-  const minDate = toDateStr(getNextAvailableDate())
+  // For expedited, "today" is the only valid date — the wizard sets
+  // requested_date to today's Eastern date alongside isExpedited:true.
+  // For non-expedited, the earliest valid date is getNextAvailableDate()
+  // (tomorrow, or day-after-tomorrow if past 4pm ET).
+  const easternToday = toDateStr(getEasternTime().date)
+  const minDate = isExpedited ? easternToday : toDateStr(getNextAvailableDate())
   if (args.requestedDate < minDate) {
     return {
       ok: false,
