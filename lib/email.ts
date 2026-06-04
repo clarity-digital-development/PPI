@@ -357,7 +357,7 @@ export async function sendAdminServiceRequestNotification({
     requestedDate ? `Requested Date: ${requestedDate}` : null,
     '',
     description ? `Description:\n${description}\n` : null,
-    notes ? `Customer Notes:\n${notes}\n` : null,
+    notes ? `Special Instructions:\n${notes}\n` : null,
     installedItems ? `What was installed here (please bring back):\n${installedItems}` : null,
   ].filter(Boolean)
 

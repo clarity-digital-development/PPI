@@ -170,6 +170,8 @@ export async function GET(request: NextRequest) {
         lockbox_type: family, // 'sentrilock' | 'mechanical' — used by the order form
         lockbox_type_name: dbName, // human-readable for display
         lockbox_code: lockbox.code,
+        // Serial flows into the line-item description so installers know which physical box to bring
+        serial_number: lockbox.serialNumber,
         ...holdFlagsFor(lockbox),
       }
     })

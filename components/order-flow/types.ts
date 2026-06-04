@@ -93,7 +93,7 @@ export interface StepProps {
   inventory?: {
     signs: Array<{ id: string; description: string; size: string | null }>
     riders: Array<{ id: string; rider_type: string; quantity: number }>
-    lockboxes: Array<{ id: string; lockbox_type: string; lockbox_type_name?: string; lockbox_code: string | null }>
+    lockboxes: Array<{ id: string; lockbox_type: string; lockbox_type_name?: string; lockbox_code: string | null; serial_number?: string | null }>
     brochureBoxes: { quantity: number } | null
   }
   paymentMethods?: Array<{
