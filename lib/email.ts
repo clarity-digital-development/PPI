@@ -317,6 +317,49 @@ export async function sendPasswordResetEmail(
   })
 }
 
+// Lockboxes already on-site at an installation — surfaced in SR emails so the
+// install crew knows what's there before they roll a truck. Serial is optional
+// because InstallationLockbox has no FK back to CustomerLockbox yet (gap).
+export interface ExistingLockboxSummary {
+  type: string
+  serialNumber?: string | null
+  code?: string | null
+}
+
+// Shared formatter so all 4 SR templates render the same line shape.
+function formatExistingLockboxLine(lb: ExistingLockboxSummary): string {
+  const parts: string[] = []
+  if (lb.serialNumber) parts.push(`Serial: ${lb.serialNumber}`)
+  if (lb.code) parts.push(`Code: ${lb.code}`)
+  const suffix = parts.length ? ` — ${parts.join('  ')}` : ' — (no code on file)'
+  return `${lb.type}${suffix}`
+}
+
+// HTML-escaped variant of the above for the 3 HTML templates.
+function formatExistingLockboxLineHtml(lb: ExistingLockboxSummary): string {
+  const parts: string[] = []
+  if (lb.serialNumber) parts.push(`Serial: ${escapeHtml(lb.serialNumber)}`)
+  if (lb.code) parts.push(`Code: ${escapeHtml(lb.code)}`)
+  const suffix = parts.length ? ` — ${parts.join('  ')}` : ' — (no code on file)'
+  return `${escapeHtml(lb.type)}${suffix}`
+}
+
+// Pink-tinted info block rendered in HTML templates when existingLockboxes
+// is non-empty. Distinct from the yellow special-instructions block so the
+// install crew can tell them apart at a glance.
+function renderExistingLockboxesHtml(lockboxes: ExistingLockboxSummary[] | undefined): string {
+  if (!lockboxes || lockboxes.length === 0) return ''
+  const itemsHtml = lockboxes
+    .map(lb => `<li style="margin: 4px 0; color: #333;">${formatExistingLockboxLineHtml(lb)}</li>`)
+    .join('')
+  return `
+    <div style="background-color: #FFE4EC; border-left: 4px solid #E84A7A; border-radius: 4px; padding: 16px; margin: 24px 0;">
+      <p style="margin: 0 0 8px; color: #9B1C47; font-weight: bold;">Existing lockboxes at this property</p>
+      <ul style="margin: 0; padding-left: 20px;">${itemsHtml}</ul>
+    </div>
+  `
+}
+
 interface AdminServiceRequestNotificationProps {
   customerName: string
   customerEmail?: string
@@ -327,6 +370,8 @@ interface AdminServiceRequestNotificationProps {
   notes?: string
   installationAddress: string
   installedItems?: string // For removal requests: what was originally installed at the address
+  // On-site lockboxes — rendered when SR is tied to an existing installation.
+  existingLockboxes?: ExistingLockboxSummary[]
 }
 
 export async function sendAdminServiceRequestNotification({
@@ -339,12 +384,18 @@ export async function sendAdminServiceRequestNotification({
   notes,
   installationAddress,
   installedItems,
+  existingLockboxes,
 }: AdminServiceRequestNotificationProps) {
   const adminEmail = process.env.ADMIN_EMAIL
   if (!adminEmail) {
     console.error('ADMIN_EMAIL not configured - skipping admin service request notification')
     return null
   }
+
+  // Plain-text block — one lockbox per line, mirrors the HTML block exactly.
+  const lockboxBlock = existingLockboxes && existingLockboxes.length > 0
+    ? `Existing lockboxes at this property:\n${existingLockboxes.map(lb => `  - ${formatExistingLockboxLine(lb)}`).join('\n')}`
+    : null
 
   const lines = [
     'New Service Request Received!',
@@ -359,6 +410,7 @@ export async function sendAdminServiceRequestNotification({
     description ? `Description:\n${description}\n` : null,
     notes ? `Special Instructions:\n${notes}\n` : null,
     installedItems ? `What was installed here (please bring back):\n${installedItems}` : null,
+    lockboxBlock,
   ].filter(Boolean)
 
   return getResend().emails.send({
@@ -378,6 +430,8 @@ interface ServiceRequestConfirmationEmailProps {
   notes?: string
   requestedDate?: string
   propertyAddress: string
+  // On-site lockboxes — rendered when SR is tied to an existing installation.
+  existingLockboxes?: ExistingLockboxSummary[]
 }
 
 // Friendly label for request type — matches customer-facing copy elsewhere.
@@ -410,6 +464,7 @@ export async function sendServiceRequestConfirmationEmail({
   notes,
   requestedDate,
   propertyAddress,
+  existingLockboxes,
 }: ServiceRequestConfirmationEmailProps) {
   const friendlyType = labelRequestType(requestType)
 
@@ -441,6 +496,8 @@ export async function sendServiceRequestConfirmationEmail({
         <h3 style="color: #333; border-bottom: 2px solid #E84A7A; padding-bottom: 8px;">Description</h3>
         <p style="color: #333; white-space: pre-wrap;">${escapeHtml(description)}</p>
         ` : ''}
+
+        ${renderExistingLockboxesHtml(existingLockboxes)}
 
         ${notes ? `
         <div style="background-color: #FFFBEB; border-left: 4px solid #F59E0B; border-radius: 4px; padding: 16px; margin: 24px 0;">
@@ -476,14 +533,21 @@ export async function sendServiceRequestCompletedEmail({
   customerName,
   requestType,
   address,
+  existingLockboxes,
 }: {
   customerEmail: string
   customerName: string
   requestType: string
   address: string
+  // On-site lockboxes — rendered when SR is tied to an existing installation.
+  existingLockboxes?: ExistingLockboxSummary[]
 }) {
   const friendlyType = requestType === 'removal' ? 'Removal' : requestType.charAt(0).toUpperCase() + requestType.slice(1)
-  const text = `Hi ${customerName},\n\nGreat news — your ${friendlyType.toLowerCase()} at ${address} has been completed.\n\nIf you have any questions or need another service, just reply to this email or visit your dashboard.\n\nThanks,\nPink Posts Installations`
+  // Plain-text trailer mirrors the HTML block — kept short, only when present.
+  const lockboxTrailer = existingLockboxes && existingLockboxes.length > 0
+    ? `\n\nExisting lockboxes at this property:\n${existingLockboxes.map(lb => `  - ${formatExistingLockboxLine(lb)}`).join('\n')}`
+    : ''
+  const text = `Hi ${customerName},\n\nGreat news — your ${friendlyType.toLowerCase()} at ${address} has been completed.${lockboxTrailer}\n\nIf you have any questions or need another service, just reply to this email or visit your dashboard.\n\nThanks,\nPink Posts Installations`
 
   try {
     const result = await getResend().emails.send({
@@ -514,6 +578,7 @@ export async function sendServiceRequestStatusEmail({
   scheduledDate,
   propertyAddress,
   notes,
+  existingLockboxes,
 }: {
   customerName: string
   customerEmail: string
@@ -523,6 +588,8 @@ export async function sendServiceRequestStatusEmail({
   scheduledDate?: Date | null
   propertyAddress?: string
   notes?: string | null
+  // On-site lockboxes — rendered when SR is tied to an existing installation.
+  existingLockboxes?: ExistingLockboxSummary[]
 }) {
   const friendlyType = requestType === 'removal' ? 'Removal' : requestType.charAt(0).toUpperCase() + requestType.slice(1)
   const statusLabels: Record<typeof newStatus, string> = {
@@ -579,6 +646,8 @@ export async function sendServiceRequestStatusEmail({
           ${propertyAddress ? `<p style="margin: 8px 0 0; color: #666;"><strong>Address:</strong> ${escapeHtml(propertyAddress)}</p>` : ''}
           ${newStatus === 'scheduled' && formattedDate ? `<p style="margin: 8px 0 0; color: #666;"><strong>Scheduled For:</strong> ${escapeHtml(formattedDate)}</p>` : ''}
         </div>
+
+        ${renderExistingLockboxesHtml(existingLockboxes)}
 
         ${notes ? `
         <div style="background-color: #FFFBEB; border-left: 4px solid #F59E0B; border-radius: 4px; padding: 16px; margin: 24px 0;">

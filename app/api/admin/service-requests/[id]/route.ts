@@ -185,6 +185,26 @@ export async function PUT(
               : '(unlisted address)'
           const customerName = customer.fullName || customer.name || 'there'
 
+          // Pull on-site lockboxes so the crew sees what's at the property.
+          const installationWithLockboxes = updated.installation
+            ? await prisma.installation.findUnique({
+                where: { id: updated.installation.id },
+                include: {
+                  lockboxes: {
+                    where: { removedAt: null },
+                    include: { lockboxType: true },
+                  },
+                },
+              })
+            : null
+          const existingLockboxes = installationWithLockboxes
+            ? installationWithLockboxes.lockboxes.map(lb => ({
+                type: lb.lockboxType.name,
+                serialNumber: null,
+                code: lb.code,
+              }))
+            : []
+
           if (status === 'completed') {
             // Preserve the existing completion-email copy/subject.
             await sendServiceRequestCompletedEmail({
@@ -192,6 +212,7 @@ export async function PUT(
               customerName,
               requestType: updated.type,
               address: fullAddress,
+              existingLockboxes: existingLockboxes.length ? existingLockboxes : undefined,
             }).catch(err => console.error('completion email failed:', err))
           } else if (status === 'acknowledged' || status === 'scheduled' || status === 'in_progress' || status === 'cancelled') {
             await sendServiceRequestStatusEmail({
@@ -203,6 +224,7 @@ export async function PUT(
               scheduledDate: status === 'scheduled' ? updated.requestedDate : null,
               propertyAddress: fullAddress,
               notes: updated.adminNotes,
+              existingLockboxes: existingLockboxes.length ? existingLockboxes : undefined,
             }).catch(err => console.error(`${status} email failed:`, err))
           }
         }

@@ -34,14 +34,28 @@ export async function POST(
       )
     }
 
-    // Get the installation
+    // Get the installation — include on-site lockboxes so SR emails can list
+    // what's already at the property for the install crew.
     const installation = await prisma.installation.findFirst({
       where: { id, userId: user.id },
+      include: {
+        lockboxes: {
+          where: { removedAt: null },
+          include: { lockboxType: true },
+        },
+      },
     })
 
     if (!installation) {
       return NextResponse.json({ error: 'Installation not found' }, { status: 404 })
     }
+
+    // Shape for both SR email helpers — InstallationLockbox has no serial yet.
+    const existingLockboxes = installation.lockboxes.map(lb => ({
+      type: lb.lockboxType.name,
+      serialNumber: null,
+      code: lb.code,
+    }))
 
     if (installation.status === 'removed') {
       return NextResponse.json(
@@ -101,6 +115,7 @@ export async function POST(
         notes: notes || undefined,
         installationAddress,
         installedItems,
+        existingLockboxes: existingLockboxes.length ? existingLockboxes : undefined,
       })
     } catch (emailError) {
       console.error('Failed to send admin service request notification:', emailError)
@@ -131,6 +146,7 @@ export async function POST(
           notes: notes || undefined,
           requestedDate: requested_date || undefined,
           propertyAddress,
+          existingLockboxes: existingLockboxes.length ? existingLockboxes : undefined,
         })
       }
     } catch (emailError) {

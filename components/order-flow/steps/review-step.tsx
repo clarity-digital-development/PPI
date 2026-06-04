@@ -8,6 +8,7 @@ import { AddCardModal } from '@/components/billing'
 import { cn } from '@/lib/utils'
 import { getStripe } from '@/lib/stripe/client'
 import { useCart } from '@/lib/cart'
+import { lockboxDescriptionSuffix } from '@/lib/orders/lockbox-description'
 import type { StepProps } from '../types'
 import { PRICING } from '../types'
 
@@ -61,12 +62,10 @@ export function ReviewStep({
     if (!formData.customer_lockbox_id) return ''
     const lb = inventory?.lockboxes.find(l => l.id === formData.customer_lockbox_id)
     if (!lb) return ''
-    const serial = lb.serial_number?.trim() || null
-    const code = lb.lockbox_code?.trim() || formData.lockbox_code?.trim() || null
-    if (serial && code) return ` — Serial: ${serial} · Code: ${code}`
-    if (serial) return ` — Serial: ${serial}`
-    if (code) return ` — Code: ${code}`
-    return ''
+    return lockboxDescriptionSuffix({
+      serialNumber: lb.serial_number,
+      code: lb.lockbox_code || formData.lockbox_code,
+    })
   }
 
   // Calculate order items and totals

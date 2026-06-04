@@ -37,8 +37,24 @@ export async function POST(request: NextRequest) {
           propertyAddress: { contains: address.street, mode: 'insensitive' },
           propertyCity: { contains: address.city, mode: 'insensitive' },
         },
+        include: {
+          // On-site lockboxes — surfaced in SR emails so the install crew sees what's there.
+          lockboxes: {
+            where: { removedAt: null },
+            include: { lockboxType: true },
+          },
+        },
       })
     }
+
+    // Shape for SR email helpers — empty array when no installation matched.
+    const existingLockboxes = installation
+      ? installation.lockboxes.map(lb => ({
+          type: lb.lockboxType.name,
+          serialNumber: null,
+          code: lb.code,
+        }))
+      : []
 
     if (!installation && !address) {
       // No address provided AND no installation — we'd have nowhere to send anyone.
@@ -129,6 +145,7 @@ export async function POST(request: NextRequest) {
         notes: notes || undefined,
         installationAddress: emailAddress,
         installedItems,
+        existingLockboxes: existingLockboxes.length ? existingLockboxes : undefined,
       })
     } catch (emailError) {
       console.error('Failed to send admin service request notification:', emailError)
@@ -160,6 +177,7 @@ export async function POST(request: NextRequest) {
           notes: notes || undefined,
           requestedDate: requested_date || undefined,
           propertyAddress,
+          existingLockboxes: existingLockboxes.length ? existingLockboxes : undefined,
         })
       }
     } catch (emailError) {
