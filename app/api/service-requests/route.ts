@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { createNotification } from '@/lib/notifications'
-import { sendAdminServiceRequestNotification } from '@/lib/email'
+import { sendAdminServiceRequestNotification, sendServiceRequestConfirmationEmail } from '@/lib/email'
 
 // POST - Create a service request for an unlisted address
 // This is used when the system doesn't show an existing installation
@@ -132,6 +132,38 @@ export async function POST(request: NextRequest) {
       })
     } catch (emailError) {
       console.error('Failed to send admin service request notification:', emailError)
+    }
+
+    // Customer-facing confirmation — wrapped so a Resend failure can't break
+    // the request. propertyAddress falls back to the unlisted address when
+    // the request isn't tied to an existing installation.
+    try {
+      const userInfo = await prisma.user.findUnique({
+        where: { id: user.id },
+        select: { fullName: true, name: true, email: true },
+      })
+      if (userInfo?.email) {
+        const customerName = userInfo.fullName || userInfo.name || userInfo.email
+        const propertyAddress = installation
+          ? [
+              installation.propertyAddress,
+              installation.propertyCity,
+            ].filter(Boolean).join(', ')
+          : addressLine || '(address on file)'
+
+        await sendServiceRequestConfirmationEmail({
+          customerName,
+          customerEmail: userInfo.email,
+          requestId: serviceRequest.id,
+          requestType: type,
+          description: description || undefined,
+          notes: notes || undefined,
+          requestedDate: requested_date || undefined,
+          propertyAddress,
+        })
+      }
+    } catch (emailError) {
+      console.error('Failed to send service request confirmation email:', emailError)
     }
 
     return NextResponse.json({

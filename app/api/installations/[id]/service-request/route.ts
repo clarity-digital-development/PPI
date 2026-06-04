@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
-import { sendAdminServiceRequestNotification } from '@/lib/email'
+import { sendAdminServiceRequestNotification, sendServiceRequestConfirmationEmail } from '@/lib/email'
 
 export async function POST(
   request: NextRequest,
@@ -104,6 +104,37 @@ export async function POST(
       })
     } catch (emailError) {
       console.error('Failed to send admin service request notification:', emailError)
+    }
+
+    // Customer-facing confirmation — same pattern as the admin email above so
+    // a Resend failure can't break the route.
+    try {
+      const userInfo = await prisma.user.findUnique({
+        where: { id: user.id },
+        select: { fullName: true, name: true, email: true },
+      })
+      if (userInfo?.email) {
+        const customerName = userInfo.fullName || userInfo.name || userInfo.email
+        const propertyAddress = [
+          installation.propertyAddress,
+          installation.propertyCity,
+          installation.propertyState,
+          installation.propertyZip,
+        ].filter(Boolean).join(', ')
+
+        await sendServiceRequestConfirmationEmail({
+          customerName,
+          customerEmail: userInfo.email,
+          requestId: serviceRequest.id,
+          requestType: type,
+          description: description || undefined,
+          notes: notes || undefined,
+          requestedDate: requested_date || undefined,
+          propertyAddress,
+        })
+      }
+    } catch (emailError) {
+      console.error('Failed to send service request confirmation email:', emailError)
     }
 
     // If it's a removal request, also update the installation status

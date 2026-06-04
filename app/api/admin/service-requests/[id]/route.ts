@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { createServiceRequestNotification } from '@/lib/notifications'
-import { sendServiceRequestCompletedEmail } from '@/lib/email'
+import { sendServiceRequestCompletedEmail, sendServiceRequestStatusEmail } from '@/lib/email'
 
 export async function GET(
   request: NextRequest,
@@ -155,6 +155,7 @@ export async function PUT(
 
     // Create notification for status change
     const notifiableStatuses = ['acknowledged', 'scheduled', 'completed']
+    const statusChanged = status && status !== serviceRequest.status
     if (status && notifiableStatuses.includes(status)) {
       try {
         const address = updated.installation
@@ -163,30 +164,50 @@ export async function PUT(
             ? `${updated.unlistedAddress}, ${updated.unlistedCity}`
             : '(unlisted address)'
         await createServiceRequestNotification(updated.userId, address, status)
+      } catch (notifError) {
+        console.error('Error creating notification:', notifError)
+      }
+    }
 
-        // For completed requests, also send the customer an email — most
-        // important for removals so the agent knows their stuff was picked up
-        if (status === 'completed') {
-          const customer = await prisma.user.findUnique({
-            where: { id: updated.userId },
-            select: { email: true, fullName: true, name: true },
-          })
-          if (customer?.email) {
-            const fullAddress = updated.installation
-              ? `${updated.installation.propertyAddress}, ${updated.installation.propertyCity}, ${updated.installation.propertyState} ${updated.installation.propertyZip}`
-              : updated.unlistedAddress
-                ? `${updated.unlistedAddress}, ${updated.unlistedCity}, ${updated.unlistedState} ${updated.unlistedZip}`
-                : address
+    // Email the customer when status actually transitions. Completed stays on
+    // sendServiceRequestCompletedEmail; the other states use the new helper.
+    if (statusChanged) {
+      try {
+        const customer = await prisma.user.findUnique({
+          where: { id: updated.userId },
+          select: { email: true, fullName: true, name: true },
+        })
+        if (customer?.email) {
+          const fullAddress = updated.installation
+            ? `${updated.installation.propertyAddress}, ${updated.installation.propertyCity}, ${updated.installation.propertyState} ${updated.installation.propertyZip}`
+            : updated.unlistedAddress
+              ? `${updated.unlistedAddress}, ${updated.unlistedCity}, ${updated.unlistedState} ${updated.unlistedZip}`
+              : '(unlisted address)'
+          const customerName = customer.fullName || customer.name || 'there'
+
+          if (status === 'completed') {
+            // Preserve the existing completion-email copy/subject.
             await sendServiceRequestCompletedEmail({
               customerEmail: customer.email,
-              customerName: customer.fullName || customer.name || 'there',
+              customerName,
               requestType: updated.type,
               address: fullAddress,
             }).catch(err => console.error('completion email failed:', err))
+          } else if (status === 'acknowledged' || status === 'scheduled' || status === 'in_progress' || status === 'cancelled') {
+            await sendServiceRequestStatusEmail({
+              customerName,
+              customerEmail: customer.email,
+              requestId: updated.id,
+              requestType: updated.type,
+              newStatus: status,
+              scheduledDate: status === 'scheduled' ? updated.requestedDate : null,
+              propertyAddress: fullAddress,
+              notes: updated.adminNotes,
+            }).catch(err => console.error(`${status} email failed:`, err))
           }
         }
-      } catch (notifError) {
-        console.error('Error creating notification:', notifError)
+      } catch (emailError) {
+        console.error('Error sending status email:', emailError)
       }
     }
 

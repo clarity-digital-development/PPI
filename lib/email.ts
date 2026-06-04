@@ -369,6 +369,103 @@ export async function sendAdminServiceRequestNotification({
   })
 }
 
+interface ServiceRequestConfirmationEmailProps {
+  customerName: string
+  customerEmail: string
+  requestId: string
+  requestType: string
+  description?: string
+  notes?: string
+  requestedDate?: string
+  propertyAddress: string
+}
+
+// Friendly label for request type — matches customer-facing copy elsewhere.
+function labelRequestType(type: string): string {
+  switch (type) {
+    case 'service':
+      return 'Service Trip'
+    case 'removal':
+      return 'Removal'
+    case 'repair':
+      return 'Repair'
+    case 'replacement':
+      return 'Replacement'
+    default:
+      return type.charAt(0).toUpperCase() + type.slice(1)
+  }
+}
+
+/**
+ * Customer-facing confirmation that a service request was received. Mirrors
+ * sendOrderConfirmationEmail in look + feel so customers get the same pink-
+ * branded reassurance for SRs that they already get for orders.
+ */
+export async function sendServiceRequestConfirmationEmail({
+  customerName,
+  customerEmail,
+  requestId,
+  requestType,
+  description,
+  notes,
+  requestedDate,
+  propertyAddress,
+}: ServiceRequestConfirmationEmailProps) {
+  const friendlyType = labelRequestType(requestType)
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>Service Request Received - Pink Posts Installations</title>
+    </head>
+    <body style="font-family: 'Poppins', Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #FFF0F3;">
+      <div style="background-color: white; border-radius: 12px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <h1 style="color: #E84A7A; margin: 0;">Pink Posts Installations</h1>
+          <p style="color: #666; margin: 8px 0 0;">Service Request Received</p>
+        </div>
+
+        <p style="color: #333;">Hi ${escapeHtml(customerName)},</p>
+        <p style="color: #333;">Thank you for your request. Our team has been notified and will be in touch shortly.</p>
+
+        <div style="background-color: #FFF0F3; border-radius: 8px; padding: 16px; margin: 24px 0;">
+          <p style="margin: 0; color: #666;"><strong>Request ID:</strong> ${escapeHtml(requestId)}</p>
+          <p style="margin: 8px 0 0; color: #666;"><strong>Type:</strong> ${escapeHtml(friendlyType)}</p>
+          <p style="margin: 8px 0 0; color: #666;"><strong>Property:</strong> ${escapeHtml(propertyAddress)}</p>
+          ${requestedDate ? `<p style="margin: 8px 0 0; color: #666;"><strong>Requested Date:</strong> ${escapeHtml(requestedDate)}</p>` : ''}
+        </div>
+
+        ${description ? `
+        <h3 style="color: #333; border-bottom: 2px solid #E84A7A; padding-bottom: 8px;">Description</h3>
+        <p style="color: #333; white-space: pre-wrap;">${escapeHtml(description)}</p>
+        ` : ''}
+
+        ${notes ? `
+        <div style="background-color: #FFFBEB; border-left: 4px solid #F59E0B; border-radius: 4px; padding: 16px; margin: 24px 0;">
+          <p style="margin: 0 0 8px; color: #92400E; font-weight: bold;">Special Instructions</p>
+          <p style="margin: 0; color: #333; white-space: pre-wrap;">${escapeHtml(notes)}</p>
+        </div>
+        ` : ''}
+
+        <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid #eee; text-align: center;">
+          <p style="color: #666; margin: 0; font-size: 14px;">Questions? <a href="mailto:support@pinkposts.com" style="color: #E84A7A;">support@pinkposts.com</a> or 859-395-8188</p>
+          <p style="color: #999; margin: 8px 0 0; font-size: 12px;">&copy; ${new Date().getFullYear()} Pink Posts Installations. All rights reserved.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `
+
+  return getResend().emails.send({
+    from: 'Pink Posts Installations <orders@pinkposts.com>',
+    to: customerEmail,
+    subject: `Service Request Received - ${requestId}`,
+    html,
+  })
+}
+
 /**
  * Notify the customer when a service request (especially a removal) is marked
  * complete. Removals are the case the client specifically called out — but the
@@ -398,6 +495,117 @@ export async function sendServiceRequestCompletedEmail({
     return result
   } catch (error) {
     console.error('Failed to send service-request-complete email:', error)
+    throw error
+  }
+}
+
+/**
+ * Notify the customer when admin transitions a service request to a non-
+ * completed status (acknowledged / scheduled / in_progress / cancelled).
+ * Completed transitions stay on sendServiceRequestCompletedEmail so its
+ * existing copy + subject line don't change.
+ */
+export async function sendServiceRequestStatusEmail({
+  customerName,
+  customerEmail,
+  requestId,
+  requestType,
+  newStatus,
+  scheduledDate,
+  propertyAddress,
+  notes,
+}: {
+  customerName: string
+  customerEmail: string
+  requestId: string
+  requestType: string
+  newStatus: 'acknowledged' | 'scheduled' | 'in_progress' | 'cancelled'
+  scheduledDate?: Date | null
+  propertyAddress?: string
+  notes?: string | null
+}) {
+  const friendlyType = requestType === 'removal' ? 'Removal' : requestType.charAt(0).toUpperCase() + requestType.slice(1)
+  const statusLabels: Record<typeof newStatus, string> = {
+    acknowledged: 'Acknowledged',
+    scheduled: 'Scheduled',
+    in_progress: 'In Progress',
+    cancelled: 'Cancelled',
+  }
+  const statusLabel = statusLabels[newStatus]
+  const formattedDate = scheduledDate
+    ? scheduledDate.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' })
+    : null
+
+  // Status-specific body copy — kept short, mirrors the in-app notification.
+  let bodyCopy = ''
+  switch (newStatus) {
+    case 'acknowledged':
+      bodyCopy = "Your service request has been received and is being reviewed. We'll be in touch with next steps shortly."
+      break
+    case 'scheduled':
+      bodyCopy = formattedDate
+        ? `Your ${friendlyType.toLowerCase()} request has been scheduled for <strong>${escapeHtml(formattedDate)}</strong>. Our crew will see you then.`
+        : `Your ${friendlyType.toLowerCase()} request has been scheduled. Our crew will be in touch with the date shortly.`
+      break
+    case 'in_progress':
+      bodyCopy = `Our crew is on the way / working on your ${friendlyType.toLowerCase()} request now.`
+      break
+    case 'cancelled':
+      bodyCopy = 'Your service request has been cancelled. If this is unexpected, please contact us.'
+      break
+  }
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>Service Request ${escapeHtml(statusLabel)} - Pink Posts Installations</title>
+    </head>
+    <body style="font-family: 'Poppins', Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #FFF0F3;">
+      <div style="background-color: white; border-radius: 12px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <h1 style="color: #E84A7A; margin: 0;">Pink Posts Installations</h1>
+          <p style="color: #666; margin: 8px 0 0;">Service Request ${escapeHtml(statusLabel)}</p>
+        </div>
+
+        <p style="color: #333;">Hi ${escapeHtml(customerName)},</p>
+        <p style="color: #333;">${bodyCopy}</p>
+
+        <div style="background-color: #FFF0F3; border-radius: 8px; padding: 16px; margin: 24px 0;">
+          <p style="margin: 0; color: #666;"><strong>Request ID:</strong> ${escapeHtml(requestId)}</p>
+          <p style="margin: 8px 0 0; color: #666;"><strong>Type:</strong> ${escapeHtml(friendlyType)}</p>
+          <p style="margin: 8px 0 0; color: #666;"><strong>Status:</strong> ${escapeHtml(statusLabel)}</p>
+          ${propertyAddress ? `<p style="margin: 8px 0 0; color: #666;"><strong>Address:</strong> ${escapeHtml(propertyAddress)}</p>` : ''}
+          ${newStatus === 'scheduled' && formattedDate ? `<p style="margin: 8px 0 0; color: #666;"><strong>Scheduled For:</strong> ${escapeHtml(formattedDate)}</p>` : ''}
+        </div>
+
+        ${notes ? `
+        <div style="background-color: #FFFBEB; border-left: 4px solid #F59E0B; border-radius: 4px; padding: 16px; margin: 24px 0;">
+          <p style="margin: 0 0 8px; color: #92400E; font-weight: bold;">Notes from our team</p>
+          <p style="margin: 0; color: #333; white-space: pre-wrap;">${escapeHtml(notes)}</p>
+        </div>
+        ` : ''}
+
+        <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid #eee; text-align: center;">
+          <p style="color: #666; margin: 0; font-size: 14px;">Questions? Contact us at support@pinkposts.com</p>
+          <p style="color: #999; margin: 8px 0 0; font-size: 12px;">&copy; ${new Date().getFullYear()} Pink Posts Installations. All rights reserved.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `
+
+  try {
+    const result = await getResend().emails.send({
+      from: 'Pink Posts Installations <orders@pinkposts.com>',
+      to: customerEmail,
+      subject: `Service Request ${statusLabel} - ${requestId}`,
+      html,
+    })
+    return result
+  } catch (error) {
+    console.error('Failed to send service-request-status email:', error)
     throw error
   }
 }
