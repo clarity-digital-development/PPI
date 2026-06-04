@@ -269,6 +269,8 @@ export async function PUT(
                   lockboxTypeId,
                   isRental,
                   code,
+                  // WHY: link back to inventory CustomerLockbox so SR emails can show live code/serial
+                  customerLockboxId: item.customerLockboxId ?? null,
                 },
               })
             }

@@ -192,7 +192,11 @@ export async function PUT(
                 include: {
                   lockboxes: {
                     where: { removedAt: null },
-                    include: { lockboxType: true },
+                    include: {
+                      lockboxType: true,
+                      // Prefer live inventory code/serial via FK; fall back to legacy .code copy.
+                      customerLockbox: { select: { code: true, serialNumber: true } },
+                    },
                   },
                 },
               })
@@ -200,8 +204,8 @@ export async function PUT(
           const existingLockboxes = installationWithLockboxes
             ? installationWithLockboxes.lockboxes.map(lb => ({
                 type: lb.lockboxType.name,
-                serialNumber: null,
-                code: lb.code,
+                serialNumber: lb.customerLockbox?.serialNumber ?? null,
+                code: lb.customerLockbox?.code ?? lb.code ?? null,
               }))
             : []
 

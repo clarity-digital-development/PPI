@@ -41,7 +41,11 @@ export async function POST(
       include: {
         lockboxes: {
           where: { removedAt: null },
-          include: { lockboxType: true },
+          include: {
+            lockboxType: true,
+            // Prefer live inventory code/serial via FK; fall back to legacy .code copy.
+            customerLockbox: { select: { code: true, serialNumber: true } },
+          },
         },
       },
     })
@@ -50,11 +54,11 @@ export async function POST(
       return NextResponse.json({ error: 'Installation not found' }, { status: 404 })
     }
 
-    // Shape for both SR email helpers — InstallationLockbox has no serial yet.
+    // Shape for both SR email helpers — prefer live CustomerLockbox data, fall back to copied fields.
     const existingLockboxes = installation.lockboxes.map(lb => ({
       type: lb.lockboxType.name,
-      serialNumber: null,
-      code: lb.code,
+      serialNumber: lb.customerLockbox?.serialNumber ?? null,
+      code: lb.customerLockbox?.code ?? lb.code ?? null,
     }))
 
     if (installation.status === 'removed') {

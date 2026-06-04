@@ -41,18 +41,22 @@ export async function POST(request: NextRequest) {
           // On-site lockboxes — surfaced in SR emails so the install crew sees what's there.
           lockboxes: {
             where: { removedAt: null },
-            include: { lockboxType: true },
+            include: {
+              lockboxType: true,
+              // Prefer live inventory code/serial via FK; fall back to legacy .code copy.
+              customerLockbox: { select: { code: true, serialNumber: true } },
+            },
           },
         },
       })
     }
 
-    // Shape for SR email helpers — empty array when no installation matched.
+    // Shape for SR email helpers — prefer live CustomerLockbox data, fall back to copied fields.
     const existingLockboxes = installation
       ? installation.lockboxes.map(lb => ({
           type: lb.lockboxType.name,
-          serialNumber: null,
-          code: lb.code,
+          serialNumber: lb.customerLockbox?.serialNumber ?? null,
+          code: lb.customerLockbox?.code ?? lb.code ?? null,
         }))
       : []
 

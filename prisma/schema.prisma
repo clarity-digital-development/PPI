@@ -321,6 +321,7 @@ model CustomerLockbox {
 
   user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   lockboxType LockboxType @relation(fields: [lockboxTypeId], references: [id])
+  installationLockboxes InstallationLockbox[]
 
   @@index([assignedToMemberId])
   @@index([heldByHoldId])
@@ -550,14 +551,17 @@ model InstallationLockbox {
   id              String       @id @default(cuid())
   installationId  String       @map("installation_id")
   lockboxTypeId   String       @map("lockbox_type_id")
+  customerLockboxId String?    @map("customer_lockbox_id")
   isRental        Boolean      @default(false) @map("is_rental")
   code            String?
   installedAt     DateTime     @default(now()) @map("installed_at")
   removedAt       DateTime?    @map("removed_at")
 
-  installation    Installation @relation(fields: [installationId], references: [id], onDelete: Cascade)
-  lockboxType     LockboxType  @relation(fields: [lockboxTypeId], references: [id])
+  installation    Installation     @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  lockboxType     LockboxType      @relation(fields: [lockboxTypeId], references: [id])
+  customerLockbox CustomerLockbox? @relation(fields: [customerLockboxId], references: [id], onDelete: SetNull)
 
+  @@index([customerLockboxId])
   @@map("installation_lockboxes")
 }
 
