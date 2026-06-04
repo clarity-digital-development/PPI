@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
+import { audit, AuditAction } from '@/lib/audit'
 
 export async function POST(
   request: NextRequest,
@@ -171,6 +172,19 @@ export async function POST(
       }
       default:
         return NextResponse.json({ error: 'Invalid type' }, { status: 400 })
+    }
+
+    // Audit the assign-at-add when a target agent was set (assignedToMemberId
+    // is only relevant for sign/rider/lockbox/brochure_box, not 'other').
+    if (assignedToMemberId && type !== 'other') {
+      await audit({
+        actor: { id: user.id, email: user.email, role: user.role },
+        action: AuditAction.InventoryAssign,
+        targetType: 'user',
+        targetId: customerId,
+        metadata: { type, quantity, assignedToMemberId, source: 'admin_add_inventory' },
+        request,
+      })
     }
 
     return NextResponse.json({ item: result, quantity }, { status: 201 })

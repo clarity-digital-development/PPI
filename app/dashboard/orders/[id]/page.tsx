@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import { Header, CompletePaymentButton } from '@/components/dashboard'
 import { Card, CardContent, Button, Badge, Modal } from '@/components/ui'
+import { easternMidnightMs } from '@/lib/scheduling'
 import {
   MapPin,
   Calendar,
@@ -138,17 +139,18 @@ export default function OrderDetailsPage() {
     })
   }
 
-  // 24h cutoff is measured against UTC midnight of the scheduled date for safety.
+  // 24h cutoff is measured against Eastern midnight of the scheduled date
+  // (matches the server-side gate in /api/orders/[id]/cancel). Using UTC
+  // here would show or hide the Cancel button up to 4h off the real cutoff
+  // — confusing UX (server is authoritative either way).
   // Null scheduledDate (Next Available) skips the cutoff.
   const canCancel = (o: Order): boolean => {
     if (['in_progress', 'completed', 'cancelled'].includes(o.status)) return false
     if (o.paymentStatus !== 'succeeded') return false
     if (o.refundId) return false
     if (!o.scheduledDate) return true
-    const scheduledUtcMidnight = new Date(o.scheduledDate)
-    scheduledUtcMidnight.setUTCHours(0, 0, 0, 0)
-    const cutoff = scheduledUtcMidnight.getTime() - 24 * 60 * 60 * 1000
-    return cutoff > new Date().getTime()
+    const cutoff = easternMidnightMs(new Date(o.scheduledDate)) - 24 * 60 * 60 * 1000
+    return cutoff > Date.now()
   }
 
   if (loading) {

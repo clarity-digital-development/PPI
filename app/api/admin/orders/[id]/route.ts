@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { validateScheduling } from '@/lib/scheduling'
+import { audit, AuditAction } from '@/lib/audit'
 
 export async function GET(
   request: NextRequest,
@@ -79,8 +80,9 @@ export async function PUT(
     if (body.scheduled_date) {
       // Same business rules apply to admin-initiated schedule changes —
       // support can't "fix a date" past the 4pm cutoff via this route.
-      // Override escape hatch: pass override_schedule: true (logged
-      // implicitly via the order update — caller is admin-gated above).
+      // Override escape hatch: pass override_schedule: true. Override use
+      // is audit-logged below so there's a paper trail of who bypassed
+      // the cutoff for which order.
       if (!body.override_schedule) {
         const dateStr =
           typeof body.scheduled_date === 'string' && body.scheduled_date.length >= 10
@@ -93,6 +95,19 @@ export async function PUT(
             { status: 400 }
           )
         }
+      } else {
+        await audit({
+          actor: { id: user.id, email: user.email, role: user.role },
+          action: AuditAction.OrderCancel, // reusing as 'order admin op'; no dedicated 'order.schedule_override' yet
+          targetType: 'order',
+          targetId: id,
+          metadata: {
+            action: 'schedule_override',
+            new_scheduled_date: body.scheduled_date,
+            override_reason: typeof body.override_reason === 'string' ? body.override_reason.slice(0, 500) : null,
+          },
+          request,
+        })
       }
       updateData.scheduledDate = new Date(body.scheduled_date)
     }
