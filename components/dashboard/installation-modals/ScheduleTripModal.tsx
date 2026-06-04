@@ -94,16 +94,12 @@ export function ScheduleTripModal({
       setError('Please fill in the address')
       return
     }
-    if (!addLockbox && !addRider) {
-      setError('Please select at least one item to add')
-      return
-    }
 
     setLoading(true)
     setError(null)
 
     try {
-      // Build description
+      // Build description — items are now optional (pickup-only trips allowed)
       const items: string[] = []
       if (addLockbox) items.push(`${lockboxType} lockbox`)
       if (addRider) items.push(`rider: ${riderDescription || 'standard'}`)
@@ -114,7 +110,10 @@ export function ScheduleTripModal({
           : 'Selected installation'
         : `${newAddress.street}, ${newAddress.city}, ${newAddress.state} ${newAddress.zip}`
 
-      const description = `Service trip to add: ${items.join(', ')}. Address: ${address}. Trip fee: $${PRICING.serviceTrip}`
+      const summary = items.length > 0
+        ? `Service trip to add: ${items.join(', ')}`
+        : 'Service trip — no items specified (pickup/visit only; admin to itemize)'
+      const description = `${summary}. Address: ${address}. Trip fee: $${PRICING.serviceTrip}`
 
       if (addressType === 'existing') {
         // Create service request linked to installation
@@ -125,7 +124,7 @@ export function ScheduleTripModal({
             type: 'service',
             description,
             requested_date: preferredDate || null,
-            notes: notes || `Items to add: ${items.join(', ')}`,
+            notes: notes || (items.length > 0 ? `Items to add: ${items.join(', ')}` : 'Pickup/visit only — no items specified by customer'),
           }),
         })
 
@@ -142,7 +141,7 @@ export function ScheduleTripModal({
             type: 'service',
             description,
             requested_date: preferredDate || null,
-            notes: `Unlisted address: ${address}\nItems to add: ${items.join(', ')}\n${notes || ''}`,
+            notes: `Unlisted address: ${address}\n${items.length > 0 ? `Items to add: ${items.join(', ')}` : 'Pickup/visit only — no items specified by customer'}\n${notes || ''}`,
             address: newAddress,
           }),
         })
@@ -221,7 +220,8 @@ export function ScheduleTripModal({
                 <span className="font-semibold text-pink-900">Trip Fee: ${PRICING.serviceTrip}</span>
               </div>
               <p className="text-sm text-pink-700 mt-1">
-                A trip fee applies for adding accessories to existing installations.
+                A trip fee applies for any service visit — pickups, accessory adds, or general visits.
+                If you&apos;re adding items, the cost of those items is billed separately.
               </p>
             </div>
 
@@ -316,9 +316,12 @@ export function ScheduleTripModal({
 
             {/* What to Add */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                What would you like to add?
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                What would you like to add? <span className="font-normal text-gray-500">(Optional)</span>
               </label>
+              <p className="text-xs text-gray-500 mb-2">
+                Leave blank to request a pickup-only or general service visit — we&apos;ll confirm the details with you.
+              </p>
               <div className="space-y-3">
                 {/* Lockbox Option */}
                 <label className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg cursor-pointer hover:bg-gray-100 transition-colors">

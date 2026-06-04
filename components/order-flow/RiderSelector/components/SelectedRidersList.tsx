@@ -1,7 +1,6 @@
 'use client'
 
 import { X } from 'lucide-react'
-import { cn } from '@/lib/utils'
 import type { SelectedRider } from '../types'
 import { RIDERS } from '../constants'
 
@@ -45,9 +44,19 @@ export function SelectedRidersList({
       <div className="flex flex-wrap gap-2 mb-4">
         {selectedRiders.map(rider => {
           const riderData = RIDERS.find(r => r.id === rider.riderId)
-          const displayName = rider.customValue
-            ? `${rider.customValue} Acres`
-            : riderData?.name || rider.riderId
+          // Custom free-text rider (pickup/at-property) — riderId is a synthetic
+          // "custom-text-..." key and customValue holds the typed name verbatim.
+          const isCustomText = rider.riderId.startsWith('custom-text-')
+          const displayName = isCustomText
+            ? String(rider.customValue || 'Custom rider')
+            : rider.customValue
+              ? `${rider.customValue} Acres`
+              : riderData?.name || rider.riderId
+          const sourceLabel = rider.source === 'rental'
+            ? 'Rental'
+            : rider.source === 'at_property'
+              ? 'Pickup'
+              : 'Own'
 
           return (
             <div
@@ -57,7 +66,7 @@ export function SelectedRidersList({
             >
               <span>{displayName}</span>
               <span className="text-pink-600 text-xs">
-                {rider.source === 'rental' ? 'Rental' : 'Own'} ${rider.price}
+                {sourceLabel} ${rider.price}
               </span>
               <button
                 type="button"

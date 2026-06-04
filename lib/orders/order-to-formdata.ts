@@ -72,17 +72,34 @@ function nameToSlug(name: string): string {
 }
 
 // Parse a MAIN-post rider item: "Rider Rental: For Sale",
-// "Rider Install: Coming Soon (from storage)", "Rider Install: 5 Acres (at property)"
+// "Rider Install: Coming Soon (from storage)", "Rider Install: 5 Acres (pickup)",
+// "Rider Install: Custom: Love It/Buy It (pickup)"
 function parseMainRider(item: OrderItemLike): RiderSelection {
   let body = item.description.replace(/^Rider (Rental|Install):\s*/i, '')
-  const atProperty = /\(at property\)\s*$/i.test(body)
-  body = body.replace(/\s*\((from storage|at property)\)\s*$/i, '').trim()
+  // Accept either "(pickup)" (current) or "(at property)" (legacy) as the
+  // pickup/at-property marker so older orders still round-trip correctly.
+  const atProperty = /\((pickup|at property)\)\s*$/i.test(body)
+  body = body.replace(/\s*\((from storage|at property|pickup)\)\s*$/i, '').trim()
 
   const source: RiderSelection['source'] = item.itemCategory === 'rental'
     ? 'rental'
     : atProperty
       ? 'at_property'
       : 'owned'
+
+  // Free-text custom rider — "Custom: <name>" round-trips into a synthetic
+  // custom-text id so the wizard re-emits the same display name on edit.
+  const customMatch = body.match(/^Custom:\s*(.+)$/i)
+  if (customMatch) {
+    return {
+      rider_type: `custom-text-restored-${item.description.length}-${customMatch[1].length}`,
+      is_rental: source === 'rental',
+      source,
+      quantity: 1,
+      custom_value: customMatch[1].trim(),
+      customer_rider_id: item.customerRiderId || undefined,
+    }
+  }
 
   // Custom acreage riders render as "<number> Acres"
   const acresMatch = body.match(/^([\d.]+)\s+Acres$/i)
@@ -105,11 +122,11 @@ function parseMainRider(item: OrderItemLike): RiderSelection {
 // (the second-post builder uses the raw slug in the description, not a Title-cased name)
 function parseSecondPostRider(item: OrderItemLike): RiderSelection {
   let body = item.description.replace(/^Second Post Rider:\s*/i, '')
-  const atProperty = /\(at property\)\s*$/i.test(body)
+  // Accept either "(pickup)" (current) or "(at property)" (legacy) marker.
+  const atProperty = /\((pickup|at property)\)\s*$/i.test(body)
   // Drop trailing source suffix and any "(custom)" annotation; the slug is the
   // leading token up to the first " ("
-  body = body.replace(/\s*\((from storage|at property)\)\s*$/i, '').trim()
-  const slug = body.split(' (')[0].trim()
+  body = body.replace(/\s*\((from storage|at property|pickup)\)\s*$/i, '').trim()
 
   const source: RiderSelection['source'] = item.itemCategory === 'rental'
     ? 'rental'
@@ -117,6 +134,21 @@ function parseSecondPostRider(item: OrderItemLike): RiderSelection {
       ? 'at_property'
       : 'owned'
 
+  // "Custom: <name>" round-trips into a synthetic custom-text id (mirrors the
+  // main-post rider parser) so the wizard re-emits the same name on edit.
+  const customMatch = body.match(/^Custom:\s*(.+)$/i)
+  if (customMatch) {
+    return {
+      rider_type: `custom-text-restored-${item.description.length}-${customMatch[1].length}`,
+      is_rental: source === 'rental',
+      source,
+      quantity: 1,
+      custom_value: customMatch[1].trim(),
+      customer_rider_id: item.customerRiderId || undefined,
+    }
+  }
+
+  const slug = body.split(' (')[0].trim()
   return {
     rider_type: slug,
     is_rental: source === 'rental',

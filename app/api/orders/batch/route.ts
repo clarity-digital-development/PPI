@@ -8,6 +8,7 @@ import { validateScheduling } from '@/lib/scheduling'
 import crypto from 'node:crypto'
 import { audit, AuditAction } from '@/lib/audit'
 import type { HoldItemType } from '@prisma/client'
+import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 
 /**
  * Batch order placement. The cart hits this endpoint once with N orders
@@ -455,6 +456,80 @@ export async function POST(request: NextRequest) {
     console.log(
       `Batch order placed: ${createdOrders.length} orders, $${grandTotal.toFixed(2)} total, PI ${piId} status=${paymentIntent.status}`
     )
+
+    // Synchronously send confirmation + admin notification for each order whose
+    // payment already succeeded. Prior to this, batch checkout relied entirely
+    // on the payment_intent.succeeded webhook for emails — but webhook delivery
+    // can lag or silently fail (esp. for admin team accounts whose orders
+    // never trigger the single-order POST path). Reservation flag stops the
+    // webhook from double-sending if it arrives later.
+    if (piSucceeded) {
+      for (const co of createdOrders) {
+        const reserved = await prisma.order.updateMany({
+          where: { id: co.id, confirmationEmailSentAt: null },
+          data: { confirmationEmailSentAt: new Date() },
+        })
+        if (reserved.count === 0) continue
+        try {
+          const full = await prisma.order.findUnique({
+            where: { id: co.id },
+            include: { orderItems: true, user: true },
+          })
+          if (!full) continue
+          await Promise.all([
+            sendOrderConfirmationEmail({
+              customerName: full.user.fullName || full.user.name || '',
+              customerEmail: full.user.email,
+              orderNumber: full.orderNumber,
+              propertyAddress: `${full.propertyAddress}, ${full.propertyCity}, ${full.propertyState} ${full.propertyZip}`,
+              total: Number(full.total),
+              items: full.orderItems.map((it) => ({
+                description: it.description,
+                quantity: it.quantity,
+                total_price: Number(it.totalPrice),
+              })),
+              requestedDate: full.scheduledDate?.toISOString(),
+              installationNotes: full.propertyNotes || undefined,
+            }),
+            sendAdminOrderNotification({
+              orderNumber: full.orderNumber,
+              customerName: full.user.fullName || full.user.name || '',
+              customerEmail: full.user.email,
+              customerPhone: full.user.phone || '',
+              propertyAddress: `${full.propertyAddress}, ${full.propertyCity}, ${full.propertyState} ${full.propertyZip}`,
+              total: Number(full.total),
+              items: full.orderItems.map((it) => ({
+                description: it.description,
+                quantity: it.quantity,
+                total_price: Number(it.totalPrice),
+              })),
+              requestedDate: full.scheduledDate?.toISOString(),
+              isExpedited: full.isExpedited,
+              installationNotes: full.propertyNotes || undefined,
+              installationLocation: full.installationLocation || undefined,
+              isGatedCommunity: full.isGatedCommunity,
+              gateCode: full.gateCode || undefined,
+              hasMarkerPlaced: full.hasMarkerPlaced,
+              signOrientation: full.signOrientation || undefined,
+              signOrientationOther: full.signOrientationOther || undefined,
+              subtotal: Number(full.subtotal),
+              discount: Number(full.discount),
+              fuelSurcharge: Number(full.fuelSurcharge),
+              noPostSurcharge: Number(full.noPostSurcharge),
+              expediteFee: Number(full.expediteFee),
+              tax: Number(full.tax),
+            }),
+          ])
+        } catch (emailError) {
+          console.error(`Batch: failed to send emails for order ${co.orderNumber}:`, emailError)
+          // Release the reservation so the webhook (or manual replay) can retry.
+          await prisma.order.updateMany({
+            where: { id: co.id, confirmationEmailSentAt: { not: null } },
+            data: { confirmationEmailSentAt: null },
+          }).catch(() => {})
+        }
+      }
+    }
 
     try {
       await audit({

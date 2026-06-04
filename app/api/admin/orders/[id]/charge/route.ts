@@ -74,38 +74,51 @@ export async function POST(
           },
         })
 
-        // Send confirmation emails
-        try {
-          await Promise.all([
-            sendOrderConfirmationEmail({
-              customerName: order.user.fullName || order.user.name || '',
-              customerEmail: order.user.email,
-              orderNumber: order.orderNumber,
-              propertyAddress: `${order.propertyAddress}, ${order.propertyCity}, ${order.propertyState} ${order.propertyZip}`,
-              total: Number(order.total),
-              items: order.orderItems.map((item) => ({
-                description: item.description,
-                quantity: item.quantity,
-                total_price: Number(item.totalPrice),
-              })),
-            }),
-            sendAdminOrderNotification({
-              orderNumber: order.orderNumber,
-              customerName: order.user.fullName || order.user.name || '',
-              customerEmail: order.user.email,
-              customerPhone: order.user.phone || '',
-              propertyAddress: `${order.propertyAddress}, ${order.propertyCity}, ${order.propertyState} ${order.propertyZip}`,
-              total: Number(order.total),
-              items: order.orderItems.map((item) => ({
-                description: item.description,
-                quantity: item.quantity,
-                total_price: Number(item.totalPrice),
-              })),
-              isExpedited: order.isExpedited,
-            }),
-          ])
-        } catch (emailError) {
-          console.error('Error sending emails:', emailError)
+        // Send confirmation emails — reserve the slot so a racing webhook
+        // for the same PI cannot double-send.
+        const reserved = await prisma.order.updateMany({
+          where: { id, confirmationEmailSentAt: null },
+          data: { confirmationEmailSentAt: new Date() },
+        })
+        if (reserved.count > 0) {
+          try {
+            await Promise.all([
+              sendOrderConfirmationEmail({
+                customerName: order.user.fullName || order.user.name || '',
+                customerEmail: order.user.email,
+                orderNumber: order.orderNumber,
+                propertyAddress: `${order.propertyAddress}, ${order.propertyCity}, ${order.propertyState} ${order.propertyZip}`,
+                total: Number(order.total),
+                items: order.orderItems.map((item) => ({
+                  description: item.description,
+                  quantity: item.quantity,
+                  total_price: Number(item.totalPrice),
+                })),
+                installationNotes: order.propertyNotes || undefined,
+              }),
+              sendAdminOrderNotification({
+                orderNumber: order.orderNumber,
+                customerName: order.user.fullName || order.user.name || '',
+                customerEmail: order.user.email,
+                customerPhone: order.user.phone || '',
+                propertyAddress: `${order.propertyAddress}, ${order.propertyCity}, ${order.propertyState} ${order.propertyZip}`,
+                total: Number(order.total),
+                items: order.orderItems.map((item) => ({
+                  description: item.description,
+                  quantity: item.quantity,
+                  total_price: Number(item.totalPrice),
+                })),
+                isExpedited: order.isExpedited,
+                installationNotes: order.propertyNotes || undefined,
+              }),
+            ])
+          } catch (emailError) {
+            console.error('Error sending emails:', emailError)
+            await prisma.order.updateMany({
+              where: { id, confirmationEmailSentAt: { not: null } },
+              data: { confirmationEmailSentAt: null },
+            }).catch(() => {})
+          }
         }
 
         return NextResponse.json({

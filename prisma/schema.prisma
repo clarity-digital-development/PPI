@@ -422,6 +422,11 @@ model Order {
   refundedAmount       Decimal?  @db.Decimal(10, 2) @map("refunded_amount")
   refundReason         String?   @map("refund_reason")
   refundEmailSentAt    DateTime? @map("refund_email_sent_at")
+  // Reservation flag — set via conditional updateMany before sending the
+  // order-received email so the synchronous post-charge path (single-order
+  // POST + batch POST) and the payment_intent.succeeded webhook can't
+  // double-send. Whichever updateMany lands first wins; the other no-ops.
+  confirmationEmailSentAt DateTime? @map("confirmation_email_sent_at")
   cancelledAt          DateTime? @map("cancelled_at")
   cancelledByUserId    String?   @map("cancelled_by_user_id")
   cancelReason         String?   @map("cancel_reason")

@@ -1,8 +1,8 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import Link from 'next/link'
-import { Info } from 'lucide-react'
+import { Info, Plus } from 'lucide-react'
 import {
   RiderSourceToggle,
   PopularRiders,
@@ -32,6 +32,7 @@ export function RiderSelector({
     clearAll,
     updateAcres,
     toggleCategory,
+    addCustomTextRider,
     totalPrice,
     isRiderSelected,
     isRiderAvailable,
@@ -43,6 +44,10 @@ export function RiderSelector({
     rentalPrice,
     installPrice,
   })
+
+  // Free-text custom rider input — only shown for Pickup/At property since
+  // it's the only source where the agent supplies the rider themselves.
+  const [customNameInput, setCustomNameInput] = useState('')
 
   // Sync with parent whenever selection changes
   useMemo(() => {
@@ -106,6 +111,50 @@ export function RiderSelector({
         onSourceChange={setSource}
         hasInventory={hasInventory}
       />
+
+      {/* Custom-name rider input (pickup/at-property only) — lets agents add
+          riders that aren't in the standard catalog (e.g. "Walk/Don't Run",
+          "Love It/Buy It", "Name Riders"). */}
+      {source === 'at_property' && (
+        <div className="p-3 border border-gray-200 rounded-lg bg-gray-50 space-y-2">
+          <div>
+            <h3 className="text-sm font-medium text-gray-900">Add a custom rider</h3>
+            <p className="text-xs text-gray-500">
+              Not in the list below? Type the rider name and add it — ${installPrice} install.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={customNameInput}
+              onChange={(e) => setCustomNameInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && customNameInput.trim()) {
+                  e.preventDefault()
+                  addCustomTextRider(customNameInput)
+                  setCustomNameInput('')
+                }
+              }}
+              placeholder="e.g. Love It/Buy It"
+              maxLength={60}
+              className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pink-500 focus:border-transparent"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                if (!customNameInput.trim()) return
+                addCustomTextRider(customNameInput)
+                setCustomNameInput('')
+              }}
+              disabled={!customNameInput.trim()}
+              className="inline-flex items-center gap-1 px-3 py-2 rounded-lg bg-pink-500 text-white text-sm font-medium hover:bg-pink-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              Add
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Rider Selection: flat list for owned, category grid for rental */}
       {source === 'owned' ? (

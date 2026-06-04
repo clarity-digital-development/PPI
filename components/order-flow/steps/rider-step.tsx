@@ -32,6 +32,22 @@ function toRiderSelection(
 
 // Convert from order form format to RiderSelector format
 function toSelectedRider(selection: RiderSelection): SelectedRider | null {
+  // Prefer the explicit source field; fall back to is_rental for older saved data
+  const source = selection.source ?? (selection.is_rental ? 'rental' : 'owned')
+  const price = source === 'rental' ? PRICING.rider_rental : PRICING.rider_install
+
+  // Free-text custom riders (pickup/at-property) use a synthetic rider_type
+  // that starts with "custom-text-" — keep them as their own selected entries
+  // so they round-trip through the wizard instead of being dropped.
+  if (selection.rider_type.startsWith('custom-text-')) {
+    return {
+      riderId: selection.rider_type,
+      source,
+      price,
+      customValue: selection.custom_value,
+    }
+  }
+
   // Find the rider by slug (try popular version first, then regular)
   let rider = RIDERS.find(r => r.slug === selection.rider_type && r.category === 'popular')
   if (!rider) {
@@ -39,10 +55,6 @@ function toSelectedRider(selection: RiderSelection): SelectedRider | null {
   }
 
   if (!rider) return null
-
-  // Prefer the explicit source field; fall back to is_rental for older saved data
-  const source = selection.source ?? (selection.is_rental ? 'rental' : 'owned')
-  const price = source === 'rental' ? PRICING.rider_rental : PRICING.rider_install
 
   return {
     riderId: rider.id,

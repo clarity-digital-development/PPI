@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
 import { ArrowLeft, Plus, Minus, Trash2, Package, Tag, Lock, FileBox, Pencil, UserX, Archive, Users, X, ChevronDown } from 'lucide-react'
-import { Card, CardContent, Button, Input, Badge, Modal } from '@/components/ui'
+import { Card, CardContent, Button, Input, Badge, Modal, SearchableSelect } from '@/components/ui'
 
 interface CustomerData {
   customer: {
@@ -97,6 +97,8 @@ export default function CustomerDetailPage() {
   const [selectedItems, setSelectedItems] = useState<Map<string, { type: 'sign' | 'rider' | 'lockbox' | 'brochure_box'; id: string }>>(new Map())
   const [reassignTargetId, setReassignTargetId] = useState<string>('')
   const [reassigning, setReassigning] = useState(false)
+  // Per-row inline reassign in-flight, keyed by `${type}:${id}` — disables the dropdown so admins can't double-fire.
+  const [rowReassigning, setRowReassigning] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     fetchCustomer()
@@ -326,6 +328,45 @@ export default function CustomerDetailPage() {
       alert('Failed to reassign items')
     } finally {
       setReassigning(false)
+    }
+  }
+
+  // Per-row inline reassign — reuses the bulk endpoint with a single-item payload so we share the hold-conflict logic.
+  async function handleRowReassign(
+    type: 'sign' | 'rider' | 'lockbox' | 'brochure_box',
+    itemId: string,
+    targetMemberId: string | null,
+  ) {
+    const key = `${type}:${itemId}`
+    setRowReassigning((prev) => ({ ...prev, [key]: true }))
+    try {
+      const res = await fetch(`/api/admin/customers/${id}/inventory/bulk-reassign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: [{ type, id: itemId }],
+          target_member_id: targetMemberId,
+        }),
+      })
+      if (res.ok) {
+        fetchCustomer()
+      } else {
+        const err = await res.json().catch(() => ({}))
+        if (res.status === 409 && err.code === 'items_held') {
+          alert('This item is in an active cart. Release the hold first via Admin → Inventory Holds, then try again.')
+        } else {
+          alert(err.error || 'Failed to reassign item')
+        }
+      }
+    } catch (error) {
+      console.error('Error reassigning item:', error)
+      alert('Failed to reassign item')
+    } finally {
+      setRowReassigning((prev) => {
+        const next = { ...prev }
+        delete next[key]
+        return next
+      })
     }
   }
 
@@ -579,6 +620,10 @@ export default function CustomerDetailPage() {
             selectedItems={selectedItems}
             onToggle={toggleItemSelected}
             onDelete={handleDeleteInventory}
+            teamMembers={data.team.members}
+            currentMemberId={null}
+            rowReassigning={rowReassigning}
+            onReassign={handleRowReassign}
           />
 
           {data.team.members.map((m) => (
@@ -591,6 +636,10 @@ export default function CustomerDetailPage() {
               selectedItems={selectedItems}
               onToggle={toggleItemSelected}
               onDelete={handleDeleteInventory}
+              teamMembers={data.team!.members}
+              currentMemberId={m.id}
+              rowReassigning={rowReassigning}
+              onReassign={handleRowReassign}
             />
           ))}
         </div>
@@ -1215,6 +1264,15 @@ interface AgentInventorySectionProps {
   selectedItems: Map<string, { type: 'sign' | 'rider' | 'lockbox' | 'brochure_box'; id: string }>
   onToggle: (type: 'sign' | 'rider' | 'lockbox' | 'brochure_box', id: string) => void
   onDelete: (type: string, id: string) => void
+  teamMembers: Array<{ id: string; name: string }>
+  // The agent every item in this bucket currently belongs to (null = Unassigned). Drives the inline dropdown's current value.
+  currentMemberId: string | null
+  rowReassigning: Record<string, boolean>
+  onReassign: (
+    type: 'sign' | 'rider' | 'lockbox' | 'brochure_box',
+    id: string,
+    targetMemberId: string | null,
+  ) => void
 }
 
 function AgentInventorySection({
@@ -1225,6 +1283,10 @@ function AgentInventorySection({
   selectedItems,
   onToggle,
   onDelete,
+  teamMembers,
+  currentMemberId,
+  rowReassigning,
+  onReassign,
 }: AgentInventorySectionProps) {
   const [open, setOpen] = useState(defaultOpen)
   const counts: string[] = []
@@ -1268,6 +1330,10 @@ function AgentInventorySection({
               isSelected={isSelected}
               onToggle={onToggle}
               onDelete={onDelete}
+              teamMembers={teamMembers}
+              currentMemberId={currentMemberId}
+              rowReassigning={rowReassigning}
+              onReassign={onReassign}
             />
             <ItemList
               icon={<Tag className="w-4 h-4 text-pink-500" />}
@@ -1277,6 +1343,10 @@ function AgentInventorySection({
               isSelected={isSelected}
               onToggle={onToggle}
               onDelete={onDelete}
+              teamMembers={teamMembers}
+              currentMemberId={currentMemberId}
+              rowReassigning={rowReassigning}
+              onReassign={onReassign}
             />
             <ItemList
               icon={<Lock className="w-4 h-4 text-pink-500" />}
@@ -1290,6 +1360,10 @@ function AgentInventorySection({
               isSelected={isSelected}
               onToggle={onToggle}
               onDelete={onDelete}
+              teamMembers={teamMembers}
+              currentMemberId={currentMemberId}
+              rowReassigning={rowReassigning}
+              onReassign={onReassign}
             />
             <ItemList
               icon={<FileBox className="w-4 h-4 text-pink-500" />}
@@ -1299,6 +1373,10 @@ function AgentInventorySection({
               isSelected={isSelected}
               onToggle={onToggle}
               onDelete={onDelete}
+              teamMembers={teamMembers}
+              currentMemberId={currentMemberId}
+              rowReassigning={rowReassigning}
+              onReassign={onReassign}
             />
           </div>
         )}
@@ -1315,9 +1393,34 @@ interface ItemListProps {
   isSelected: (type: 'sign' | 'rider' | 'lockbox' | 'brochure_box', id: string) => boolean
   onToggle: (type: 'sign' | 'rider' | 'lockbox' | 'brochure_box', id: string) => void
   onDelete: (type: string, id: string) => void
+  teamMembers: Array<{ id: string; name: string }>
+  currentMemberId: string | null
+  rowReassigning: Record<string, boolean>
+  onReassign: (
+    type: 'sign' | 'rider' | 'lockbox' | 'brochure_box',
+    id: string,
+    targetMemberId: string | null,
+  ) => void
 }
 
-function ItemList({ icon, heading, items, type, isSelected, onToggle, onDelete }: ItemListProps) {
+function ItemList({
+  icon,
+  heading,
+  items,
+  type,
+  isSelected,
+  onToggle,
+  onDelete,
+  teamMembers,
+  currentMemberId,
+  rowReassigning,
+  onReassign,
+}: ItemListProps) {
+  // Build the dropdown options once per render — shared by every row in this list.
+  const memberOptions = [
+    { value: '', label: 'Unassigned (team pool)' },
+    ...teamMembers.map((m) => ({ value: m.id, label: m.name })),
+  ]
   return (
     <div>
       <div className="flex items-center gap-2 mb-2">
@@ -1329,39 +1432,61 @@ function ItemList({ icon, heading, items, type, isSelected, onToggle, onDelete }
         <p className="text-xs text-gray-400 pl-6">No {heading.toLowerCase()}</p>
       ) : (
         <div className="space-y-1.5">
-          {items.map(item => (
-            <label
-              key={item.id}
-              className={`flex items-center justify-between gap-3 p-2.5 rounded-lg cursor-pointer transition-colors ${
-                isSelected(type, item.id) ? 'bg-pink-50 ring-1 ring-pink-200' : 'bg-gray-50 hover:bg-gray-100'
-              }`}
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <input
-                  type="checkbox"
-                  checked={isSelected(type, item.id)}
-                  onChange={() => onToggle(type, item.id)}
-                  className="w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
-                />
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-gray-900 truncate">{item.primary}</p>
-                  {item.secondary && <p className="text-xs text-gray-500 truncate">{item.secondary}</p>}
+          {items.map(item => {
+            const rowKey = `${type}:${item.id}`
+            const saving = !!rowReassigning[rowKey]
+            return (
+              <div
+                key={item.id}
+                className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-2.5 rounded-lg transition-colors ${
+                  isSelected(type, item.id) ? 'bg-pink-50 ring-1 ring-pink-200' : 'bg-gray-50 hover:bg-gray-100'
+                }`}
+              >
+                <label className="flex items-center gap-3 min-w-0 cursor-pointer flex-1">
+                  <input
+                    type="checkbox"
+                    checked={isSelected(type, item.id)}
+                    onChange={() => onToggle(type, item.id)}
+                    className="w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
+                  />
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-gray-900 truncate">{item.primary}</p>
+                    {item.secondary && <p className="text-xs text-gray-500 truncate">{item.secondary}</p>}
+                  </div>
+                </label>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <div className="min-w-[180px] sm:max-w-[220px]">
+                    <SearchableSelect
+                      className="py-1.5 text-sm"
+                      options={memberOptions}
+                      value={currentMemberId ?? ''}
+                      disabled={saving}
+                      onChange={(next) => {
+                        const nextId = next === '' ? null : next
+                        // No-op if the selection didn't actually change.
+                        if (nextId === currentMemberId) return
+                        onReassign(type, item.id, nextId)
+                      }}
+                      searchPlaceholder="Search agents..."
+                      aria-label={`Reassign ${item.primary}`}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      if (confirm('Delete this item?')) onDelete(type, item.id)
+                    }}
+                    className="text-gray-400 hover:text-red-500 flex-shrink-0"
+                    title="Delete"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  if (confirm('Delete this item?')) onDelete(type, item.id)
-                }}
-                className="text-gray-400 hover:text-red-500 flex-shrink-0"
-                title="Delete"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </label>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>

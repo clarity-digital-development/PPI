@@ -101,11 +101,18 @@ export function ReviewStep({
   formData.riders.forEach((rider) => {
     const source = rider.source ?? (rider.is_rental ? 'rental' : 'owned')
     const price = source === 'rental' ? PRICING.rider_rental : PRICING.rider_install
-    const name = rider.custom_value ? `${rider.custom_value} Acres` : rider.rider_type.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+    // Custom free-text riders (pickup/at-property) — render as "Custom: <name>"
+    // so the agent's typed name flows into the review, admin detail, and emails.
+    const isCustomText = rider.rider_type.startsWith('custom-text-')
+    const name = isCustomText
+      ? `Custom: ${rider.custom_value || 'rider'}`
+      : rider.custom_value
+        ? `${rider.custom_value} Acres`
+        : rider.rider_type.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
     const description = source === 'rental'
       ? `Rider Rental: ${name}`
       : source === 'at_property'
-        ? `Rider Install: ${name} (at property)`
+        ? `Rider Install: ${name} (pickup)`
         : `Rider Install: ${name} (from storage)`
     orderItems.push({
       description,
@@ -672,13 +679,18 @@ export function ReviewStep({
       formData.riders.forEach((rider) => {
         const source = rider.source ?? (rider.is_rental ? 'rental' : 'owned')
         const price = source === 'rental' ? PRICING.rider_rental : PRICING.rider_install
-        const name = rider.custom_value
-          ? `${rider.custom_value} Acres`
-          : rider.rider_type.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+        // Custom free-text riders (pickup/at-property) flow the agent's typed
+        // name through to the order item description as "Custom: <name>".
+        const isCustomText = rider.rider_type.startsWith('custom-text-')
+        const name = isCustomText
+          ? `Custom: ${rider.custom_value || 'rider'}`
+          : rider.custom_value
+            ? `${rider.custom_value} Acres`
+            : rider.rider_type.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
         const description = source === 'rental'
           ? `Rider Rental: ${name}`
           : source === 'at_property'
-            ? `Rider Install: ${name} (at property)`
+            ? `Rider Install: ${name} (pickup)`
             : `Rider Install: ${name} (from storage)`
         const itemCategory: 'rental' | 'owned' | 'storage' = source === 'rental'
           ? 'rental'
@@ -808,11 +820,17 @@ export function ReviewStep({
         for (const rider of formData.second_post_riders) {
           const source = rider.source ?? (rider.is_rental ? 'rental' : 'owned')
           const price = source === 'rental' ? PRICING.rider_rental : PRICING.rider_install
-          const suffix = source === 'rental' ? '' : source === 'at_property' ? ' (at property)' : ' (from storage)'
+          const suffix = source === 'rental' ? '' : source === 'at_property' ? ' (pickup)' : ' (from storage)'
+          // Custom free-text riders render with their typed name instead of
+          // the synthetic "custom-text-..." slug.
+          const isCustomText = rider.rider_type.startsWith('custom-text-')
+          const displayName = isCustomText
+            ? `Custom: ${rider.custom_value || 'rider'}`
+            : `${rider.rider_type}${rider.custom_value ? ` (${rider.custom_value})` : ''}`
           items.push({
             item_type: 'rider',
             item_category: source === 'rental' ? 'rental' : 'owned',
-            description: `Second Post Rider: ${rider.rider_type}${rider.custom_value ? ` (${rider.custom_value})` : ''}${suffix}`,
+            description: `Second Post Rider: ${displayName}${suffix}`,
             quantity: 1,
             unit_price: price,
             total_price: price,

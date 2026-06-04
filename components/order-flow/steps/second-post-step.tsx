@@ -29,16 +29,26 @@ function toRiderSelection(
 }
 
 function toSelectedRider(selection: RiderSelection): SelectedRider | null {
+  const source = selection.source ?? (selection.is_rental ? 'rental' : 'owned')
+  const price = source === 'rental' ? PRICING.rider_rental : PRICING.rider_install
+  // Free-text custom riders round-trip with their synthetic id intact.
+  if (selection.rider_type.startsWith('custom-text-')) {
+    return {
+      riderId: selection.rider_type,
+      source,
+      price,
+      customValue: selection.custom_value,
+    }
+  }
   let rider = RIDERS.find(r => r.slug === selection.rider_type && r.category === 'popular')
   if (!rider) {
     rider = RIDERS.find(r => r.slug === selection.rider_type)
   }
   if (!rider) return null
-  const source = selection.source ?? (selection.is_rental ? 'rental' : 'owned')
   return {
     riderId: rider.id,
     source,
-    price: source === 'rental' ? PRICING.rider_rental : PRICING.rider_install,
+    price,
     customValue: selection.custom_value ? parseFloat(selection.custom_value) || selection.custom_value : undefined,
   }
 }

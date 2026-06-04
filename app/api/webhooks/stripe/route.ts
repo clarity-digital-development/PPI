@@ -84,8 +84,18 @@ export async function POST(request: NextRequest) {
           data: { paymentStatus: 'succeeded', paidAt: new Date() },
         })
 
-        // Send one confirmation + admin email per order in the batch
+        // Send one confirmation + admin email per order in the batch. Reserve
+        // the email slot first via conditional update so the synchronous post-
+        // charge path (single-order POST + batch POST) doesn't double-send.
         for (const o of existingOrders) {
+          const reserved = await prisma.order.updateMany({
+            where: { id: o.id, confirmationEmailSentAt: null },
+            data: { confirmationEmailSentAt: new Date() },
+          })
+          if (reserved.count === 0) {
+            console.log(`Webhook: order ${o.id} already has confirmation email — skipping`)
+            continue
+          }
           const order = await prisma.order.findUnique({
             where: { id: o.id },
             include: { orderItems: true, user: true },
@@ -106,6 +116,7 @@ export async function POST(request: NextRequest) {
                   total_price: Number(item.totalPrice),
                 })),
                 requestedDate: order.scheduledDate?.toISOString(),
+                installationNotes: order.propertyNotes || undefined,
               }),
               sendAdminOrderNotification({
                 orderNumber: order.orderNumber,
@@ -121,10 +132,28 @@ export async function POST(request: NextRequest) {
                 })),
                 requestedDate: order.scheduledDate?.toISOString(),
                 isExpedited: order.isExpedited,
+                installationNotes: order.propertyNotes || undefined,
+                installationLocation: order.installationLocation || undefined,
+                isGatedCommunity: order.isGatedCommunity,
+                gateCode: order.gateCode || undefined,
+                hasMarkerPlaced: order.hasMarkerPlaced,
+                signOrientation: order.signOrientation || undefined,
+                signOrientationOther: order.signOrientationOther || undefined,
+                subtotal: Number(order.subtotal),
+                discount: Number(order.discount),
+                fuelSurcharge: Number(order.fuelSurcharge),
+                noPostSurcharge: Number(order.noPostSurcharge),
+                expediteFee: Number(order.expediteFee),
+                tax: Number(order.tax),
               }),
             ])
           } catch (emailError) {
             console.error(`Webhook: Error sending emails for order ${order.orderNumber}:`, emailError)
+            // Release the reservation so a Stripe webhook retry can re-attempt.
+            await prisma.order.updateMany({
+              where: { id: order.id, confirmationEmailSentAt: { not: null } },
+              data: { confirmationEmailSentAt: null },
+            }).catch(() => {})
           }
         }
         break

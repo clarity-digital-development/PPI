@@ -428,49 +428,65 @@ export async function POST(request: NextRequest) {
     const orderPaymentStatus = !paymentIntent ? 'succeeded' : paymentIntent.status
     console.log(`Order ${order.orderNumber} created, payment status: ${orderPaymentStatus}`)
     if (orderPaymentStatus === 'succeeded') {
-      console.log(`Payment succeeded immediately, sending emails for order ${order.orderNumber}`)
-      try {
-        await Promise.all([
-          sendOrderConfirmationEmail({
-            customerName: user.fullName || user.name || '',
-            customerEmail: user.email,
-            orderNumber: order.orderNumber,
-            propertyAddress: `${order.propertyAddress}, ${order.propertyCity}, ${order.propertyState} ${order.propertyZip}`,
-            total: Number(order.total),
-            items: orderData.items,
-            requestedDate: orderData.requested_date,
-          }),
-          sendAdminOrderNotification({
-            orderNumber: order.orderNumber,
-            customerName: user.fullName || user.name || '',
-            customerEmail: user.email,
-            customerPhone: user.phone || '',
-            propertyAddress: `${order.propertyAddress}, ${order.propertyCity}, ${order.propertyState} ${order.propertyZip}`,
-            total: Number(order.total),
-            items: orderData.items,
-            requestedDate: orderData.requested_date,
-            isExpedited: orderData.is_expedited,
-            propertyType: orderData.property_type,
-            postType: orderData.post_type || undefined,
-            installationNotes: orderData.installation_notes || undefined,
-            installationLocation: orderData.installation_location || undefined,
-            isGatedCommunity: orderData.is_gated_community,
-            gateCode: orderData.gate_code || undefined,
-            hasMarkerPlaced: orderData.has_marker_placed,
-            signOrientation: orderData.sign_orientation || undefined,
-            signOrientationOther: orderData.sign_orientation_other || undefined,
-            subtotal,
-            discount,
-            promoCode: orderData.promo_code || undefined,
-            fuelSurcharge: actualFuelSurcharge,
-            noPostSurcharge,
-            expediteFee,
-            tax,
-          }),
-        ])
-        console.log(`Emails sent successfully for order ${order.orderNumber}`)
-      } catch (emailError) {
-        console.error(`Error sending emails for order ${order.orderNumber}:`, emailError)
+      // Reserve the email slot first so the webhook (which also fires for this
+      // PI) can't double-send. Whichever path wins the conditional update sends.
+      const emailReserved = await prisma.order.updateMany({
+        where: { id: order.id, confirmationEmailSentAt: null },
+        data: { confirmationEmailSentAt: new Date() },
+      })
+      if (emailReserved.count > 0) {
+        console.log(`Payment succeeded immediately, sending emails for order ${order.orderNumber}`)
+        try {
+          await Promise.all([
+            sendOrderConfirmationEmail({
+              customerName: user.fullName || user.name || '',
+              customerEmail: user.email,
+              orderNumber: order.orderNumber,
+              propertyAddress: `${order.propertyAddress}, ${order.propertyCity}, ${order.propertyState} ${order.propertyZip}`,
+              total: Number(order.total),
+              items: orderData.items,
+              requestedDate: orderData.requested_date,
+              installationNotes: orderData.installation_notes || undefined,
+            }),
+            sendAdminOrderNotification({
+              orderNumber: order.orderNumber,
+              customerName: user.fullName || user.name || '',
+              customerEmail: user.email,
+              customerPhone: user.phone || '',
+              propertyAddress: `${order.propertyAddress}, ${order.propertyCity}, ${order.propertyState} ${order.propertyZip}`,
+              total: Number(order.total),
+              items: orderData.items,
+              requestedDate: orderData.requested_date,
+              isExpedited: orderData.is_expedited,
+              propertyType: orderData.property_type,
+              postType: orderData.post_type || undefined,
+              installationNotes: orderData.installation_notes || undefined,
+              installationLocation: orderData.installation_location || undefined,
+              isGatedCommunity: orderData.is_gated_community,
+              gateCode: orderData.gate_code || undefined,
+              hasMarkerPlaced: orderData.has_marker_placed,
+              signOrientation: orderData.sign_orientation || undefined,
+              signOrientationOther: orderData.sign_orientation_other || undefined,
+              subtotal,
+              discount,
+              promoCode: orderData.promo_code || undefined,
+              fuelSurcharge: actualFuelSurcharge,
+              noPostSurcharge,
+              expediteFee,
+              tax,
+            }),
+          ])
+          console.log(`Emails sent successfully for order ${order.orderNumber}`)
+        } catch (emailError) {
+          console.error(`Error sending emails for order ${order.orderNumber}:`, emailError)
+          // Roll back the reservation so the webhook (or a manual replay) can retry.
+          await prisma.order.updateMany({
+            where: { id: order.id, confirmationEmailSentAt: { not: null } },
+            data: { confirmationEmailSentAt: null },
+          }).catch(() => {})
+        }
+      } else {
+        console.log(`Order ${order.orderNumber}: confirmation email already reserved (webhook beat us) — skipping send`)
       }
     } else {
       console.log(`Payment not immediately succeeded (status: ${orderPaymentStatus}), emails will be sent via webhook`)

@@ -21,6 +21,10 @@ interface OrderConfirmationEmailProps {
   total: number
   items: Array<{ description: string; quantity: number; total_price: number }>
   requestedDate?: string
+  // Free-text special instructions captured at checkout ("leave at side door",
+  // "agent will meet you at the property", etc.). Rendered prominently so the
+  // install crew sees it without digging into the dashboard.
+  installationNotes?: string
 }
 
 export async function sendOrderConfirmationEmail({
@@ -31,6 +35,7 @@ export async function sendOrderConfirmationEmail({
   total,
   items,
   requestedDate,
+  installationNotes,
 }: OrderConfirmationEmailProps) {
   const itemsHtml = items
     .map(
@@ -65,6 +70,13 @@ export async function sendOrderConfirmationEmail({
           <p style="margin: 8px 0 0; color: #666;"><strong>Property:</strong> ${propertyAddress}</p>
           ${requestedDate ? `<p style="margin: 8px 0 0; color: #666;"><strong>Requested Date:</strong> ${requestedDate}</p>` : ''}
         </div>
+
+        ${installationNotes ? `
+        <div style="background-color: #FFFBEB; border-left: 4px solid #F59E0B; border-radius: 4px; padding: 16px; margin: 24px 0;">
+          <p style="margin: 0 0 8px; color: #92400E; font-weight: bold;">Special Instructions</p>
+          <p style="margin: 0; color: #333; white-space: pre-wrap;">${escapeHtml(installationNotes)}</p>
+        </div>
+        ` : ''}
 
         <h3 style="color: #333; border-bottom: 2px solid #E84A7A; padding-bottom: 8px;">Order Details</h3>
         <table style="width: 100%; border-collapse: collapse;">

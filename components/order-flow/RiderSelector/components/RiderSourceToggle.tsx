@@ -48,7 +48,7 @@ export function RiderSourceToggle({
       >
         <MapPin className="w-4 h-4" />
         <div className="text-left">
-          <div>At Property</div>
+          <div>Pickup/At property</div>
           <div className="text-xs text-gray-500">${RIDER_PRICING.install} install</div>
         </div>
       </button>

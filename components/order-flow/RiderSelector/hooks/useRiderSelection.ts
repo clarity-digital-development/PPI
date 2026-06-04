@@ -30,6 +30,7 @@ interface UseRiderSelectionReturn {
   clearAll: () => void
   updateAcres: (riderId: string, value: number | null) => void
   toggleCategory: (category: RiderCategory) => void
+  addCustomTextRider: (name: string) => void
 
   // Computed
   totalPrice: number
@@ -139,6 +140,20 @@ export function useRiderSelection({
     setSourceState(newSource)
   }, [customerInventory, rentalPrice, installPrice])
 
+  // Add a free-text custom rider (pickup/at-property only). Each call mints a
+  // unique riderId so multiple custom names can coexist; the typed name lives
+  // in customValue and flows through to the order item description.
+  const addCustomTextRider = useCallback((name: string) => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    const id = `custom-text-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    const price = source === 'rental' ? rentalPrice : installPrice
+    setSelectedRiders(prev => [
+      ...prev,
+      { riderId: id, source, price, customValue: trimmed },
+    ])
+  }, [source, rentalPrice, installPrice])
+
   const toggleCategory = useCallback((category: RiderCategory) => {
     setExpandedCategories(prev => {
       const next = new Set(prev)
@@ -195,6 +210,7 @@ export function useRiderSelection({
     clearAll,
     updateAcres,
     toggleCategory,
+    addCustomTextRider,
     totalPrice,
     isRiderSelected,
     isRiderAvailable,
