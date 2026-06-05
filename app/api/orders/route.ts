@@ -466,6 +466,8 @@ export async function POST(request: NextRequest) {
               items: orderData.items,
               requestedDate: orderData.requested_date,
               installationNotes: orderData.installation_notes || undefined,
+              // Pref gate — checkout user is the recipient of the order confirmation.
+              recipientUserId: user.id,
             }),
             sendAdminOrderNotification({
               orderNumber: order.orderNumber,

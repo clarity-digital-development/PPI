@@ -117,6 +117,8 @@ export async function POST(request: NextRequest) {
                 })),
                 requestedDate: order.scheduledDate?.toISOString(),
                 installationNotes: order.propertyNotes || undefined,
+                // Pref gate — order recipient is the order's userId.
+                recipientUserId: order.userId,
               }),
               sendAdminOrderNotification({
                 orderNumber: order.orderNumber,
@@ -307,6 +309,8 @@ export async function POST(request: NextRequest) {
               refundedAt: now,
               refundedBy: 'admin',
               auto: false,
+              // Pref gate — refund email is treated as order-confirmation traffic.
+              recipientUserId: recipient.id,
             })
           } catch (err) {
             console.error(

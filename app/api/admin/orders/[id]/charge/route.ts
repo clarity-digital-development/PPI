@@ -95,6 +95,8 @@ export async function POST(
                   total_price: Number(item.totalPrice),
                 })),
                 installationNotes: order.propertyNotes || undefined,
+                // Pref gate — order recipient is the order's userId.
+                recipientUserId: order.userId,
               }),
               sendAdminOrderNotification({
                 orderNumber: order.orderNumber,

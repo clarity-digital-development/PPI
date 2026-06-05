@@ -1,4 +1,5 @@
 import { Resend } from 'resend'
+import { shouldSendEmail, logSuppressed, type UserEmailPrefs } from '@/lib/email-preferences'
 
 // Lazy initialization to avoid build-time errors
 let resend: Resend | null = null
@@ -25,6 +26,10 @@ interface OrderConfirmationEmailProps {
   // "agent will meet you at the property", etc.). Rendered prominently so the
   // install crew sees it without digging into the dashboard.
   installationNotes?: string
+  // Recipient userId — used to check emailOrderConfirmations pref before send.
+  recipientUserId?: string | null
+  // Optional inline user prefs to skip a DB roundtrip when caller already has them.
+  recipientPrefs?: UserEmailPrefs | null
 }
 
 export async function sendOrderConfirmationEmail({
@@ -36,7 +41,14 @@ export async function sendOrderConfirmationEmail({
   items,
   requestedDate,
   installationNotes,
+  recipientUserId,
+  recipientPrefs,
 }: OrderConfirmationEmailProps) {
+  // Pref gate — opt-out short-circuits before any Resend call.
+  if (!(await shouldSendEmail(recipientUserId, 'emailOrderConfirmations', recipientPrefs))) {
+    logSuppressed('sendOrderConfirmationEmail', recipientUserId, 'emailOrderConfirmations')
+    return { suppressed: true as const }
+  }
   const itemsHtml = items
     .map(
       (item) =>
@@ -432,6 +444,10 @@ interface ServiceRequestConfirmationEmailProps {
   propertyAddress: string
   // On-site lockboxes — rendered when SR is tied to an existing installation.
   existingLockboxes?: ExistingLockboxSummary[]
+  // Recipient userId — used to check emailServiceRequests pref before send.
+  recipientUserId?: string | null
+  // Optional inline prefs to skip a DB roundtrip when caller already has them.
+  recipientPrefs?: UserEmailPrefs | null
 }
 
 // Friendly label for request type — matches customer-facing copy elsewhere.
@@ -465,7 +481,14 @@ export async function sendServiceRequestConfirmationEmail({
   requestedDate,
   propertyAddress,
   existingLockboxes,
+  recipientUserId,
+  recipientPrefs,
 }: ServiceRequestConfirmationEmailProps) {
+  // Pref gate — opt-out short-circuits before any Resend call.
+  if (!(await shouldSendEmail(recipientUserId, 'emailServiceRequests', recipientPrefs))) {
+    logSuppressed('sendServiceRequestConfirmationEmail', recipientUserId, 'emailServiceRequests')
+    return { suppressed: true as const }
+  }
   const friendlyType = labelRequestType(requestType)
 
   const html = `
@@ -534,6 +557,8 @@ export async function sendServiceRequestCompletedEmail({
   requestType,
   address,
   existingLockboxes,
+  recipientUserId,
+  recipientPrefs,
 }: {
   customerEmail: string
   customerName: string
@@ -541,7 +566,16 @@ export async function sendServiceRequestCompletedEmail({
   address: string
   // On-site lockboxes — rendered when SR is tied to an existing installation.
   existingLockboxes?: ExistingLockboxSummary[]
+  // Recipient userId — used to check emailServiceRequests pref before send.
+  recipientUserId?: string | null
+  // Optional inline prefs to skip a DB roundtrip when caller already has them.
+  recipientPrefs?: UserEmailPrefs | null
 }) {
+  // Pref gate — opt-out short-circuits before any Resend call.
+  if (!(await shouldSendEmail(recipientUserId, 'emailServiceRequests', recipientPrefs))) {
+    logSuppressed('sendServiceRequestCompletedEmail', recipientUserId, 'emailServiceRequests')
+    return { suppressed: true as const }
+  }
   const friendlyType = requestType === 'removal' ? 'Removal' : requestType.charAt(0).toUpperCase() + requestType.slice(1)
   // Plain-text trailer mirrors the HTML block — kept short, only when present.
   const lockboxTrailer = existingLockboxes && existingLockboxes.length > 0
@@ -579,6 +613,8 @@ export async function sendServiceRequestStatusEmail({
   propertyAddress,
   notes,
   existingLockboxes,
+  recipientUserId,
+  recipientPrefs,
 }: {
   customerName: string
   customerEmail: string
@@ -590,7 +626,16 @@ export async function sendServiceRequestStatusEmail({
   notes?: string | null
   // On-site lockboxes — rendered when SR is tied to an existing installation.
   existingLockboxes?: ExistingLockboxSummary[]
+  // Recipient userId — used to check emailServiceRequests pref before send.
+  recipientUserId?: string | null
+  // Optional inline prefs to skip a DB roundtrip when caller already has them.
+  recipientPrefs?: UserEmailPrefs | null
 }) {
+  // Pref gate — opt-out short-circuits before any Resend call.
+  if (!(await shouldSendEmail(recipientUserId, 'emailServiceRequests', recipientPrefs))) {
+    logSuppressed('sendServiceRequestStatusEmail', recipientUserId, 'emailServiceRequests')
+    return { suppressed: true as const }
+  }
   const friendlyType = requestType === 'removal' ? 'Removal' : requestType.charAt(0).toUpperCase() + requestType.slice(1)
   const statusLabels: Record<typeof newStatus, string> = {
     acknowledged: 'Acknowledged',
@@ -682,8 +727,17 @@ export async function sendServiceRequestStatusEmail({
 export async function sendInstallationCompleteEmail(
   customerEmail: string,
   customerName: string,
-  propertyAddress: string
+  propertyAddress: string,
+  // Recipient userId — used to check emailOrderConfirmations pref before send.
+  recipientUserId?: string | null,
+  // Optional inline prefs to skip a DB roundtrip when caller already has them.
+  recipientPrefs?: UserEmailPrefs | null,
 ) {
+  // Pref gate — opt-out short-circuits before any Resend call.
+  if (!(await shouldSendEmail(recipientUserId, 'emailOrderConfirmations', recipientPrefs))) {
+    logSuppressed('sendInstallationCompleteEmail', recipientUserId, 'emailOrderConfirmations')
+    return { suppressed: true as const }
+  }
   const html = `
     <!DOCTYPE html>
     <html>
@@ -734,9 +788,19 @@ export interface RefundConfirmationEmailProps {
   refundedBy: 'customer' | 'admin'
   /** True if processed automatically (under-threshold) — surfaces in body copy. */
   auto: boolean
+  /** Recipient userId — used to check emailOrderConfirmations pref before send. */
+  recipientUserId?: string | null
+  /** Optional inline prefs to skip a DB roundtrip when caller already has them. */
+  recipientPrefs?: UserEmailPrefs | null
 }
 
 export async function sendRefundConfirmationEmail(props: RefundConfirmationEmailProps) {
+  // Pref gate — refunds are bucketed under emailOrderConfirmations since
+  // they're the receipt for an order being undone. Opt-out short-circuits.
+  if (!(await shouldSendEmail(props.recipientUserId, 'emailOrderConfirmations', props.recipientPrefs))) {
+    logSuppressed('sendRefundConfirmationEmail', props.recipientUserId, 'emailOrderConfirmations')
+    return { suppressed: true as const }
+  }
   const formattedDate = props.refundedAt.toLocaleDateString('en-US', {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
   })

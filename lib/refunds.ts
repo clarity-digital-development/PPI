@@ -207,6 +207,8 @@ export async function refundOrder(
           refundedAt: new Date(),
           refundedBy: options.reason === 'customer_cancel' ? 'customer' : 'admin',
           auto: options.auto,
+          // Pref gate — refund email is treated as order-confirmation traffic.
+          recipientUserId: recipient.id,
         })
         emailed = true
       } catch (err) {

@@ -182,6 +182,8 @@ export async function POST(request: NextRequest) {
           requestedDate: requested_date || undefined,
           propertyAddress,
           existingLockboxes: existingLockboxes.length ? existingLockboxes : undefined,
+          // Pref gate — SR confirmations are emailServiceRequests traffic.
+          recipientUserId: user.id,
         })
       }
     } catch (emailError) {

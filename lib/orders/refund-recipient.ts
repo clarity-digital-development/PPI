@@ -1,6 +1,9 @@
 import { prisma } from '@/lib/prisma'
 
 export interface RefundRecipient {
+  // Recipient userId — surfaced so callers can pass it to the email helper
+  // for per-user preference gating (emailOrderConfirmations).
+  id: string
   email: string
   fullName: string
   role: 'broker' | 'self' | 'customer'
@@ -39,10 +42,11 @@ export async function resolveRefundRecipient(
   if (order.placedByUserId) {
     const placer = await prisma.user.findUnique({
       where: { id: order.placedByUserId },
-      select: { email: true, fullName: true, name: true },
+      select: { id: true, email: true, fullName: true, name: true },
     })
     if (placer) {
       return {
+        id: placer.id,
         email: placer.email,
         fullName: placer.fullName || placer.name || placer.email,
         role: 'broker',
@@ -53,6 +57,7 @@ export async function resolveRefundRecipient(
   // (2) order.user is themselves a team_admin.
   if (order.user.role === 'team_admin') {
     return {
+      id: order.user.id,
       email: order.user.email,
       fullName: order.user.fullName || order.user.name || order.user.email,
       role: 'self',
@@ -63,11 +68,12 @@ export async function resolveRefundRecipient(
   if (order.user.teamId) {
     const teamAdmin = await prisma.user.findFirst({
       where: { teamId: order.user.teamId, role: 'team_admin' },
-      select: { email: true, fullName: true, name: true },
+      select: { id: true, email: true, fullName: true, name: true },
       orderBy: { createdAt: 'asc' },
     })
     if (teamAdmin) {
       return {
+        id: teamAdmin.id,
         email: teamAdmin.email,
         fullName: teamAdmin.fullName || teamAdmin.name || teamAdmin.email,
         role: 'broker',
@@ -77,6 +83,7 @@ export async function resolveRefundRecipient(
 
   // (4) regular customer, no team association → email them directly.
   return {
+    id: order.user.id,
     email: order.user.email,
     fullName: order.user.fullName || order.user.name || order.user.email,
     role: 'customer',

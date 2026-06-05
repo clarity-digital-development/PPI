@@ -277,12 +277,13 @@ export async function PUT(
           }
         }
 
-        // Send completion email to customer
+        // Send completion email to customer — gated on emailOrderConfirmations pref.
         try {
           await sendInstallationCompleteEmail(
             order.user.email,
             order.user.fullName || order.user.name || 'Customer',
-            `${order.propertyAddress}, ${order.propertyCity}, ${order.propertyState} ${order.propertyZip}`
+            `${order.propertyAddress}, ${order.propertyCity}, ${order.propertyState} ${order.propertyZip}`,
+            order.userId,
           )
         } catch (emailError) {
           console.error('Error sending completion email:', emailError)

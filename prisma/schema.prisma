@@ -85,6 +85,12 @@ model User {
   // on behalf of their agents). Both team_admins and agents have a teamId.
   teamId          String?   @map("team_id")
 
+  // Notification preferences — defaults preserve current send-everything behavior except marketing
+  emailOrderConfirmations    Boolean   @default(true)  @map("email_order_confirmations")
+  emailServiceRequests       Boolean   @default(true)  @map("email_service_requests")
+  emailMarketing             Boolean   @default(false) @map("email_marketing")
+  notificationPrefsUpdatedAt DateTime? @map("notification_prefs_updated_at")
+
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
 
@@ -114,6 +120,7 @@ model User {
   ordersPlacedFor Order[]   @relation("OrdersPlacedBy")
   ordersCancelled Order[]   @relation("OrderCancelledBy")
   auditLogs       AuditLog[] @relation("AuditActor")
+  preferenceChanges UserPreferenceChange[]
   heldInventoryAsOwner      InventoryHold[] @relation("InventoryHoldOwner")
   heldInventoryAsActor      InventoryHold[] @relation("InventoryHoldActor")
   heldInventoryOnBehalfOfMe InventoryHold[] @relation("InventoryHoldOnBehalfOf")
@@ -788,4 +795,20 @@ model AuditLog {
   @@index([action])
   @@index([createdAt])
   @@map("audit_logs")
+}
+
+// Per-user notification-preference change log — answers "when did Peggy opt out"
+model UserPreferenceChange {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  changedBy   String   @map("changed_by") // actor userId (usually == userId; admin override possible)
+  changes     Json     // { emailOrderConfirmations: { from: true, to: false }, ... }
+  ipAddress   String?  @map("ip_address")
+  userAgent   String?  @map("user_agent")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("user_preference_changes")
 }

@@ -490,6 +490,8 @@ export async function POST(request: NextRequest) {
               })),
               requestedDate: full.scheduledDate?.toISOString(),
               installationNotes: full.propertyNotes || undefined,
+              // Pref gate — order recipient is the order's userId.
+              recipientUserId: full.userId,
             }),
             sendAdminOrderNotification({
               orderNumber: full.orderNumber,

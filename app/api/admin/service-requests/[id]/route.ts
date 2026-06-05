@@ -217,6 +217,8 @@ export async function PUT(
               requestType: updated.type,
               address: fullAddress,
               existingLockboxes: existingLockboxes.length ? existingLockboxes : undefined,
+              // Pref gate — SR completion is emailServiceRequests traffic.
+              recipientUserId: updated.userId,
             }).catch(err => console.error('completion email failed:', err))
           } else if (status === 'acknowledged' || status === 'scheduled' || status === 'in_progress' || status === 'cancelled') {
             await sendServiceRequestStatusEmail({
@@ -229,6 +231,8 @@ export async function PUT(
               propertyAddress: fullAddress,
               notes: updated.adminNotes,
               existingLockboxes: existingLockboxes.length ? existingLockboxes : undefined,
+              // Pref gate — SR status emails are emailServiceRequests traffic.
+              recipientUserId: updated.userId,
             }).catch(err => console.error(`${status} email failed:`, err))
           }
         }
