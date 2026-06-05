@@ -130,9 +130,16 @@ export async function createPaymentIntent(
     params.return_url = `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/order-confirmation`
   }
 
-  const requestOpts: Stripe.RequestOptions = {}
-  if (opts?.idempotencyKey) requestOpts.idempotencyKey = opts.idempotencyKey
-  return getStripe().paymentIntents.create(params, requestOpts)
+  // CRITICAL: do NOT pass an empty options object as the 2nd arg — the
+  // Stripe Node SDK rejects it with "Unknown arguments ([object Object])".
+  // This was a P0 outage (regular-customer single-order POST broke for
+  // every customer for ~18h after round-5 shipped) because the batch route
+  // always passes an idempotencyKey (object non-empty, fine) while the
+  // single-order /api/orders POST passes no opts (object empty, throws).
+  if (opts?.idempotencyKey) {
+    return getStripe().paymentIntents.create(params, { idempotencyKey: opts.idempotencyKey })
+  }
+  return getStripe().paymentIntents.create(params)
 }
 
 export async function capturePaymentIntent(paymentIntentId: string) {

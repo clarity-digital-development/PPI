@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { getCurrentUser, generateOrderNumber, canActOnBehalfOf } from '@/lib/auth-utils'
 import { createOrderSchema } from '@/lib/validations'
 import { validateScheduling } from '@/lib/scheduling'
+import { audit, AuditAction } from '@/lib/audit'
 import { createPaymentIntent, createCustomer, calculateTax, getStripeErrorMessage } from '@/lib/stripe/server'
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 
@@ -271,6 +272,24 @@ export async function POST(request: NextRequest) {
       } catch (paymentError) {
         console.error('Payment intent creation failed:', paymentError)
         const friendlyMessage = getStripeErrorMessage(paymentError)
+        // Forensic trail — without this row, debugging a customer's failed
+        // checkout requires logs we may not retain. This was the gap that
+        // hid the round-5 createPaymentIntent regression for ~18h.
+        try {
+          await audit({
+            actor: { id: actor.id, email: actor.email, role: actor.role },
+            action: AuditAction.CartCheckoutFail,
+            targetType: 'order',
+            targetId: null,
+            metadata: {
+              stage: 'single_pi_create',
+              total,
+              payment_method_id: orderData.payment_method_id ?? null,
+              stripe_message: friendlyMessage ?? (paymentError instanceof Error ? paymentError.message : String(paymentError)),
+            },
+            request,
+          })
+        } catch {}
         return NextResponse.json(
           { error: friendlyMessage || 'Payment failed. Please check your card details and try again.' },
           { status: 400 }
