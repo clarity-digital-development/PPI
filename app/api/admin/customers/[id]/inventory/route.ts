@@ -26,7 +26,8 @@ export async function POST(
       return NextResponse.json({ error: 'Type is required' }, { status: 400 })
     }
 
-    const quantity = Math.max(1, parseInt(data.quantity) || 1)
+    // Cap fan-out at 50 per request to prevent runaway createMany.
+    const quantity = Math.min(50, Math.max(1, parseInt(data.quantity) || 1))
     // Optional: if the admin is adding inventory for a team_admin customer,
     // they can pre-assign each item to a specific agent on the team.
     // Empty string from the form means "unassigned" — coerce to null.

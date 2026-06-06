@@ -105,6 +105,18 @@ export default function CustomerDetailPage() {
   // Filter-by-agent: '' = all agents, 'unassigned' = team pool, else a memberId.
   const [agentFilter, setAgentFilter] = useState<string>('')
 
+  // Opens Add Inventory modal — pre-seeds assignee from agentFilter when a specific agent is selected.
+  function openAddModal(type: 'sign' | 'rider' | 'lockbox' | 'brochure_box' | 'other') {
+    const preassign = agentFilter && agentFilter !== 'unassigned' ? agentFilter : ''
+    setFormData({
+      ...formData,
+      assigned_to_member_id: preassign,
+      ...(type === 'other' ? { description: '' } : {}),
+    })
+    setAddType(type)
+    setShowAddModal(true)
+  }
+
   useEffect(() => {
     fetchCustomer()
   }, [id])
@@ -224,6 +236,8 @@ export default function CustomerDetailPage() {
       body.quantity = formData.quantity
     } else if (addType === 'other') {
       body.description = formData.description
+      // Forward quantity so the API fans out N rows (Other has no qty column).
+      body.quantity = formData.quantity
     }
     // Only forward the agent assignment if the customer actually has a
     // team — non-team customers don't have members to assign to. 'other'
@@ -620,19 +634,19 @@ export default function CustomerDetailPage() {
               <CardContent className="p-4">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm font-medium text-gray-700 mr-2">Add inventory:</span>
-                  <Button size="sm" variant="outline" onClick={() => { setAddType('sign'); setShowAddModal(true) }}>
+                  <Button size="sm" variant="outline" onClick={() => openAddModal('sign')}>
                     <Plus className="w-4 h-4 mr-1" /> Sign
                   </Button>
-                  <Button size="sm" variant="outline" onClick={() => { setAddType('rider'); setShowAddModal(true) }}>
+                  <Button size="sm" variant="outline" onClick={() => openAddModal('rider')}>
                     <Plus className="w-4 h-4 mr-1" /> Rider
                   </Button>
-                  <Button size="sm" variant="outline" onClick={() => { setAddType('lockbox'); setShowAddModal(true) }}>
+                  <Button size="sm" variant="outline" onClick={() => openAddModal('lockbox')}>
                     <Plus className="w-4 h-4 mr-1" /> Lockbox
                   </Button>
-                  <Button size="sm" variant="outline" onClick={() => { setAddType('brochure_box'); setShowAddModal(true) }}>
+                  <Button size="sm" variant="outline" onClick={() => openAddModal('brochure_box')}>
                     <Plus className="w-4 h-4 mr-1" /> Brochure Box
                   </Button>
-                  <Button size="sm" variant="outline" onClick={() => { setAddType('other'); setFormData({ ...formData, description: '' }); setShowAddModal(true) }}>
+                  <Button size="sm" variant="outline" onClick={() => openAddModal('other')}>
                     <Plus className="w-4 h-4 mr-1" /> Other
                   </Button>
                 </div>
@@ -803,10 +817,7 @@ export default function CustomerDetailPage() {
               </div>
               <Button
                 size="sm"
-                onClick={() => {
-                  setAddType('sign')
-                  setShowAddModal(true)
-                }}
+                onClick={() => openAddModal('sign')}
               >
                 <Plus className="w-4 h-4 mr-1" />
                 Add
@@ -850,10 +861,7 @@ export default function CustomerDetailPage() {
               </div>
               <Button
                 size="sm"
-                onClick={() => {
-                  setAddType('rider')
-                  setShowAddModal(true)
-                }}
+                onClick={() => openAddModal('rider')}
               >
                 <Plus className="w-4 h-4 mr-1" />
                 Add
@@ -909,10 +917,7 @@ export default function CustomerDetailPage() {
               </div>
               <Button
                 size="sm"
-                onClick={() => {
-                  setAddType('lockbox')
-                  setShowAddModal(true)
-                }}
+                onClick={() => openAddModal('lockbox')}
               >
                 <Plus className="w-4 h-4 mr-1" />
                 Add
@@ -956,10 +961,7 @@ export default function CustomerDetailPage() {
               </div>
               <Button
                 size="sm"
-                onClick={() => {
-                  setAddType('brochure_box')
-                  setShowAddModal(true)
-                }}
+                onClick={() => openAddModal('brochure_box')}
               >
                 <Plus className="w-4 h-4 mr-1" />
                 Add
@@ -984,11 +986,7 @@ export default function CustomerDetailPage() {
               </div>
               <Button
                 size="sm"
-                onClick={() => {
-                  setAddType('other')
-                  setFormData({ ...formData, description: '' })
-                  setShowAddModal(true)
-                }}
+                onClick={() => openAddModal('other')}
               >
                 <Plus className="w-4 h-4 mr-1" />
                 Add
