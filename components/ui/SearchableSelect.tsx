@@ -1,8 +1,19 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { ChevronDown, Search } from 'lucide-react'
 import { cn } from '@/lib/utils'
+
+// Estimated popover height (search input + ~6 rows) used for flip-up decision.
+const POPOVER_ESTIMATE_PX = 320
+
+interface PopoverPos {
+  left: number
+  top: number
+  width: number
+  placement: 'below' | 'above'
+}
 
 export interface SearchableSelectOption {
   value: string
@@ -37,7 +48,10 @@ const SearchableSelect = ({
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [highlight, setHighlight] = useState(0)
+  const [pos, setPos] = useState<PopoverPos | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const popoverRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLUListElement>(null)
 
@@ -54,17 +68,59 @@ const SearchableSelect = ({
     setHighlight(0)
   }, [query, open])
 
-  // Click-outside closes the popover.
+  // Click-outside closes — must check BOTH trigger and portaled popover (popover is no longer a DOM child of containerRef).
   useEffect(() => {
     if (!open) return
     const onMouseDown = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+      const target = e.target as Node
+      const inTrigger = containerRef.current?.contains(target)
+      const inPopover = popoverRef.current?.contains(target)
+      if (!inTrigger && !inPopover) {
         setOpen(false)
         setQuery('')
       }
     }
     document.addEventListener('mousedown', onMouseDown)
     return () => document.removeEventListener('mousedown', onMouseDown)
+  }, [open])
+
+  // Compute popover position from trigger rect; flip above when bottom space is tight.
+  const computePos = () => {
+    const trigger = triggerRef.current
+    if (!trigger) return
+    const r = trigger.getBoundingClientRect()
+    const spaceBelow = window.innerHeight - r.bottom
+    const placement: 'below' | 'above' =
+      spaceBelow < POPOVER_ESTIMATE_PX && r.top > spaceBelow ? 'above' : 'below'
+    setPos({
+      left: r.left,
+      // 4px gap mirrors the previous mt-1; for 'above' we anchor top to trigger top and translateY(-100%) in style.
+      top: placement === 'below' ? r.bottom + 4 : r.top - 4,
+      width: r.width,
+      placement,
+    })
+  }
+
+  // Position synchronously before paint so the portal doesn't flash at (0,0).
+  useLayoutEffect(() => {
+    if (open) computePos()
+    else setPos(null)
+  }, [open])
+
+  // Close on scroll/resize so the floating popover never detaches from its trigger.
+  useEffect(() => {
+    if (!open) return
+    const close = () => {
+      setOpen(false)
+      setQuery('')
+    }
+    // Capture-phase scroll catches scrolls in any ancestor (modal body, page, etc.).
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    return () => {
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('resize', close)
+    }
   }, [open])
 
   // Focus the search input when the popover opens.
@@ -116,6 +172,7 @@ const SearchableSelect = ({
       )}
       <div ref={containerRef} className="relative" onKeyDown={onKeyDown}>
         <button
+          ref={triggerRef}
           type="button"
           disabled={disabled}
           aria-label={ariaLabel}
@@ -138,56 +195,69 @@ const SearchableSelect = ({
           <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500 pointer-events-none" />
         </button>
 
-        {open && (
-          <div className="absolute z-50 mt-1 w-full min-w-[200px] rounded-lg border border-gray-200 bg-white shadow-lg">
-            <div className="relative border-b border-gray-100 p-2">
-              <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-              <input
-                ref={inputRef}
-                type="text"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder={searchPlaceholder}
-                className="block w-full rounded-md border border-gray-200 bg-white pl-9 pr-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-pink-200 focus:border-pink-500"
-              />
-            </div>
-            <ul
-              ref={listRef}
-              role="listbox"
-              className="max-h-60 overflow-y-auto py-1"
+        {open && pos && typeof document !== 'undefined' &&
+          createPortal(
+            <div
+              ref={popoverRef}
+              onKeyDown={onKeyDown}
+              // Portaled to body so no ancestor overflow can clip; z-[60] sits above z-50 modals.
+              className="fixed z-[60] min-w-[200px] rounded-lg border border-gray-200 bg-white shadow-lg"
+              style={{
+                left: pos.left,
+                top: pos.top,
+                width: pos.width,
+                transform: pos.placement === 'above' ? 'translateY(-100%)' : undefined,
+              }}
             >
-              {filtered.length === 0 ? (
-                <li className="px-3 py-2 text-sm text-gray-500 italic">{emptyText}</li>
-              ) : (
-                filtered.map((opt, idx) => {
-                  const isSelected = opt.value === value
-                  const isHighlight = idx === highlight
-                  return (
-                    <li
-                      key={opt.value}
-                      data-idx={idx}
-                      role="option"
-                      aria-selected={isSelected}
-                      onMouseEnter={() => setHighlight(idx)}
-                      onMouseDown={(e) => {
-                        // Use mousedown so the click happens before the input's blur/click-outside.
-                        e.preventDefault()
-                        pick(opt.value)
-                      }}
-                      className={cn(
-                        'cursor-pointer px-3 py-2 text-sm',
-                        isHighlight ? 'bg-pink-50 text-pink-700' : 'text-gray-700',
-                        isSelected && 'font-medium',
-                      )}
-                    >
-                      {opt.label}
-                    </li>
-                  )
-                })
-              )}
-            </ul>
-          </div>
-        )}
+              <div className="relative border-b border-gray-100 p-2">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={searchPlaceholder}
+                  className="block w-full rounded-md border border-gray-200 bg-white pl-9 pr-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-pink-200 focus:border-pink-500"
+                />
+              </div>
+              <ul
+                ref={listRef}
+                role="listbox"
+                className="max-h-60 overflow-y-auto py-1"
+              >
+                {filtered.length === 0 ? (
+                  <li className="px-3 py-2 text-sm text-gray-500 italic">{emptyText}</li>
+                ) : (
+                  filtered.map((opt, idx) => {
+                    const isSelected = opt.value === value
+                    const isHighlight = idx === highlight
+                    return (
+                      <li
+                        key={opt.value}
+                        data-idx={idx}
+                        role="option"
+                        aria-selected={isSelected}
+                        onMouseEnter={() => setHighlight(idx)}
+                        onMouseDown={(e) => {
+                          // Use mousedown so the click happens before the input's blur/click-outside.
+                          e.preventDefault()
+                          pick(opt.value)
+                        }}
+                        className={cn(
+                          'cursor-pointer px-3 py-2 text-sm',
+                          isHighlight ? 'bg-pink-50 text-pink-700' : 'text-gray-700',
+                          isSelected && 'font-medium',
+                        )}
+                      >
+                        {opt.label}
+                      </li>
+                    )
+                  })
+                )}
+              </ul>
+            </div>,
+            document.body,
+          )}
       </div>
     </div>
   )
