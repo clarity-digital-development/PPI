@@ -856,3 +856,146 @@ function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')
 }
+
+// ─────────────────────── Post-rental billing emails ───────────────────────
+
+export interface PostRentalChargeReceiptProps {
+  recipientUserId: string
+  recipientName: string
+  recipientEmail: string
+  orderNumber: string
+  propertyAddress: string
+  amountCents: number
+  chargeType: 'six_month' | 'nine_month' | 'monthly'
+  periodStart: Date
+  periodEnd: Date
+  chargedAt: Date
+  // Optional last4 of the card charged — surfaces in the body if provided.
+  cardLast4?: string | null
+  // Optional inline prefs to skip a DB roundtrip when caller has them.
+  recipientPrefs?: UserEmailPrefs | null
+}
+
+function chargeTypeLabel(t: 'six_month' | 'nine_month' | 'monthly'): string {
+  if (t === 'six_month') return '6-month anchor (covers months 7-9)'
+  if (t === 'nine_month') return '9-month anchor (covers months 10-12)'
+  return 'monthly post rental'
+}
+
+function formatDateLong(d: Date): string {
+  return d.toLocaleDateString('en-US', {
+    year: 'numeric', month: 'long', day: 'numeric',
+  })
+}
+
+/**
+ * Receipt sent to the customer after a successful post-rental charge.
+ * Gated by emailOrderConfirmations — same bucket as the order receipt.
+ */
+export async function sendPostRentalChargeReceipt(
+  props: PostRentalChargeReceiptProps
+) {
+  if (!(await shouldSendEmail(props.recipientUserId, 'emailOrderConfirmations', props.recipientPrefs))) {
+    logSuppressed('sendPostRentalChargeReceipt', props.recipientUserId, 'emailOrderConfirmations')
+    return { suppressed: true as const }
+  }
+
+  const amount = (props.amountCents / 100).toFixed(2)
+  const periodStartStr = formatDateLong(props.periodStart)
+  const periodEndStr = formatDateLong(props.periodEnd)
+  const chargedAtStr = formatDateLong(props.chargedAt)
+  const typeLabel = chargeTypeLabel(props.chargeType)
+
+  const html = `
+    <div style="background:#FFF0F3;padding:32px 16px;font-family:'Poppins',Arial,sans-serif">
+      <div style="max-width:600px;margin:0 auto;background:white;border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,0.06);overflow:hidden">
+        <div style="background:#E84A7A;padding:24px;text-align:center">
+          <h1 style="margin:0;color:white;font-size:24px">Post Rental Charge</h1>
+        </div>
+        <div style="padding:32px 24px;color:#333;line-height:1.6">
+          <p>Hi ${escapeHtml(props.recipientName)},</p>
+          <p>We just processed a scheduled post rental charge on the card you have on file. This is part of the standard rental schedule for the post installed at your property.</p>
+          <div style="background:#FFF0F3;padding:16px;border-radius:8px;margin:24px 0">
+            <p style="margin:0 0 8px"><strong>Order:</strong> ${escapeHtml(props.orderNumber)}</p>
+            <p style="margin:0 0 8px"><strong>Property:</strong> ${escapeHtml(props.propertyAddress)}</p>
+            <p style="margin:0 0 8px"><strong>Amount:</strong> $${amount}</p>
+            <p style="margin:0 0 8px"><strong>Covers:</strong> ${escapeHtml(periodStartStr)} – ${escapeHtml(periodEndStr)}</p>
+            <p style="margin:0 0 8px"><strong>Charge type:</strong> ${escapeHtml(typeLabel)}</p>
+            ${props.cardLast4 ? `<p style="margin:0 0 8px"><strong>Card:</strong> ending in ${escapeHtml(props.cardLast4)}</p>` : ''}
+            <p style="margin:0"><strong>Charged on:</strong> ${escapeHtml(chargedAtStr)}</p>
+          </div>
+          <p style="color:#666;font-size:14px">Your initial installation included the first 6 months of post rent. After that, we charge $18 every 3 months for months 7-12, then $6/month thereafter — until pickup is scheduled. Pickup ends the rental clock automatically.</p>
+          <p>Questions? Contact us at <a href="mailto:support@pinkposts.com" style="color:#E84A7A">support@pinkposts.com</a> or 859-395-8188.</p>
+        </div>
+        <div style="padding:16px;text-align:center;color:#999;font-size:12px;border-top:1px solid #eee">
+          Pink Posts Installations
+        </div>
+      </div>
+    </div>
+  `
+
+  return getResend().emails.send({
+    from: 'Pink Posts Installations <orders@pinkposts.com>',
+    to: props.recipientEmail,
+    subject: `Post rental charge — Order ${props.orderNumber}`,
+    html,
+  })
+}
+
+export interface AdminChargeFailureAlertProps {
+  orderNumber: string
+  orderId: string
+  customerEmail: string
+  amountCents: number
+  failureCode: string
+  failureMessage: string
+  attemptCount: number
+  // True when attemptCount >= 7 — surfaces an escalation prefix in the subject.
+  escalate: boolean
+}
+
+/**
+ * Admin alert when a post-rental charge fails. Caller decides whether to
+ * send (we skip silent-card-missing in the cron); the helper itself always
+ * sends when invoked. Plain text format to ADMIN_EMAIL.
+ */
+export async function sendAdminChargeFailureAlert(
+  props: AdminChargeFailureAlertProps
+) {
+  const adminEmail = process.env.ADMIN_EMAIL
+  if (!adminEmail) {
+    console.error('ADMIN_EMAIL not configured - skipping post-rental failure alert')
+    return null
+  }
+
+  const amount = (props.amountCents / 100).toFixed(2)
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pinkpostinstallations.com'
+  const link = `${appUrl}/admin/orders/${props.orderId}`
+  const subjectPrefix = props.escalate ? '[ESCALATION 7+ days] ' : ''
+
+  const text = `${subjectPrefix}Post rental charge failed.
+
+Order: ${props.orderNumber}
+Customer: ${props.customerEmail}
+Amount: $${amount}
+Attempt count: ${props.attemptCount}
+
+Failure code: ${props.failureCode}
+Failure message: ${props.failureMessage}
+
+View order: ${link}
+
+This alert was generated by the post-rental billing cron. The charge has been recorded as failed in the order's rental history and is visible in the admin Rental card. Click "Retry" on the failed row to re-queue it on the next cron pass.`
+
+  try {
+    return await getResend().emails.send({
+      from: 'Pink Posts Installations <orders@pinkposts.com>',
+      to: adminEmail,
+      subject: `${subjectPrefix}[PPI] Post rental charge failed — ${props.orderNumber}`,
+      text,
+    })
+  } catch (err) {
+    console.error('Failed to send post-rental admin alert:', err)
+    return null
+  }
+}

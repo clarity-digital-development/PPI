@@ -144,13 +144,23 @@ export async function PUT(
     // installation, mark that installation as removed. Unlisted-address
     // requests have no installationId, so we skip.
     if (status === 'completed' && serviceRequest.type === 'removal' && serviceRequest.installationId) {
-      await prisma.installation.update({
+      const removedInstallation = await prisma.installation.update({
         where: { id: serviceRequest.installationId },
         data: {
           status: 'removed',
           removedAt: new Date(),
         },
+        select: { orderId: true },
       })
+      // Stop the rental clock at the source — defense-in-depth in the cron's
+      // eligibility predicate also catches this, but stamping it here avoids
+      // any cron lag window between pickup completion and the next daily run.
+      if (removedInstallation.orderId) {
+        await prisma.order.update({
+          where: { id: removedInstallation.orderId },
+          data: { postRentalStoppedAt: new Date() },
+        })
+      }
     }
 
     // Create notification for status change

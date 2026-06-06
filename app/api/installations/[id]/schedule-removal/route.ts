@@ -46,7 +46,17 @@ export async function POST(
         status: 'removal_scheduled',
         removalDate: new Date(removal_date + 'T12:00:00Z'),
       },
+      select: { id: true, orderId: true, status: true, removalDate: true },
     })
+    // Stop the rental clock at scheduling time per Ryan's policy ("stops when
+    // pickup is scheduled"). Defense-in-depth in cron eligibility also covers
+    // this; stamping here avoids any cron lag.
+    if (updated.orderId) {
+      await prisma.order.update({
+        where: { id: updated.orderId },
+        data: { postRentalStoppedAt: new Date() },
+      })
+    }
 
     return NextResponse.json({ installation: updated })
   } catch (error) {

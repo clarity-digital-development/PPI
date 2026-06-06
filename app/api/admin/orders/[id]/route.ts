@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { validateScheduling } from '@/lib/scheduling'
 import { audit, AuditAction } from '@/lib/audit'
+import { computePostRentalView } from '@/lib/post-rental/admin-view'
 
 export async function GET(
   request: NextRequest,
@@ -33,7 +34,21 @@ export async function GET(
             email: true,
             phone: true,
             stripeCustomerId: true,
+            role: true,
+            isServiceAreaExempt: true,
           },
+        },
+        installation: {
+          select: {
+            id: true,
+            installedAt: true,
+            status: true,
+            removalDate: true,
+            removedAt: true,
+          },
+        },
+        postRentalCharges: {
+          orderBy: { periodStart: 'desc' },
         },
       },
     })
@@ -42,7 +57,16 @@ export async function GET(
       return NextResponse.json({ error: 'Order not found' }, { status: 404 })
     }
 
-    return NextResponse.json({ order })
+    // Computed admin-view block: status badge + next-charge preview + history.
+    const postRental = computePostRentalView({
+      order,
+      installation: order.installation,
+      user: order.user,
+      charges: order.postRentalCharges,
+      now: new Date(),
+    })
+
+    return NextResponse.json({ order, postRental })
   } catch (error) {
     console.error('Error fetching order:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

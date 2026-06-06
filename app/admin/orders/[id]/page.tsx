@@ -17,8 +17,39 @@ import {
   AlertCircle,
   DollarSign,
   RotateCcw,
+  Clock,
+  ExternalLink,
 } from 'lucide-react'
 import { Button, Badge, Card, CardContent, Modal } from '@/components/ui'
+
+interface PostRentalChargeRow {
+  id: string
+  chargeType: string
+  amountCents: number
+  periodStart: string
+  periodEnd: string
+  status: string
+  attemptedAt: string | null
+  succeededAt: string | null
+  failureCode: string | null
+  failureMessage: string | null
+  stripePaymentIntentId: string | null
+  attemptCount: number
+}
+
+interface PostRentalView {
+  status: 'active' | 'grandfathered' | 'stopped' | 'exempt' | 'never_eligible'
+  reason?: string
+  installedAt: string | null
+  stoppedAt: string | null
+  override: boolean
+  nextCharge: {
+    dueDate: string
+    chargeType: 'six_month' | 'nine_month' | 'monthly'
+    amountCents: number
+  } | null
+  history: PostRentalChargeRow[]
+}
 
 interface OrderItem {
   id: string
@@ -124,6 +155,11 @@ export default function AdminOrderDetailPage() {
   const [refunding, setRefunding] = useState(false)
   const [refundError, setRefundError] = useState<string | null>(null)
   const [refundBanner, setRefundBanner] = useState<string | null>(null)
+  const [postRental, setPostRental] = useState<PostRentalView | null>(null)
+  const [retryingChargeId, setRetryingChargeId] = useState<string | null>(null)
+  const [overrideSaving, setOverrideSaving] = useState(false)
+  const [postRentalError, setPostRentalError] = useState<string | null>(null)
+  const [postRentalBanner, setPostRentalBanner] = useState<string | null>(null)
 
   async function loadOrder() {
     const res = await fetch(`/api/admin/orders/${orderId}`)
@@ -132,6 +168,7 @@ export default function AdminOrderDetailPage() {
     }
     const data = await res.json()
     setOrder(data.order)
+    if (data.postRental) setPostRental(data.postRental as PostRentalView)
 
     if (data.order.user?.stripeCustomerId) {
       const pmRes = await fetch(`/api/admin/customers/${data.order.user.id}/payment-methods`)
@@ -247,6 +284,51 @@ export default function AdminOrderDetailPage() {
     } catch (err) {
       console.error('Error cancelling order:', err)
       alert('Could not cancel order — see console for details.')
+    }
+  }
+
+  async function handleRetryCharge(chargeId: string) {
+    setRetryingChargeId(chargeId)
+    setPostRentalError(null)
+    try {
+      const res = await fetch(`/api/admin/orders/${orderId}/post-rental/retry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chargeId }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || 'Retry failed')
+      setPostRentalBanner('Charge re-queued. The next cron run will retry the card.')
+      await loadOrder()
+    } catch (err) {
+      setPostRentalError(err instanceof Error ? err.message : 'Retry failed')
+    } finally {
+      setRetryingChargeId(null)
+    }
+  }
+
+  async function handleToggleOverride(nextEnabled: boolean) {
+    if (overrideSaving) return
+    setOverrideSaving(true)
+    setPostRentalError(null)
+    try {
+      const res = await fetch(`/api/admin/orders/${orderId}/post-rental/override`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: nextEnabled }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || 'Toggle failed')
+      setPostRentalBanner(
+        nextEnabled
+          ? 'Post-rental billing enabled for this order.'
+          : 'Post-rental billing disabled for this order.'
+      )
+      await loadOrder()
+    } catch (err) {
+      setPostRentalError(err instanceof Error ? err.message : 'Toggle failed')
+    } finally {
+      setOverrideSaving(false)
     }
   }
 
@@ -588,6 +670,23 @@ export default function AdminOrderDetailPage() {
               </div>
             </CardContent>
           </Card>
+
+          {/* Post-Rental Billing card — admin visibility into the rental
+              schedule for this order (status, next charge, history, retry,
+              opt-in toggle). */}
+          {postRental && (
+            <PostRentalCard
+              view={postRental}
+              banner={postRentalBanner}
+              error={postRentalError}
+              retryingChargeId={retryingChargeId}
+              overrideSaving={overrideSaving}
+              onDismissBanner={() => setPostRentalBanner(null)}
+              onDismissError={() => setPostRentalError(null)}
+              onRetry={handleRetryCharge}
+              onToggleOverride={handleToggleOverride}
+            />
+          )}
         </div>
 
         {/* Sidebar - Payment */}
@@ -781,5 +880,297 @@ export default function AdminOrderDetailPage() {
         </div>
       </Modal>
     </div>
+  )
+}
+
+// ============================================
+// PostRentalCard — admin visibility for the post-rental schedule on this
+// order. Status badge + next-charge preview + history table + retry button
+// (failed rows only) + per-order opt-in toggle. Pure presentational; all
+// state and handlers live in the parent.
+// ============================================
+
+const statusBadgeVariant: Record<
+  PostRentalView['status'],
+  'success' | 'info' | 'neutral' | 'warning' | 'error'
+> = {
+  active: 'success',
+  grandfathered: 'neutral',
+  stopped: 'info',
+  exempt: 'info',
+  never_eligible: 'neutral',
+}
+
+const statusLabel: Record<PostRentalView['status'], string> = {
+  active: 'Active',
+  grandfathered: 'Grandfathered',
+  stopped: 'Stopped (pickup)',
+  exempt: 'Exempt',
+  never_eligible: 'Not eligible',
+}
+
+const chargeTypeLabel: Record<string, string> = {
+  six_month: '6-month anchor',
+  nine_month: '9-month anchor',
+  monthly: 'Monthly',
+}
+
+const chargeStatusVariant: Record<string, 'success' | 'info' | 'warning' | 'error' | 'neutral'> = {
+  scheduled: 'info',
+  attempting: 'warning',
+  succeeded: 'success',
+  failed: 'error',
+  skipped: 'neutral',
+}
+
+function formatPRDate(iso: string | null): string {
+  if (!iso) return '—'
+  return new Date(iso).toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  })
+}
+
+function formatPRDateTime(iso: string | null): string {
+  if (!iso) return '—'
+  return new Date(iso).toLocaleString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
+function formatPRMoney(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`
+}
+
+function PostRentalCard(props: {
+  view: PostRentalView
+  banner: string | null
+  error: string | null
+  retryingChargeId: string | null
+  overrideSaving: boolean
+  onDismissBanner: () => void
+  onDismissError: () => void
+  onRetry: (chargeId: string) => void
+  onToggleOverride: (nextEnabled: boolean) => void
+}) {
+  const {
+    view,
+    banner,
+    error,
+    retryingChargeId,
+    overrideSaving,
+    onDismissBanner,
+    onDismissError,
+    onRetry,
+    onToggleOverride,
+  } = props
+
+  return (
+    <Card variant="bordered">
+      <CardContent className="p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold text-gray-900 flex items-center gap-2">
+            <Clock className="w-5 h-5 text-gray-400" />
+            Post-Rental Billing
+          </h2>
+          <Badge variant={statusBadgeVariant[view.status]}>{statusLabel[view.status]}</Badge>
+        </div>
+
+        {banner && (
+          <div className="mb-4 flex items-start justify-between gap-3 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+            <div className="flex items-start gap-2 text-sm text-green-800">
+              <CheckCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <span>{banner}</span>
+            </div>
+            <button onClick={onDismissBanner} className="text-green-700 text-xs font-medium">
+              Dismiss
+            </button>
+          </div>
+        )}
+        {error && (
+          <div className="mb-4 flex items-start justify-between gap-3 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+            <div className="flex items-start gap-2 text-sm text-red-700">
+              <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+            <button onClick={onDismissError} className="text-red-700 text-xs font-medium">
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4 text-sm">
+          <div>
+            <p className="text-gray-500">Clock started</p>
+            <p className="font-medium text-gray-900">{formatPRDate(view.installedAt)}</p>
+          </div>
+          {view.stoppedAt && (
+            <div>
+              <p className="text-gray-500">Stopped at</p>
+              <p className="font-medium text-gray-900">{formatPRDate(view.stoppedAt)}</p>
+            </div>
+          )}
+          {view.reason && (
+            <div className="md:col-span-2">
+              <p className="text-gray-500">Reason</p>
+              <p className="text-gray-700">{view.reason}</p>
+            </div>
+          )}
+        </div>
+
+        {view.status === 'active' && (
+          <div className="mb-4 p-3 bg-pink-50 border border-pink-200 rounded-lg">
+            {view.nextCharge ? (
+              <p className="text-sm text-gray-800">
+                <span className="font-semibold">Next charge:</span>{' '}
+                {formatPRMoney(view.nextCharge.amountCents)} on{' '}
+                {formatPRDate(view.nextCharge.dueDate)}{' '}
+                <span className="text-gray-500">
+                  ({chargeTypeLabel[view.nextCharge.chargeType] || view.nextCharge.chargeType})
+                </span>
+              </p>
+            ) : (
+              <p className="text-sm text-gray-600">No upcoming charges scheduled.</p>
+            )}
+          </div>
+        )}
+
+        {(view.status === 'grandfathered' || view.override) && (
+          <div className="mb-4 flex items-center justify-between p-3 bg-gray-50 border border-gray-200 rounded-lg">
+            <div className="text-sm">
+              <p className="font-medium text-gray-900">
+                Enable post-rental billing for this order
+              </p>
+              <p className="text-gray-500 text-xs mt-0.5">
+                Per-order opt-in for grandfathered orders. Use for relationship customers
+                negotiated onto the new schedule.
+              </p>
+            </div>
+            <label className="inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={view.override}
+                disabled={overrideSaving}
+                onChange={(e) => onToggleOverride(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div
+                className={`relative w-11 h-6 bg-gray-300 rounded-full peer peer-checked:bg-pink-600 transition-colors ${overrideSaving ? 'opacity-50' : ''}`}
+              >
+                <div
+                  className={`absolute top-0.5 left-0.5 h-5 w-5 bg-white rounded-full transition-transform ${view.override ? 'translate-x-5' : ''}`}
+                />
+              </div>
+            </label>
+          </div>
+        )}
+
+        <div>
+          <p className="text-sm font-medium text-gray-900 mb-2">Charge history</p>
+          {view.history.length === 0 ? (
+            <p className="text-sm text-gray-500 italic">No charges yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b border-gray-200">
+                    <th className="py-2 pr-3 font-medium">Period</th>
+                    <th className="py-2 pr-3 font-medium">Type</th>
+                    <th className="py-2 pr-3 font-medium">Amount</th>
+                    <th className="py-2 pr-3 font-medium">Status</th>
+                    <th className="py-2 pr-3 font-medium">Attempted</th>
+                    <th className="py-2 pr-3 font-medium">Succeeded</th>
+                    <th className="py-2 pr-3 font-medium">Stripe</th>
+                    <th className="py-2 font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {view.history.map((row) => (
+                    <tr key={row.id} className="border-b border-gray-100 last:border-0">
+                      <td className="py-2 pr-3 text-gray-700 whitespace-nowrap">
+                        {formatPRDate(row.periodStart)} – {formatPRDate(row.periodEnd)}
+                      </td>
+                      <td className="py-2 pr-3 text-gray-600">
+                        {chargeTypeLabel[row.chargeType] || row.chargeType}
+                      </td>
+                      <td className="py-2 pr-3 text-gray-900 font-medium">
+                        {formatPRMoney(row.amountCents)}
+                      </td>
+                      <td className="py-2 pr-3">
+                        <Badge variant={chargeStatusVariant[row.status] || 'neutral'}>
+                          {row.status}
+                        </Badge>
+                        {row.status === 'failed' && row.failureMessage && (
+                          <p className="text-red-600 text-xs mt-1">
+                            {row.failureCode ? `[${row.failureCode}] ` : ''}
+                            {row.failureMessage}
+                          </p>
+                        )}
+                      </td>
+                      <td className="py-2 pr-3 text-gray-600 whitespace-nowrap">
+                        {formatPRDateTime(row.attemptedAt)}
+                        {row.attemptCount > 1 && (
+                          <span className="text-gray-400"> ({row.attemptCount}x)</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-3 text-gray-600 whitespace-nowrap">
+                        {formatPRDateTime(row.succeededAt)}
+                      </td>
+                      <td className="py-2 pr-3">
+                        {row.stripePaymentIntentId ? (
+                          <a
+                            href={`https://dashboard.stripe.com/payments/${row.stripePaymentIntentId}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-pink-600 hover:underline inline-flex items-center gap-1"
+                          >
+                            <span className="font-mono">
+                              {row.stripePaymentIntentId.slice(0, 12)}…
+                            </span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className="py-2">
+                        {row.status === 'failed' ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={retryingChargeId === row.id}
+                            onClick={() => onRetry(row.id)}
+                          >
+                            {retryingChargeId === row.id ? (
+                              <>
+                                <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                Retrying
+                              </>
+                            ) : (
+                              <>
+                                <RotateCcw className="w-3 h-3 mr-1" />
+                                Retry
+                              </>
+                            )}
+                          </Button>
+                        ) : (
+                          <span className="text-gray-300">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
   )
 }

@@ -451,17 +451,24 @@ model Order {
   cancelledByUserId       String?   @map("cancelled_by_user_id")
   cancelReason            String?   @map("cancel_reason")
 
+  // Post-rental billing controls. Override = per-order admin opt-in to bring
+  // grandfathered orders onto the schedule. StoppedAt = the moment pickup
+  // begins (set when removal is scheduled OR completed) — cron stops here.
+  postRentalEnabledOverride Boolean   @default(false) @map("post_rental_enabled_override")
+  postRentalStoppedAt       DateTime? @map("post_rental_stopped_at")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  user          User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  placedBy      User?           @relation("OrdersPlacedBy", fields: [placedByUserId], references: [id])
-  cancelledBy   User?           @relation("OrderCancelledBy", fields: [cancelledByUserId], references: [id])
-  postType      PostType?       @relation(fields: [postTypeId], references: [id])
-  promoCode     PromoCode?      @relation(fields: [promoCodeId], references: [id])
-  orderItems    OrderItem[]
-  installation  Installation?
-  consumedHolds InventoryHold[] @relation("InventoryHoldConsumer")
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  placedBy          User?              @relation("OrdersPlacedBy", fields: [placedByUserId], references: [id])
+  cancelledBy       User?              @relation("OrderCancelledBy", fields: [cancelledByUserId], references: [id])
+  postType          PostType?          @relation(fields: [postTypeId], references: [id])
+  promoCode         PromoCode?         @relation(fields: [promoCodeId], references: [id])
+  orderItems        OrderItem[]
+  installation      Installation?
+  consumedHolds     InventoryHold[]    @relation("InventoryHoldConsumer")
+  postRentalCharges PostRentalCharge[]
 
   @@index([placedByUserId])
   @@index([cancelledByUserId])
@@ -839,6 +846,55 @@ model ServiceCenter {
 
   @@index([isActive])
   @@map("service_centers")
+}
+
+// ============================================
+// Post-Rental Billing
+// ============================================
+// Tracks every scheduled / attempted / settled post-rental fee. One row per
+// (orderId, periodStart) — unique constraint protects against concurrent cron
+// runs and same-day re-runs double-charging. The cron writes rows in Pass 1
+// (scheduling) and updates them in Pass 2 (attempting). Status state machine:
+// scheduled -> attempting -> succeeded | failed | skipped. The unique index
+// on (orderId, periodStart) is the source of truth for "did we already
+// schedule this period" — no auxiliary state needed.
+
+model PostRentalCharge {
+  id                    String                 @id @default(cuid())
+  orderId               String                 @map("order_id")
+  order                 Order                  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  chargeType            PostRentalChargeType
+  amountCents           Int                    @map("amount_cents")
+  periodStart           DateTime               @map("period_start")
+  periodEnd             DateTime               @map("period_end")
+  stripePaymentIntentId String?                @map("stripe_payment_intent_id")
+  status                PostRentalChargeStatus @default(scheduled)
+  attemptedAt           DateTime?              @map("attempted_at")
+  succeededAt           DateTime?              @map("succeeded_at")
+  failureCode           String?                @map("failure_code")
+  failureMessage        String?                @map("failure_message")
+  attemptCount          Int                    @default(0) @map("attempt_count")
+  createdAt             DateTime               @default(now()) @map("created_at")
+  updatedAt             DateTime               @updatedAt @map("updated_at")
+
+  @@unique([orderId, periodStart], name: "post_rental_charge_order_period_unique")
+  @@index([status, periodStart])
+  @@index([orderId])
+  @@map("post_rental_charges")
+}
+
+enum PostRentalChargeType {
+  six_month  @map("6mo")
+  nine_month @map("9mo")
+  monthly
+}
+
+enum PostRentalChargeStatus {
+  scheduled
+  attempting
+  succeeded
+  failed
+  skipped
 }
 
 // Per-user notification-preference change log — answers "when did Peggy opt out"

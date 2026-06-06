@@ -98,5 +98,16 @@ export const AuditAction = {
   // Policy-notice acceptance — legal trail proving each non-exempt user
   // saw and acknowledged the out-of-area fee + post-rental clarification.
   PolicyNoticeAccepted: 'policy_notice.accepted',
+  // Post-rental billing lifecycle. One row per state transition so we can
+  // reconstruct the full charge history (scheduled -> attempt -> succeed/fail/skip),
+  // plus admin overrides (per-order opt-in toggle) and the pickup-stop signal.
+  PostRentalChargeScheduled: 'post_rental.charge.scheduled',
+  PostRentalChargeAttempt:   'post_rental.charge.attempt',
+  PostRentalChargeSucceeded: 'post_rental.charge.succeeded',
+  PostRentalChargeFailed:    'post_rental.charge.failed',
+  PostRentalChargeSkipped:   'post_rental.charge.skipped',
+  PostRentalChargeRetry:     'post_rental.charge.retry',
+  PostRentalOverrideToggle:  'post_rental.override.toggle',
+  PostRentalStopped:         'post_rental.stopped',
 } as const
 export type AuditActionName = (typeof AuditAction)[keyof typeof AuditAction]
