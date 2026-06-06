@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
-import { ArrowLeft, Plus, Minus, Trash2, Package, Tag, Lock, FileBox, Pencil, UserX, Archive, Users, X, ChevronDown, Search } from 'lucide-react'
+import { ArrowLeft, Plus, Minus, Trash2, Package, Tag, Lock, FileBox, FileImage, Pencil, UserX, Archive, Users, X } from 'lucide-react'
 import { Card, CardContent, Button, Input, Badge, Modal, SearchableSelect } from '@/components/ui'
 
 interface CustomerData {
@@ -102,20 +102,8 @@ export default function CustomerDetailPage() {
   const [reassigning, setReassigning] = useState(false)
   // Per-row inline reassign in-flight, keyed by `${type}:${id}` — disables the dropdown so admins can't double-fire.
   const [rowReassigning, setRowReassigning] = useState<Record<string, boolean>>({})
-  // Agent-list scaling: raw input + debounced value drives a client-side substring match across name/email.
-  const [agentSearch, setAgentSearch] = useState('')
-  const [agentSearchDebounced, setAgentSearchDebounced] = useState('')
-  // Sectioned-collapse state for the 90/10 split (most agents have no inventory).
-  const [withInventoryOpen, setWithInventoryOpen] = useState(true)
-  const [noInventoryOpen, setNoInventoryOpen] = useState(false)
-  // Pagination cap for the "no inventory" section so 988 agents don't all paint at once.
-  const [noInventoryLimit, setNoInventoryLimit] = useState(50)
-
-  // Debounce search input 150ms — client-side filter only, no network.
-  useEffect(() => {
-    const t = setTimeout(() => setAgentSearchDebounced(agentSearch.trim().toLowerCase()), 150)
-    return () => clearTimeout(t)
-  }, [agentSearch])
+  // Filter-by-agent: '' = all agents, 'unassigned' = team pool, else a memberId.
+  const [agentFilter, setAgentFilter] = useState<string>('')
 
   useEffect(() => {
     fetchCustomer()
@@ -407,78 +395,31 @@ export default function CustomerDetailPage() {
     }
   }
 
-  // Group per-row in-storage items by assignedToMemberId (null = Unassigned),
-  // so the per-agent collapsible section renders directly from this map.
-  const grouped = useMemo(() => {
-    type BucketKey = 'unassigned' | string
-    const empty = () => ({
-      signs: [] as Array<{ id: string; description: string }>,
-      riders: [] as Array<{ id: string; riderName: string }>,
-      lockboxes: [] as Array<{ id: string; type: string; code: string | null }>,
-      brochureBoxes: [] as Array<{ id: string; description: string | null }>,
-    })
-    const buckets: Record<BucketKey, ReturnType<typeof empty>> = { unassigned: empty() }
-    if (!data?.inventory.items) return buckets
+  // Per-type in-storage items filtered by the agentFilter selection.
+  // Client-side only — the admin endpoint returns the full set in one call.
+  const filteredInventory = useMemo(() => {
+    const empty = {
+      signs: [] as Array<{ id: string; description: string; assignedToMemberId: string | null }>,
+      riders: [] as Array<{ id: string; riderName: string; assignedToMemberId: string | null }>,
+      lockboxes: [] as Array<{ id: string; type: string; code: string | null; assignedToMemberId: string | null }>,
+      brochureBoxes: [] as Array<{ id: string; description: string | null; assignedToMemberId: string | null }>,
+    }
+    if (!data?.inventory.items) return empty
     const items = data.inventory.items
-    // Pre-create a bucket per known member so empty-state accordions still render.
-    if (data.team) {
-      for (const m of data.team.members) buckets[m.id] = empty()
+    const matches = (memberId: string | null) =>
+      agentFilter === '' ? true
+      : agentFilter === 'unassigned' ? memberId === null
+      : memberId === agentFilter
+    return {
+      signs: items.signs.filter(s => s.inStorage && matches(s.assignedToMemberId)),
+      riders: items.riders.filter(r => r.inStorage && matches(r.assignedToMemberId)),
+      lockboxes: items.lockboxes.filter(l => l.inStorage && matches(l.assignedToMemberId)),
+      brochureBoxes: items.brochureBoxes.filter(b => b.inStorage && matches(b.assignedToMemberId)),
     }
-    const keyFor = (memberId: string | null): BucketKey => (memberId && buckets[memberId]) ? memberId : 'unassigned'
-    for (const s of items.signs) {
-      if (!s.inStorage) continue
-      buckets[keyFor(s.assignedToMemberId)].signs.push({ id: s.id, description: s.description })
-    }
-    for (const r of items.riders) {
-      if (!r.inStorage) continue
-      buckets[keyFor(r.assignedToMemberId)].riders.push({ id: r.id, riderName: r.riderName })
-    }
-    for (const l of items.lockboxes) {
-      if (!l.inStorage) continue
-      buckets[keyFor(l.assignedToMemberId)].lockboxes.push({ id: l.id, type: l.type, code: l.code })
-    }
-    for (const b of items.brochureBoxes) {
-      if (!b.inStorage) continue
-      buckets[keyFor(b.assignedToMemberId)].brochureBoxes.push({ id: b.id, description: b.description })
-    }
-    return buckets
-  }, [data])
+  }, [data, agentFilter])
 
   // Per-agent grouping only makes sense when the customer's team has agents to assign to.
   const useGroupedView = !!(data?.team && data.team.members.length > 0)
-
-  // Partition agents into has-inventory / no-inventory and apply the debounced search filter.
-  // Sorted alphabetically (case-insensitive) within each section to avoid reshuffling on item moves.
-  const partitionedAgents = useMemo(() => {
-    if (!data?.team) return { withInventory: [], noInventory: [], totalWith: 0, totalNo: 0 }
-    const q = agentSearchDebounced
-    const sorted = [...data.team.members].sort((a, b) =>
-      (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
-    )
-    const withInventory: typeof sorted = []
-    const noInventory: typeof sorted = []
-    for (const m of sorted) {
-      const b = grouped[m.id] || { signs: [], riders: [], lockboxes: [], brochureBoxes: [] }
-      const total = b.signs.length + b.riders.length + b.lockboxes.length + b.brochureBoxes.length
-      if (total > 0) withInventory.push(m)
-      else noInventory.push(m)
-    }
-    const totalWith = withInventory.length
-    const totalNo = noInventory.length
-    if (!q) return { withInventory, noInventory, totalWith, totalNo }
-    const match = (m: { name: string; email: string | null }) =>
-      (m.name || '').toLowerCase().includes(q) || (m.email || '').toLowerCase().includes(q)
-    return {
-      withInventory: withInventory.filter(match),
-      noInventory: noInventory.filter(match),
-      totalWith,
-      totalNo,
-    }
-  }, [data?.team, grouped, agentSearchDebounced])
-
-  const isSearching = agentSearchDebounced.length > 0
-  // Safety cap on search-active rendering so a single-char query can't paint 1000+ cards open-able at once.
-  const SEARCH_CAP = 200
 
   if (loading) {
     return (
@@ -594,251 +535,261 @@ export default function CustomerDetailPage() {
         </Card>
       )}
 
-      {useGroupedView && data.team && (
-        <div className="space-y-6">
-          {/* Other items stays a separate card — customer_other_items has no assignedToMemberId column. */}
-          <Card>
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2">
-                  <Archive className="w-5 h-5 text-pink-500" />
-                  <h2 className="font-semibold text-gray-900">Other</h2>
+      {useGroupedView && data.team && (() => {
+        // Local closure: capture deps so each card's per-row UX stays compact.
+        const team = data.team
+        const members = team.members
+        // Dropdown options reused by every row — keep "Unassigned" parity with team-admin view.
+        const memberOptions = [
+          { value: '', label: 'Unassigned' },
+          ...members.map((m) => ({ value: m.id, label: m.name })),
+        ]
+        const filterOptions = [
+          { value: '', label: 'All agents' },
+          ...members.map((m) => ({ value: m.id, label: m.name })),
+          { value: 'unassigned', label: 'Unassigned' },
+        ]
+
+        // Per-row renderer — mirrors /dashboard/inventory:299-341 but adds the bulk checkbox + delete trash for admin.
+        const renderRow = (
+          type: 'sign' | 'rider' | 'lockbox' | 'brochure_box',
+          item: { id: string; label: string; code?: string | null; assignedToMemberId: string | null },
+        ) => {
+          const key = `${type}:${item.id}`
+          const saving = !!rowReassigning[key]
+          const checked = selectedItems.has(key)
+          return (
+            <li
+              key={item.id}
+              className={`p-3 rounded-lg transition-colors ${checked ? 'bg-pink-50 ring-1 ring-pink-200' : 'bg-gray-50'}`}
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <label className="flex items-center gap-3 min-w-0 cursor-pointer flex-1">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleItemSelected(type, item.id)}
+                    className="w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500 flex-shrink-0"
+                  />
+                  <Package className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                  <span className="text-sm text-gray-700 truncate">{item.label}</span>
+                  {item.code && (
+                    <span className="text-xs font-mono bg-gray-200 px-2 py-1 rounded flex-shrink-0">
+                      {item.code}
+                    </span>
+                  )}
+                </label>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <SearchableSelect
+                    className="py-1.5 text-sm min-w-[180px]"
+                    options={memberOptions}
+                    value={item.assignedToMemberId ?? ''}
+                    disabled={saving}
+                    onChange={(next) => {
+                      const nextId = next === '' ? null : next
+                      // No-op if selection didn't change — avoids a needless POST.
+                      if (nextId === (item.assignedToMemberId ?? null)) return
+                      handleRowReassign(type, item.id, nextId)
+                    }}
+                    searchPlaceholder="Search agents..."
+                    aria-label={`Assign ${item.label}`}
+                  />
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      if (confirm('Delete this item?')) handleDeleteInventory(type, item.id)
+                    }}
+                    className="text-gray-400 hover:text-red-500 flex-shrink-0"
+                    title="Delete"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 </div>
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    setAddType('other')
-                    setFormData({ ...formData, description: '' })
-                    setShowAddModal(true)
-                  }}
-                >
-                  <Plus className="w-4 h-4 mr-1" />
-                  Add
-                </Button>
               </div>
-              {data.inventory.otherItems && data.inventory.otherItems.length > 0 ? (
-                <div className="space-y-2">
-                  {data.inventory.otherItems.map((item) => (
-                    <div key={item.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                      <p className="font-medium text-gray-900">
-                        {item.description}
-                        {item.quantity && item.quantity > 1 && (
-                          <span className="ml-2 text-sm font-normal text-gray-500">×{item.quantity}</span>
-                        )}
-                      </p>
-                      <button
-                        onClick={() => handleDeleteInventory('other', item.id)}
-                        className="text-gray-400 hover:text-red-500"
-                        title={item.quantity && item.quantity > 1 ? 'Removes one of these items' : 'Delete'}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+            </li>
+          )
+        }
+
+        return (
+          <div className="space-y-6">
+            {/* Top-level "Add Inventory" cluster — pre-assigning at add time means
+                admins don't need to drop down into each section to add. */}
+            <Card>
+              <CardContent className="p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium text-gray-700 mr-2">Add inventory:</span>
+                  <Button size="sm" variant="outline" onClick={() => { setAddType('sign'); setShowAddModal(true) }}>
+                    <Plus className="w-4 h-4 mr-1" /> Sign
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => { setAddType('rider'); setShowAddModal(true) }}>
+                    <Plus className="w-4 h-4 mr-1" /> Rider
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => { setAddType('lockbox'); setShowAddModal(true) }}>
+                    <Plus className="w-4 h-4 mr-1" /> Lockbox
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => { setAddType('brochure_box'); setShowAddModal(true) }}>
+                    <Plus className="w-4 h-4 mr-1" /> Brochure Box
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => { setAddType('other'); setFormData({ ...formData, description: '' }); setShowAddModal(true) }}>
+                    <Plus className="w-4 h-4 mr-1" /> Other
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Filter by agent — mirrors /dashboard/inventory:363-380 — client-side filter over the already-loaded items. */}
+            <Card>
+              <CardContent className="p-4">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                  <label className="text-sm font-medium text-gray-700 sm:w-auto">Filter by agent</label>
+                  <div className="sm:max-w-xs w-full">
+                    <SearchableSelect
+                      options={filterOptions}
+                      value={agentFilter}
+                      onChange={(next) => setAgentFilter(next)}
+                      searchPlaceholder="Search agents..."
+                    />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <div className="grid md:grid-cols-2 gap-6">
+              {/* Signs */}
+              <Card>
+                <CardContent className="p-6">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-lg bg-pink-100 flex items-center justify-center">
+                      <FileImage className="w-5 h-5 text-pink-600" />
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-gray-500 text-sm">No other items</p>
-              )}
-            </CardContent>
-          </Card>
+                    <div>
+                      <h3 className="font-semibold text-gray-900">Signs</h3>
+                      <p className="text-sm text-gray-500">{filteredInventory.signs.length} in storage</p>
+                    </div>
+                  </div>
+                  {filteredInventory.signs.length > 0 ? (
+                    <ul className={filteredInventory.signs.length > 5 ? 'space-y-3 max-h-[280px] overflow-y-auto pr-1 -mr-1' : 'space-y-3'}>
+                      {filteredInventory.signs.map(s => renderRow('sign', {
+                        id: s.id, label: s.description, assignedToMemberId: s.assignedToMemberId,
+                      }))}
+                    </ul>
+                  ) : (
+                    <p className="text-sm text-gray-500 italic">No signs in storage</p>
+                  )}
+                </CardContent>
+              </Card>
 
-          {/* Top-level "Add Inventory" cluster — pre-assigning at add time means
-              admins don't need to drop down into each section to add. */}
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-medium text-gray-700 mr-2">Add inventory:</span>
-                <Button size="sm" variant="outline" onClick={() => { setAddType('sign'); setShowAddModal(true) }}>
-                  <Plus className="w-4 h-4 mr-1" /> Sign
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => { setAddType('rider'); setShowAddModal(true) }}>
-                  <Plus className="w-4 h-4 mr-1" /> Rider
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => { setAddType('lockbox'); setShowAddModal(true) }}>
-                  <Plus className="w-4 h-4 mr-1" /> Lockbox
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => { setAddType('brochure_box'); setShowAddModal(true) }}>
-                  <Plus className="w-4 h-4 mr-1" /> Brochure Box
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
+              {/* Riders */}
+              <Card>
+                <CardContent className="p-6">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-lg bg-pink-100 flex items-center justify-center">
+                      <Tag className="w-5 h-5 text-pink-600" />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-gray-900">Riders</h3>
+                      <p className="text-sm text-gray-500">{filteredInventory.riders.length} in storage</p>
+                    </div>
+                  </div>
+                  {filteredInventory.riders.length > 0 ? (
+                    <ul className={filteredInventory.riders.length > 5 ? 'space-y-3 max-h-[280px] overflow-y-auto pr-1 -mr-1' : 'space-y-3'}>
+                      {filteredInventory.riders.map(r => renderRow('rider', {
+                        id: r.id, label: r.riderName, assignedToMemberId: r.assignedToMemberId,
+                      }))}
+                    </ul>
+                  ) : (
+                    <p className="text-sm text-gray-500 italic">No riders in storage</p>
+                  )}
+                </CardContent>
+              </Card>
 
-          {/* Unassigned pinned above the sectioned/searchable list — search filters agents, not items. */}
-          <AgentInventorySection
-            title="Unassigned"
-            sublabel="Team pool — not yet assigned to any agent"
-            defaultOpen
-            bucket={grouped.unassigned}
-            selectedItems={selectedItems}
-            onToggle={toggleItemSelected}
-            onDelete={handleDeleteInventory}
-            teamMembers={data.team.members}
-            currentMemberId={null}
-            rowReassigning={rowReassigning}
-            onReassign={handleRowReassign}
-          />
+              {/* Lockboxes */}
+              <Card>
+                <CardContent className="p-6">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-lg bg-pink-100 flex items-center justify-center">
+                      <Lock className="w-5 h-5 text-pink-600" />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-gray-900">Lockboxes</h3>
+                      <p className="text-sm text-gray-500">{filteredInventory.lockboxes.length} in storage</p>
+                    </div>
+                  </div>
+                  {filteredInventory.lockboxes.length > 0 ? (
+                    <ul className={filteredInventory.lockboxes.length > 5 ? 'space-y-3 max-h-[280px] overflow-y-auto pr-1 -mr-1' : 'space-y-3'}>
+                      {filteredInventory.lockboxes.map(l => renderRow('lockbox', {
+                        id: l.id, label: l.type, code: l.code, assignedToMemberId: l.assignedToMemberId,
+                      }))}
+                    </ul>
+                  ) : (
+                    <p className="text-sm text-gray-500 italic">No lockboxes in storage</p>
+                  )}
+                </CardContent>
+              </Card>
 
-          {/* Sticky agent search — debounced 150ms, scales the per-agent list to 1000+ members. */}
-          <div className="sticky top-0 z-10 -mx-1 px-1 py-2 bg-gray-50/95 backdrop-blur supports-[backdrop-filter]:bg-gray-50/75">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
-              <Input
-                value={agentSearch}
-                onChange={(e) => setAgentSearch(e.target.value)}
-                placeholder="Search agents by name or email..."
-                className="pl-9 pr-9 bg-white"
-              />
-              {agentSearch && (
-                <button
-                  type="button"
-                  onClick={() => setAgentSearch('')}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 rounded"
-                  aria-label="Clear search"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              )}
+              {/* Brochure Boxes */}
+              <Card>
+                <CardContent className="p-6">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-lg bg-pink-100 flex items-center justify-center">
+                      <Archive className="w-5 h-5 text-pink-600" />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-gray-900">Brochure Boxes</h3>
+                      <p className="text-sm text-gray-500">{filteredInventory.brochureBoxes.length} in storage</p>
+                    </div>
+                  </div>
+                  {filteredInventory.brochureBoxes.length > 0 ? (
+                    <ul className={filteredInventory.brochureBoxes.length > 5 ? 'space-y-3 max-h-[280px] overflow-y-auto pr-1 -mr-1' : 'space-y-3'}>
+                      {filteredInventory.brochureBoxes.map(b => renderRow('brochure_box', {
+                        id: b.id, label: b.description || 'Brochure box', assignedToMemberId: b.assignedToMemberId,
+                      }))}
+                    </ul>
+                  ) : (
+                    <p className="text-sm text-gray-500 italic">No brochure boxes in storage</p>
+                  )}
+                </CardContent>
+              </Card>
             </div>
-          </div>
 
-          {(() => {
-            const { withInventory, noInventory, totalWith, totalNo } = partitionedAgents
-            const cappedWith = isSearching ? withInventory.slice(0, SEARCH_CAP) : withInventory
-            // No-inventory cap: when searching, lift to SEARCH_CAP; otherwise stick to user-controlled pagination.
-            const cappedNo = isSearching
-              ? noInventory.slice(0, Math.max(0, SEARCH_CAP - cappedWith.length))
-              : noInventory.slice(0, noInventoryLimit)
-            const noShownNow = cappedNo.length
-            const noRemaining = noInventory.length - noShownNow
-            const totalMatches = withInventory.length + noInventory.length
-            const overflow = isSearching && totalMatches > SEARCH_CAP
-
-            if (isSearching && totalMatches === 0) {
-              return (
-                <Card>
-                  <CardContent className="p-6">
-                    <p className="text-sm text-gray-500">
-                      No agents match &ldquo;{agentSearchDebounced}&rdquo;.
-                    </p>
-                  </CardContent>
-                </Card>
-              )
-            }
-
-            // When a search is active, force both sections visible regardless of collapse state.
-            const showWithSection = isSearching ? cappedWith.length > 0 : true
-            const showNoSection = isSearching ? cappedNo.length > 0 : noInventory.length > 0
-
-            return (
-              <>
-                {showWithSection && (
-                  <Card>
-                    <CardContent className="p-0">
-                      <button
-                        type="button"
-                        onClick={() => !isSearching && setWithInventoryOpen(o => !o)}
-                        disabled={isSearching}
-                        className="w-full flex items-center justify-between gap-3 px-6 py-3 text-left hover:bg-gray-50 transition-colors disabled:hover:bg-transparent disabled:cursor-default"
-                      >
-                        <div className="flex items-center gap-2">
-                          <h3 className="font-semibold text-gray-900">Agents with inventory</h3>
-                          <Badge variant="info">
-                            {isSearching ? `${cappedWith.length} of ${totalWith}` : totalWith}
-                          </Badge>
-                        </div>
-                        {!isSearching && (
-                          <ChevronDown className={`w-5 h-5 text-gray-400 transition-transform ${withInventoryOpen ? 'rotate-180' : ''}`} />
-                        )}
-                      </button>
-                      {(isSearching || withInventoryOpen) && (
-                        <div className="px-3 pb-3 pt-1 space-y-2 border-t border-gray-100">
-                          {cappedWith.map((m) => (
-                            <AgentInventorySection
-                              key={m.id}
-                              title={m.name}
-                              sublabel={m.email || undefined}
-                              defaultOpen={false}
-                              bucket={grouped[m.id] || { signs: [], riders: [], lockboxes: [], brochureBoxes: [] }}
-                              selectedItems={selectedItems}
-                              onToggle={toggleItemSelected}
-                              onDelete={handleDeleteInventory}
-                              teamMembers={data.team!.members}
-                              currentMemberId={m.id}
-                              rowReassigning={rowReassigning}
-                              onReassign={handleRowReassign}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                )}
-
-                {showNoSection && (
-                  <Card>
-                    <CardContent className="p-0">
-                      <button
-                        type="button"
-                        onClick={() => !isSearching && setNoInventoryOpen(o => { if (o) setNoInventoryLimit(50); return !o })}
-                        disabled={isSearching}
-                        className="w-full flex items-center justify-between gap-3 px-6 py-3 text-left hover:bg-gray-50 transition-colors disabled:hover:bg-transparent disabled:cursor-default"
-                      >
-                        <div className="flex items-center gap-2">
-                          <h3 className="font-semibold text-gray-900">Agents with no inventory</h3>
-                          <Badge variant="neutral">
-                            {isSearching ? `${cappedNo.length} of ${totalNo}` : totalNo}
-                          </Badge>
-                        </div>
-                        {!isSearching && (
-                          <ChevronDown className={`w-5 h-5 text-gray-400 transition-transform ${noInventoryOpen ? 'rotate-180' : ''}`} />
-                        )}
-                      </button>
-                      {(isSearching || noInventoryOpen) && (
-                        <div className="px-3 pb-3 pt-1 space-y-2 border-t border-gray-100">
-                          {cappedNo.map((m) => (
-                            <AgentInventorySection
-                              key={m.id}
-                              title={m.name}
-                              sublabel={m.email || undefined}
-                              defaultOpen={false}
-                              bucket={grouped[m.id] || { signs: [], riders: [], lockboxes: [], brochureBoxes: [] }}
-                              selectedItems={selectedItems}
-                              onToggle={toggleItemSelected}
-                              onDelete={handleDeleteInventory}
-                              teamMembers={data.team!.members}
-                              currentMemberId={m.id}
-                              rowReassigning={rowReassigning}
-                              onReassign={handleRowReassign}
-                            />
-                          ))}
-                          {!isSearching && noRemaining > 0 && (
-                            <div className="flex justify-center pt-2">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => setNoInventoryLimit((n) => n + 50)}
-                              >
-                                Show {Math.min(50, noRemaining)} more agents ({noRemaining} remaining)
-                              </Button>
-                            </div>
+            {/* Other items remain a separate card — customer_other_items has no assignedToMemberId column,
+                so the filter-by-agent control doesn't apply. Post-migration this list is typically empty. */}
+            {data.inventory.otherItems && data.inventory.otherItems.length > 0 && (
+              <Card>
+                <CardContent className="p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                      <Archive className="w-5 h-5 text-pink-500" />
+                      <h2 className="font-semibold text-gray-900">Other</h2>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    {data.inventory.otherItems.map((item) => (
+                      <div key={item.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                        <p className="font-medium text-gray-900">
+                          {item.description}
+                          {item.quantity && item.quantity > 1 && (
+                            <span className="ml-2 text-sm font-normal text-gray-500">×{item.quantity}</span>
                           )}
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                )}
-
-                {overflow && (
-                  <p className="text-xs text-gray-500 text-center">
-                    Showing first {SEARCH_CAP} matches — refine your search to narrow results.
-                  </p>
-                )}
-              </>
-            )
-          })()}
-        </div>
-      )}
+                        </p>
+                        <button
+                          onClick={() => handleDeleteInventory('other', item.id)}
+                          className="text-gray-400 hover:text-red-500"
+                          title={item.quantity && item.quantity > 1 ? 'Removes one of these items' : 'Delete'}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        )
+      })()}
 
       {!useGroupedView && (
       <div className="grid lg:grid-cols-2 gap-6">
@@ -1460,250 +1411,6 @@ export default function CustomerDetailPage() {
           </div>
         </div>
       </Modal>
-    </div>
-  )
-}
-
-interface AgentBucket {
-  signs: Array<{ id: string; description: string }>
-  riders: Array<{ id: string; riderName: string }>
-  lockboxes: Array<{ id: string; type: string; code: string | null }>
-  brochureBoxes: Array<{ id: string; description: string | null }>
-}
-
-interface AgentInventorySectionProps {
-  title: string
-  sublabel?: string
-  defaultOpen?: boolean
-  bucket: AgentBucket
-  selectedItems: Map<string, { type: 'sign' | 'rider' | 'lockbox' | 'brochure_box'; id: string }>
-  onToggle: (type: 'sign' | 'rider' | 'lockbox' | 'brochure_box', id: string) => void
-  onDelete: (type: string, id: string) => void
-  teamMembers: Array<{ id: string; name: string }>
-  // The agent every item in this bucket currently belongs to (null = Unassigned). Drives the inline dropdown's current value.
-  currentMemberId: string | null
-  rowReassigning: Record<string, boolean>
-  onReassign: (
-    type: 'sign' | 'rider' | 'lockbox' | 'brochure_box',
-    id: string,
-    targetMemberId: string | null,
-  ) => void
-}
-
-function AgentInventorySection({
-  title,
-  sublabel,
-  defaultOpen = false,
-  bucket,
-  selectedItems,
-  onToggle,
-  onDelete,
-  teamMembers,
-  currentMemberId,
-  rowReassigning,
-  onReassign,
-}: AgentInventorySectionProps) {
-  const [open, setOpen] = useState(defaultOpen)
-  const counts: string[] = []
-  if (bucket.signs.length) counts.push(`${bucket.signs.length} sign${bucket.signs.length === 1 ? '' : 's'}`)
-  if (bucket.riders.length) counts.push(`${bucket.riders.length} rider${bucket.riders.length === 1 ? '' : 's'}`)
-  if (bucket.lockboxes.length) counts.push(`${bucket.lockboxes.length} lockbox${bucket.lockboxes.length === 1 ? '' : 'es'}`)
-  if (bucket.brochureBoxes.length) counts.push(`${bucket.brochureBoxes.length} brochure box${bucket.brochureBoxes.length === 1 ? '' : 'es'}`)
-  const summary = counts.length > 0 ? counts.join(' · ') : 'No items'
-  const total = bucket.signs.length + bucket.riders.length + bucket.lockboxes.length + bucket.brochureBoxes.length
-
-  const isSelected = (type: 'sign' | 'rider' | 'lockbox' | 'brochure_box', id: string) =>
-    selectedItems.has(`${type}:${id}`)
-
-  return (
-    <Card>
-      <CardContent className="p-0">
-        <button
-          type="button"
-          onClick={() => setOpen(o => !o)}
-          className="w-full flex items-center justify-between gap-3 px-6 py-4 text-left hover:bg-gray-50 transition-colors"
-        >
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <h3 className="font-semibold text-gray-900 truncate">{title}</h3>
-              {total > 0 && (
-                <Badge variant="info">{total}</Badge>
-              )}
-            </div>
-            {sublabel && <p className="text-xs text-gray-500 truncate">{sublabel}</p>}
-            <p className="text-sm text-gray-600 mt-0.5">{summary}</p>
-          </div>
-          <ChevronDown className={`w-5 h-5 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />
-        </button>
-        {open && (
-          <div className="px-6 pb-6 pt-2 space-y-4 border-t border-gray-100">
-            <ItemList
-              icon={<Package className="w-4 h-4 text-pink-500" />}
-              heading="Signs"
-              items={bucket.signs.map(s => ({ id: s.id, primary: s.description }))}
-              type="sign"
-              isSelected={isSelected}
-              onToggle={onToggle}
-              onDelete={onDelete}
-              teamMembers={teamMembers}
-              currentMemberId={currentMemberId}
-              rowReassigning={rowReassigning}
-              onReassign={onReassign}
-            />
-            <ItemList
-              icon={<Tag className="w-4 h-4 text-pink-500" />}
-              heading="Riders"
-              items={bucket.riders.map(r => ({ id: r.id, primary: r.riderName }))}
-              type="rider"
-              isSelected={isSelected}
-              onToggle={onToggle}
-              onDelete={onDelete}
-              teamMembers={teamMembers}
-              currentMemberId={currentMemberId}
-              rowReassigning={rowReassigning}
-              onReassign={onReassign}
-            />
-            <ItemList
-              icon={<Lock className="w-4 h-4 text-pink-500" />}
-              heading="Lockboxes"
-              items={bucket.lockboxes.map(l => ({
-                id: l.id,
-                primary: l.type,
-                secondary: l.code ? `Code: ${l.code}` : undefined,
-              }))}
-              type="lockbox"
-              isSelected={isSelected}
-              onToggle={onToggle}
-              onDelete={onDelete}
-              teamMembers={teamMembers}
-              currentMemberId={currentMemberId}
-              rowReassigning={rowReassigning}
-              onReassign={onReassign}
-            />
-            <ItemList
-              icon={<FileBox className="w-4 h-4 text-pink-500" />}
-              heading="Brochure Boxes"
-              items={bucket.brochureBoxes.map(b => ({ id: b.id, primary: b.description || 'Brochure box' }))}
-              type="brochure_box"
-              isSelected={isSelected}
-              onToggle={onToggle}
-              onDelete={onDelete}
-              teamMembers={teamMembers}
-              currentMemberId={currentMemberId}
-              rowReassigning={rowReassigning}
-              onReassign={onReassign}
-            />
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  )
-}
-
-interface ItemListProps {
-  icon: React.ReactNode
-  heading: string
-  items: Array<{ id: string; primary: string; secondary?: string }>
-  type: 'sign' | 'rider' | 'lockbox' | 'brochure_box'
-  isSelected: (type: 'sign' | 'rider' | 'lockbox' | 'brochure_box', id: string) => boolean
-  onToggle: (type: 'sign' | 'rider' | 'lockbox' | 'brochure_box', id: string) => void
-  onDelete: (type: string, id: string) => void
-  teamMembers: Array<{ id: string; name: string }>
-  currentMemberId: string | null
-  rowReassigning: Record<string, boolean>
-  onReassign: (
-    type: 'sign' | 'rider' | 'lockbox' | 'brochure_box',
-    id: string,
-    targetMemberId: string | null,
-  ) => void
-}
-
-function ItemList({
-  icon,
-  heading,
-  items,
-  type,
-  isSelected,
-  onToggle,
-  onDelete,
-  teamMembers,
-  currentMemberId,
-  rowReassigning,
-  onReassign,
-}: ItemListProps) {
-  // Build the dropdown options once per render — shared by every row in this list.
-  const memberOptions = [
-    { value: '', label: 'Unassigned (team pool)' },
-    ...teamMembers.map((m) => ({ value: m.id, label: m.name })),
-  ]
-  return (
-    <div>
-      <div className="flex items-center gap-2 mb-2">
-        {icon}
-        <h4 className="text-sm font-semibold text-gray-700">{heading}</h4>
-        <span className="text-xs text-gray-400">({items.length})</span>
-      </div>
-      {items.length === 0 ? (
-        <p className="text-xs text-gray-400 pl-6">No {heading.toLowerCase()}</p>
-      ) : (
-        <div className="space-y-1.5">
-          {items.map(item => {
-            const rowKey = `${type}:${item.id}`
-            const saving = !!rowReassigning[rowKey]
-            return (
-              <div
-                key={item.id}
-                className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-2.5 rounded-lg transition-colors ${
-                  isSelected(type, item.id) ? 'bg-pink-50 ring-1 ring-pink-200' : 'bg-gray-50 hover:bg-gray-100'
-                }`}
-              >
-                <label className="flex items-center gap-3 min-w-0 cursor-pointer flex-1">
-                  <input
-                    type="checkbox"
-                    checked={isSelected(type, item.id)}
-                    onChange={() => onToggle(type, item.id)}
-                    className="w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
-                  />
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-gray-900 truncate">{item.primary}</p>
-                    {item.secondary && <p className="text-xs text-gray-500 truncate">{item.secondary}</p>}
-                  </div>
-                </label>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <div className="min-w-[180px] sm:max-w-[220px]">
-                    <SearchableSelect
-                      className="py-1.5 text-sm"
-                      options={memberOptions}
-                      value={currentMemberId ?? ''}
-                      disabled={saving}
-                      onChange={(next) => {
-                        const nextId = next === '' ? null : next
-                        // No-op if the selection didn't actually change.
-                        if (nextId === currentMemberId) return
-                        onReassign(type, item.id, nextId)
-                      }}
-                      searchPlaceholder="Search agents..."
-                      aria-label={`Reassign ${item.primary}`}
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      if (confirm('Delete this item?')) onDelete(type, item.id)
-                    }}
-                    className="text-gray-400 hover:text-red-500 flex-shrink-0"
-                    title="Delete"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
     </div>
   )
 }

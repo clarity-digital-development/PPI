@@ -1,0 +1,35 @@
+{
+  "mode": "dry-run",
+  "includeTests": false,
+  "timestamp": "2026-06-06T21:46:44.445Z",
+  "scanned": 2,
+  "planned": 0,
+  "created": 0,
+  "deleted": 0,
+  "skipped": 2,
+  "skippedTestData": 2,
+  "skippedUnparseable": 0,
+  "byTarget": {
+    "sign": 0,
+    "rider": 0,
+    "lockbox": 0,
+    "brochure_box": 0
+  },
+  "needs_review": [
+    {
+      "id": "cmphmqk2x000qiwmfbd79ebzu",
+      "userId": "cmje4fg8r000w9omfwxehkhza",
+      "userEmail": "admin@pinkposts.com",
+      "description": "White Metal Frame (test)",
+      "reason": "matches test pattern"
+    },
+    {
+      "id": "cmphmqk58000riwmfw48pp5vb",
+      "userId": "cmje4fg8r000w9omfwxehkhza",
+      "userEmail": "admin@pinkposts.com",
+      "description": "Bracket — test item",
+      "reason": "matches test pattern"
+    }
+  ],
+  "agent_match_warnings": []
+}

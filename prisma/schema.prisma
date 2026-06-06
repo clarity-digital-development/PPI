@@ -67,66 +67,66 @@ model PasswordResetToken {
 // ============================================
 
 model User {
-  id              String    @id @default(cuid())
-  email           String    @unique
-  emailVerified   DateTime? @map("email_verified")
-  password        String?   // Hashed password for credentials auth
-  name            String?
-  image           String?
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime? @map("email_verified")
+  password      String? // Hashed password for credentials auth
+  name          String?
+  image         String?
 
   // Profile fields
-  fullName        String?   @map("full_name")
-  phone           String?
-  company         String?
-  role            UserRole  @default(customer)
-  stripeCustomerId String?  @map("stripe_customer_id")
+  fullName            String?  @map("full_name")
+  phone               String?
+  company             String?
+  role                UserRole @default(customer)
+  stripeCustomerId    String?  @map("stripe_customer_id")
   // Per-customer exemption from service-area gating (out-of-area block + surcharge).
   // Admin-toggleable for relationship customers; team_admin role is always exempt.
-  isServiceAreaExempt Boolean @default(false) @map("is_service_area_exempt")
+  isServiceAreaExempt Boolean  @default(false) @map("is_service_area_exempt")
 
   // Team membership (for RE teams managed by a team_admin who places orders
   // on behalf of their agents). Both team_admins and agents have a teamId.
-  teamId          String?   @map("team_id")
+  teamId String? @map("team_id")
 
   // Notification preferences — defaults preserve current send-everything behavior except marketing
-  emailOrderConfirmations    Boolean   @default(true)  @map("email_order_confirmations")
-  emailServiceRequests       Boolean   @default(true)  @map("email_service_requests")
+  emailOrderConfirmations    Boolean   @default(true) @map("email_order_confirmations")
+  emailServiceRequests       Boolean   @default(true) @map("email_service_requests")
   emailMarketing             Boolean   @default(false) @map("email_marketing")
   notificationPrefsUpdatedAt DateTime? @map("notification_prefs_updated_at")
 
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   // NextAuth relations
-  accounts        Account[]
-  sessions        Session[]
+  accounts Account[]
+  sessions Session[]
 
   // Business relations
-  orders          Order[]
-  installations   Installation[]
-  customerSigns   CustomerSign[]
-  customerRiders  CustomerRider[]
-  customerLockboxes CustomerLockbox[]
+  orders                Order[]
+  installations         Installation[]
+  customerSigns         CustomerSign[]
+  customerRiders        CustomerRider[]
+  customerLockboxes     CustomerLockbox[]
   customerBrochureBoxes CustomerBrochureBox[]
   customerOtherItems    CustomerOtherItem[]
-  paymentMethods  PaymentMethod[]
-  serviceRequests ServiceRequest[]
-  notifications   Notification[]
-  promoCodeUsages PromoCodeUsage[]
+  paymentMethods        PaymentMethod[]
+  serviceRequests       ServiceRequest[]
+  notifications         Notification[]
+  promoCodeUsages       PromoCodeUsage[]
 
-  team            Team?     @relation(fields: [teamId], references: [id])
+  team                      Team?                  @relation(fields: [teamId], references: [id])
   // If this user is the login for a managed team member (hybrid upgrade), this
   // is their TeamMember record.
-  teamMember      TeamMember? @relation("TeamMemberUser")
+  teamMember                TeamMember?            @relation("TeamMemberUser")
   // Orders placed by THIS user on behalf of an agent. The Order's userId is
   // the agent; placedByUserId is the team_admin who actually placed it.
-  ordersPlacedFor Order[]   @relation("OrdersPlacedBy")
-  ordersCancelled Order[]   @relation("OrderCancelledBy")
-  auditLogs       AuditLog[] @relation("AuditActor")
-  preferenceChanges UserPreferenceChange[]
-  heldInventoryAsOwner      InventoryHold[] @relation("InventoryHoldOwner")
-  heldInventoryAsActor      InventoryHold[] @relation("InventoryHoldActor")
-  heldInventoryOnBehalfOfMe InventoryHold[] @relation("InventoryHoldOnBehalfOf")
+  ordersPlacedFor           Order[]                @relation("OrdersPlacedBy")
+  ordersCancelled           Order[]                @relation("OrderCancelledBy")
+  auditLogs                 AuditLog[]             @relation("AuditActor")
+  preferenceChanges         UserPreferenceChange[]
+  heldInventoryAsOwner      InventoryHold[]        @relation("InventoryHoldOwner")
+  heldInventoryAsActor      InventoryHold[]        @relation("InventoryHoldActor")
+  heldInventoryOnBehalfOfMe InventoryHold[]        @relation("InventoryHoldOnBehalfOf")
 
   @@index([teamId])
   @@map("users")
@@ -142,14 +142,14 @@ enum UserRole {
 // The team_admin places orders on behalf of agents and pays from their own
 // card; the order itself is recorded under the agent's account.
 model Team {
-  id          String   @id @default(cuid())
-  name        String   // e.g. "Peggy Heckert Team"
+  id                 String   @id @default(cuid())
+  name               String // e.g. "Peggy Heckert Team"
   // Per-broker perk: when true, installing an OWNED lockbox (sentri/supra,
   // mechanical-owned, or at-property) is free for this team. Renting one is
   // still charged normally.
-  freeLockboxInstall Boolean @default(false) @map("free_lockbox_install")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  freeLockboxInstall Boolean  @default(false) @map("free_lockbox_install")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
 
   // team_admin (and any agents that have their own login) share teamId via the
   // User.teamId relation.
@@ -178,8 +178,8 @@ model TeamMember {
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
 
-  team      Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  user      User?     @relation("TeamMemberUser", fields: [userId], references: [id])
+  team Team  @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User? @relation("TeamMemberUser", fields: [userId], references: [id])
 
   @@index([teamId])
   @@map("team_members")
@@ -190,16 +190,16 @@ model TeamMember {
 // ============================================
 
 model Notification {
-  id          String           @id @default(cuid())
-  userId      String           @map("user_id")
-  type        NotificationType
-  title       String
-  message     String
-  link        String?          // Optional link to relevant page
-  isRead      Boolean          @default(false) @map("is_read")
-  createdAt   DateTime         @default(now()) @map("created_at")
+  id        String           @id @default(cuid())
+  userId    String           @map("user_id")
+  type      NotificationType
+  title     String
+  message   String
+  link      String? // Optional link to relevant page
+  isRead    Boolean          @default(false) @map("is_read")
+  createdAt DateTime         @default(now()) @map("created_at")
 
-  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, isRead])
   @@index([userId, createdAt])
@@ -232,7 +232,7 @@ model PostType {
   isActive    Boolean  @default(true) @map("is_active")
   createdAt   DateTime @default(now()) @map("created_at")
 
-  orders      Order[]
+  orders Order[]
 
   @@map("post_types")
 }
@@ -241,13 +241,13 @@ model RiderCatalog {
   id          String   @id @default(cuid())
   name        String   @unique
   description String?
-  rentalPrice Decimal  @db.Decimal(10, 2) @map("rental_price")
+  rentalPrice Decimal  @map("rental_price") @db.Decimal(10, 2)
   isActive    Boolean  @default(true) @map("is_active")
   createdAt   DateTime @default(now()) @map("created_at")
 
-  customerRiders      CustomerRider[]
-  installationRiders  InstallationRider[]
-  orderItems          OrderItem[]
+  customerRiders     CustomerRider[]
+  installationRiders InstallationRider[]
+  orderItems         OrderItem[]
 
   @@map("rider_catalog")
 }
@@ -256,8 +256,8 @@ model LockboxType {
   id          String   @id @default(cuid())
   name        String   @unique
   description String?
-  rentalPrice Decimal? @db.Decimal(10, 2) @map("rental_price")
-  installFee  Decimal  @db.Decimal(10, 2) @map("install_fee")
+  rentalPrice Decimal? @map("rental_price") @db.Decimal(10, 2)
+  installFee  Decimal  @map("install_fee") @db.Decimal(10, 2)
   isRentable  Boolean  @default(false) @map("is_rentable")
   isActive    Boolean  @default(true) @map("is_active")
   createdAt   DateTime @default(now()) @map("created_at")
@@ -273,22 +273,22 @@ model LockboxType {
 // ============================================
 
 model CustomerSign {
-  id          String   @id @default(cuid())
-  userId      String   @map("user_id")
-  description String
-  imageUrl    String?  @map("image_url")
-  inStorage   Boolean  @default(true) @map("in_storage")
+  id                 String    @id @default(cuid())
+  userId             String    @map("user_id")
+  description        String
+  imageUrl           String?   @map("image_url")
+  inStorage          Boolean   @default(true) @map("in_storage")
   // Team feature: when a team_admin assigns this item to one of their agents,
   // this points at the TeamMember it belongs to (null = unassigned / pool).
-  assignedToMemberId String? @map("assigned_to_member_id")
+  assignedToMemberId String?   @map("assigned_to_member_id")
   // Soft-hold: when this item is reserved in someone's cart, heldByHoldId
   // points at the InventoryHold row. heldUntil is a denormalized copy of
   // InventoryHold.expiresAt — both columns must be kept in sync.
-  heldByHoldId String?   @map("held_by_hold_id")
-  heldUntil    DateTime? @map("held_until")
-  createdAt   DateTime @default(now()) @map("created_at")
+  heldByHoldId       String?   @map("held_by_hold_id")
+  heldUntil          DateTime? @map("held_until")
+  createdAt          DateTime  @default(now()) @map("created_at")
 
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([assignedToMemberId])
   @@index([heldByHoldId])
@@ -297,18 +297,18 @@ model CustomerSign {
 }
 
 model CustomerRider {
-  id          String   @id @default(cuid())
-  userId      String   @map("user_id")
-  riderId     String   @map("rider_id")
-  isOwned     Boolean  @default(true) @map("is_owned")
-  inStorage   Boolean  @default(true) @map("in_storage")
-  assignedToMemberId String? @map("assigned_to_member_id")
-  heldByHoldId String?   @map("held_by_hold_id")
-  heldUntil    DateTime? @map("held_until")
-  createdAt   DateTime @default(now()) @map("created_at")
+  id                 String    @id @default(cuid())
+  userId             String    @map("user_id")
+  riderId            String    @map("rider_id")
+  isOwned            Boolean   @default(true) @map("is_owned")
+  inStorage          Boolean   @default(true) @map("in_storage")
+  assignedToMemberId String?   @map("assigned_to_member_id")
+  heldByHoldId       String?   @map("held_by_hold_id")
+  heldUntil          DateTime? @map("held_until")
+  createdAt          DateTime  @default(now()) @map("created_at")
 
-  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  rider       RiderCatalog @relation(fields: [riderId], references: [id])
+  user  User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rider RiderCatalog @relation(fields: [riderId], references: [id])
 
   @@index([assignedToMemberId])
   @@index([heldByHoldId])
@@ -317,20 +317,20 @@ model CustomerRider {
 }
 
 model CustomerLockbox {
-  id          String   @id @default(cuid())
-  userId      String   @map("user_id")
-  lockboxTypeId String @map("lockbox_type_id")
-  serialNumber String? @map("serial_number")
-  code        String?
-  isOwned     Boolean  @default(true) @map("is_owned")
-  inStorage   Boolean  @default(true) @map("in_storage")
-  assignedToMemberId String? @map("assigned_to_member_id")
-  heldByHoldId String?   @map("held_by_hold_id")
-  heldUntil    DateTime? @map("held_until")
-  createdAt   DateTime @default(now()) @map("created_at")
+  id                 String    @id @default(cuid())
+  userId             String    @map("user_id")
+  lockboxTypeId      String    @map("lockbox_type_id")
+  serialNumber       String?   @map("serial_number")
+  code               String?
+  isOwned            Boolean   @default(true) @map("is_owned")
+  inStorage          Boolean   @default(true) @map("in_storage")
+  assignedToMemberId String?   @map("assigned_to_member_id")
+  heldByHoldId       String?   @map("held_by_hold_id")
+  heldUntil          DateTime? @map("held_until")
+  createdAt          DateTime  @default(now()) @map("created_at")
 
-  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  lockboxType LockboxType @relation(fields: [lockboxTypeId], references: [id])
+  user                  User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lockboxType           LockboxType           @relation(fields: [lockboxTypeId], references: [id])
   installationLockboxes InstallationLockbox[]
 
   @@index([assignedToMemberId])
@@ -340,14 +340,14 @@ model CustomerLockbox {
 }
 
 model CustomerBrochureBox {
-  id          String   @id @default(cuid())
-  userId      String   @map("user_id")
-  description String?
-  inStorage   Boolean  @default(true) @map("in_storage")
-  assignedToMemberId String? @map("assigned_to_member_id")
-  createdAt   DateTime @default(now()) @map("created_at")
+  id                 String   @id @default(cuid())
+  userId             String   @map("user_id")
+  description        String?
+  inStorage          Boolean  @default(true) @map("in_storage")
+  assignedToMemberId String?  @map("assigned_to_member_id")
+  createdAt          DateTime @default(now()) @map("created_at")
 
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([assignedToMemberId])
   @@map("customer_brochure_boxes")
@@ -359,7 +359,7 @@ model CustomerOtherItem {
   description String
   createdAt   DateTime @default(now()) @map("created_at")
 
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("customer_other_items")
 }
@@ -369,93 +369,93 @@ model CustomerOtherItem {
 // ============================================
 
 model Order {
-  id                String        @id @default(cuid())
-  orderNumber       String        @unique @map("order_number")
-  userId            String        @map("user_id")
-  postTypeId        String?       @map("post_type_id") // Optional - orders can be for other services only
+  id          String  @id @default(cuid())
+  orderNumber String  @unique @map("order_number")
+  userId      String  @map("user_id")
+  postTypeId  String? @map("post_type_id") // Optional - orders can be for other services only
 
   // Property info
-  propertyAddress   String        @map("property_address")
-  propertyCity      String        @map("property_city")
-  propertyState     String        @default("KY") @map("property_state")
-  propertyZip       String        @map("property_zip")
-  propertyType      PropertyType  @default(residential) @map("property_type")
-  propertyNotes     String?       @map("property_notes")
-  installationLocationImage String? @map("installation_location_image") @db.Text
+  propertyAddress           String       @map("property_address")
+  propertyCity              String       @map("property_city")
+  propertyState             String       @default("KY") @map("property_state")
+  propertyZip               String       @map("property_zip")
+  propertyType              PropertyType @default(residential) @map("property_type")
+  propertyNotes             String?      @map("property_notes")
+  installationLocationImage String?      @map("installation_location_image") @db.Text
 
   // Installation details
-  isGatedCommunity  Boolean       @default(false) @map("is_gated_community")
-  gateCode          String?       @map("gate_code")
-  hasMarkerPlaced   Boolean       @default(false) @map("has_marker_placed")
-  signOrientation   String?       @map("sign_orientation")
-  signOrientationOther String?    @map("sign_orientation_other")
-  installationLocation String?    @map("installation_location")
+  isGatedCommunity     Boolean @default(false) @map("is_gated_community")
+  gateCode             String? @map("gate_code")
+  hasMarkerPlaced      Boolean @default(false) @map("has_marker_placed")
+  signOrientation      String? @map("sign_orientation")
+  signOrientationOther String? @map("sign_orientation_other")
+  installationLocation String? @map("installation_location")
 
   // Scheduling
-  scheduledDate     DateTime?     @map("scheduled_date")
-  isExpedited       Boolean       @default(false) @map("is_expedited")
+  scheduledDate DateTime? @map("scheduled_date")
+  isExpedited   Boolean   @default(false) @map("is_expedited")
 
   // Pricing
-  subtotal          Decimal       @db.Decimal(10, 2)
-  fuelSurcharge     Decimal       @default(2.47) @db.Decimal(10, 2) @map("fuel_surcharge")
-  noPostSurcharge   Decimal       @default(0) @db.Decimal(10, 2) @map("no_post_surcharge")
+  subtotal                  Decimal @db.Decimal(10, 2)
+  fuelSurcharge             Decimal @default(2.47) @map("fuel_surcharge") @db.Decimal(10, 2)
+  noPostSurcharge           Decimal @default(0) @map("no_post_surcharge") @db.Decimal(10, 2)
   // Out-of-area surcharge: $50 (5000 cents) when ZIP falls in surcharge band of nearest center.
   serviceAreaSurchargeCents Int     @default(0) @map("service_area_surcharge_cents")
   serviceAreaCenterId       String? @map("service_area_center_id")
-  expediteFee       Decimal       @default(0) @db.Decimal(10, 2) @map("expedite_fee")
-  discount          Decimal       @default(0) @db.Decimal(10, 2)
-  tax               Decimal       @default(0) @db.Decimal(10, 2)
-  total             Decimal       @db.Decimal(10, 2)
+  expediteFee               Decimal @default(0) @map("expedite_fee") @db.Decimal(10, 2)
+  discount                  Decimal @default(0) @db.Decimal(10, 2)
+  tax                       Decimal @default(0) @db.Decimal(10, 2)
+  total                     Decimal @db.Decimal(10, 2)
 
   // Promo Code
-  promoCodeId       String?       @map("promo_code_id")
+  promoCodeId String? @map("promo_code_id")
 
   // Status
-  status            OrderStatus   @default(pending)
-  paymentStatus     PaymentStatus @default(pending) @map("payment_status")
-  paymentIntentId   String?       @map("payment_intent_id")
-  paidAt            DateTime?     @map("paid_at")
+  status          OrderStatus   @default(pending)
+  paymentStatus   PaymentStatus @default(pending) @map("payment_status")
+  paymentIntentId String?       @map("payment_intent_id")
+  paidAt          DateTime?     @map("paid_at")
 
   // If a team_admin placed this order on behalf of an agent, placedByUserId
   // is the team_admin (charged Stripe customer); userId is still the agent.
   // Null = the agent placed it themselves.
-  placedByUserId    String?       @map("placed_by_user_id")
+  placedByUserId String? @map("placed_by_user_id")
 
   // Free-text name of the agent on the team who sold this property. Only
   // captured for team_admin accounts (Peggy & similar) — they manage a team
   // as one user account and label each order with the responsible agent.
-  placedForAgentName String?      @map("placed_for_agent_name")
+  placedForAgentName String? @map("placed_for_agent_name")
 
   // Refund / cancellation lifecycle (v1: full refund only). All nullable;
   // additive migration. paymentStatus flips to 'refunded' only via the
   // charge.refunded webhook (single source of truth — survives both our
   // explicit refunds.create calls AND Stripe-dashboard-initiated refunds).
-  refundId             String?   @unique @map("refund_id")
-  refundInitiatedAt    DateTime? @map("refund_initiated_at")
-  refundedAt           DateTime? @map("refunded_at")
-  refundedAmount       Decimal?  @db.Decimal(10, 2) @map("refunded_amount")
-  refundReason         String?   @map("refund_reason")
-  refundEmailSentAt    DateTime? @map("refund_email_sent_at")
+  refundId                String?   @unique @map("refund_id")
+  refundInitiatedAt       DateTime? @map("refund_initiated_at")
+  refundedAt              DateTime? @map("refunded_at")
+  refundedAmount          Decimal?  @map("refunded_amount") @db.Decimal(10, 2)
+  refundReason            String?   @map("refund_reason")
+  refundEmailSentAt       DateTime? @map("refund_email_sent_at")
   // Reservation flag — set via conditional updateMany before sending the
   // order-received email so the synchronous post-charge path (single-order
   // POST + batch POST) and the payment_intent.succeeded webhook can't
   // double-send. Whichever updateMany lands first wins; the other no-ops.
   confirmationEmailSentAt DateTime? @map("confirmation_email_sent_at")
-  cancelledAt          DateTime? @map("cancelled_at")
-  cancelledByUserId    String?   @map("cancelled_by_user_id")
-  cancelReason         String?   @map("cancel_reason")
+  cancelledAt             DateTime? @map("cancelled_at")
+  cancelledByUserId       String?   @map("cancelled_by_user_id")
+  cancelReason            String?   @map("cancel_reason")
 
-  createdAt         DateTime      @default(now()) @map("created_at")
-  updatedAt         DateTime      @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
-  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  placedBy          User?         @relation("OrdersPlacedBy", fields: [placedByUserId], references: [id])
-  cancelledBy       User?         @relation("OrderCancelledBy", fields: [cancelledByUserId], references: [id])
-  postType          PostType?     @relation(fields: [postTypeId], references: [id])
-  promoCode         PromoCode?    @relation(fields: [promoCodeId], references: [id])
-  orderItems        OrderItem[]
-  installation      Installation?
-  consumedHolds     InventoryHold[] @relation("InventoryHoldConsumer")
+  user          User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  placedBy      User?           @relation("OrdersPlacedBy", fields: [placedByUserId], references: [id])
+  cancelledBy   User?           @relation("OrderCancelledBy", fields: [cancelledByUserId], references: [id])
+  postType      PostType?       @relation(fields: [postTypeId], references: [id])
+  promoCode     PromoCode?      @relation(fields: [promoCodeId], references: [id])
+  orderItems    OrderItem[]
+  installation  Installation?
+  consumedHolds InventoryHold[] @relation("InventoryHoldConsumer")
 
   @@index([placedByUserId])
   @@index([cancelledByUserId])
@@ -463,27 +463,27 @@ model Order {
 }
 
 model OrderItem {
-  id          String   @id @default(cuid())
-  orderId     String   @map("order_id")
-  itemType    String   @map("item_type")
+  id           String  @id @default(cuid())
+  orderId      String  @map("order_id")
+  itemType     String  @map("item_type")
   itemCategory String? @map("item_category") // 'storage', 'rental', 'new', 'owned'
-  description String
-  quantity    Int      @default(1)
-  unitPrice   Decimal  @db.Decimal(10, 2) @map("unit_price")
-  totalPrice  Decimal  @db.Decimal(10, 2) @map("total_price")
+  description  String
+  quantity     Int     @default(1)
+  unitPrice    Decimal @map("unit_price") @db.Decimal(10, 2)
+  totalPrice   Decimal @map("total_price") @db.Decimal(10, 2)
 
   // Optional references to customer inventory
-  riderId              String?  @map("rider_id")
-  customerRiderId      String?  @map("customer_rider_id")
+  riderId               String? @map("rider_id")
+  customerRiderId       String? @map("customer_rider_id")
   customerBrochureBoxId String? @map("customer_brochure_box_id")
-  customerLockboxId    String?  @map("customer_lockbox_id")
-  customerSignId       String?  @map("customer_sign_id")
-  customValue          String?  @map("custom_value")
+  customerLockboxId     String? @map("customer_lockbox_id")
+  customerSignId        String? @map("customer_sign_id")
+  customValue           String? @map("custom_value")
 
-  createdAt   DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
-  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  rider       RiderCatalog? @relation(fields: [riderId], references: [id])
+  order Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  rider RiderCatalog? @relation(fields: [riderId], references: [id])
 
   @@map("order_items")
 }
@@ -520,25 +520,25 @@ enum PaymentStatus {
 // ============================================
 
 model Installation {
-  id              String            @id @default(cuid())
-  orderId         String            @unique @map("order_id")
-  userId          String            @map("user_id")
+  id      String @id @default(cuid())
+  orderId String @unique @map("order_id")
+  userId  String @map("user_id")
 
-  propertyAddress String            @map("property_address")
-  propertyCity    String            @map("property_city")
-  propertyState   String            @default("KY") @map("property_state")
-  propertyZip     String            @map("property_zip")
+  propertyAddress String @map("property_address")
+  propertyCity    String @map("property_city")
+  propertyState   String @default("KY") @map("property_state")
+  propertyZip     String @map("property_zip")
 
-  installedAt     DateTime          @default(now()) @map("installed_at")
-  status          InstallationStatus @default(active)
-  removalDate     DateTime?         @map("removal_date")
-  removedAt       DateTime?         @map("removed_at")
+  installedAt DateTime           @default(now()) @map("installed_at")
+  status      InstallationStatus @default(active)
+  removalDate DateTime?          @map("removal_date")
+  removedAt   DateTime?          @map("removed_at")
 
-  createdAt       DateTime          @default(now()) @map("created_at")
-  updatedAt       DateTime          @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
-  order           Order             @relation(fields: [orderId], references: [id])
-  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order           Order                 @relation(fields: [orderId], references: [id])
+  user            User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
   riders          InstallationRider[]
   lockboxes       InstallationLockbox[]
   serviceRequests ServiceRequest[]
@@ -547,28 +547,28 @@ model Installation {
 }
 
 model InstallationRider {
-  id              String       @id @default(cuid())
-  installationId  String       @map("installation_id")
-  riderId         String       @map("rider_id")
-  isRental        Boolean      @default(false) @map("is_rental")
-  installedAt     DateTime     @default(now()) @map("installed_at")
-  removedAt       DateTime?    @map("removed_at")
+  id             String    @id @default(cuid())
+  installationId String    @map("installation_id")
+  riderId        String    @map("rider_id")
+  isRental       Boolean   @default(false) @map("is_rental")
+  installedAt    DateTime  @default(now()) @map("installed_at")
+  removedAt      DateTime? @map("removed_at")
 
-  installation    Installation @relation(fields: [installationId], references: [id], onDelete: Cascade)
-  rider           RiderCatalog @relation(fields: [riderId], references: [id])
+  installation Installation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  rider        RiderCatalog @relation(fields: [riderId], references: [id])
 
   @@map("installation_riders")
 }
 
 model InstallationLockbox {
-  id              String       @id @default(cuid())
-  installationId  String       @map("installation_id")
-  lockboxTypeId   String       @map("lockbox_type_id")
-  customerLockboxId String?    @map("customer_lockbox_id")
-  isRental        Boolean      @default(false) @map("is_rental")
-  code            String?
-  installedAt     DateTime     @default(now()) @map("installed_at")
-  removedAt       DateTime?    @map("removed_at")
+  id                String    @id @default(cuid())
+  installationId    String    @map("installation_id")
+  lockboxTypeId     String    @map("lockbox_type_id")
+  customerLockboxId String?   @map("customer_lockbox_id")
+  isRental          Boolean   @default(false) @map("is_rental")
+  code              String?
+  installedAt       DateTime  @default(now()) @map("installed_at")
+  removedAt         DateTime? @map("removed_at")
 
   installation    Installation     @relation(fields: [installationId], references: [id], onDelete: Cascade)
   lockboxType     LockboxType      @relation(fields: [lockboxTypeId], references: [id])
@@ -589,33 +589,33 @@ enum InstallationStatus {
 // ============================================
 
 model ServiceRequest {
-  id              String              @id @default(cuid())
-  installationId  String?             @map("installation_id")
-  userId          String              @map("user_id")
-  type            ServiceRequestType
-  status          ServiceRequestStatus @default(pending)
-  description     String?
-  requestedDate   DateTime?           @map("requested_date")
-  notes           String?
-  adminNotes      String?             @map("admin_notes")
-  completedAt     DateTime?           @map("completed_at")
+  id                     String               @id @default(cuid())
+  installationId         String?              @map("installation_id")
+  userId                 String               @map("user_id")
+  type                   ServiceRequestType
+  status                 ServiceRequestStatus @default(pending)
+  description            String?
+  requestedDate          DateTime?            @map("requested_date")
+  notes                  String?
+  adminNotes             String?              @map("admin_notes")
+  completedAt            DateTime?            @map("completed_at")
   // Invoicing — service trips aren't always a flat $40, so admin can bill a
   // variable amount and charge the customer's saved default card.
-  invoiceAmount          Decimal?     @db.Decimal(10, 2) @map("invoice_amount")
-  invoiceStatus          String?      @map("invoice_status") // 'paid' | 'failed'
-  invoicePaymentIntentId String?      @map("invoice_payment_intent_id")
-  invoicePaidAt          DateTime?    @map("invoice_paid_at")
+  invoiceAmount          Decimal?             @map("invoice_amount") @db.Decimal(10, 2)
+  invoiceStatus          String?              @map("invoice_status") // 'paid' | 'failed'
+  invoicePaymentIntentId String?              @map("invoice_payment_intent_id")
+  invoicePaidAt          DateTime?            @map("invoice_paid_at")
   // Unlisted-address fields — populated when a service trip is requested for
   // an address Pink Posts hasn't installed at (no Installation row exists).
-  unlistedAddress String?             @map("unlisted_address")
-  unlistedCity    String?             @map("unlisted_city")
-  unlistedState   String?             @map("unlisted_state")
-  unlistedZip     String?             @map("unlisted_zip")
-  createdAt       DateTime            @default(now()) @map("created_at")
-  updatedAt       DateTime            @updatedAt @map("updated_at")
+  unlistedAddress        String?              @map("unlisted_address")
+  unlistedCity           String?              @map("unlisted_city")
+  unlistedState          String?              @map("unlisted_state")
+  unlistedZip            String?              @map("unlisted_zip")
+  createdAt              DateTime             @default(now()) @map("created_at")
+  updatedAt              DateTime             @updatedAt @map("updated_at")
 
-  installation    Installation?       @relation(fields: [installationId], references: [id], onDelete: Cascade)
-  user            User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  installation Installation? @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("service_requests")
 }
@@ -641,17 +641,17 @@ enum ServiceRequestStatus {
 // ============================================
 
 model PaymentMethod {
-  id                  String   @id @default(cuid())
-  userId              String   @map("user_id")
-  stripePaymentMethodId String @unique @map("stripe_payment_method_id")
-  brand               String
-  last4               String
-  expMonth            Int      @map("exp_month")
-  expYear             Int      @map("exp_year")
-  isDefault           Boolean  @default(false) @map("is_default")
-  createdAt           DateTime @default(now()) @map("created_at")
+  id                    String   @id @default(cuid())
+  userId                String   @map("user_id")
+  stripePaymentMethodId String   @unique @map("stripe_payment_method_id")
+  brand                 String
+  last4                 String
+  expMonth              Int      @map("exp_month")
+  expYear               Int      @map("exp_year")
+  isDefault             Boolean  @default(false) @map("is_default")
+  createdAt             DateTime @default(now()) @map("created_at")
 
-  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("payment_methods")
 }
@@ -661,35 +661,35 @@ model PaymentMethod {
 // ============================================
 
 model PromoCode {
-  id              String    @id @default(cuid())
-  code            String    @unique
-  description     String?
-  discountType    DiscountType @default(percentage) @map("discount_type")
-  discountValue   Decimal   @db.Decimal(10, 2) @map("discount_value") // percentage or fixed amount
-  minOrderAmount  Decimal?  @db.Decimal(10, 2) @map("min_order_amount")
-  maxUses         Int?      @map("max_uses") // Max uses per customer (null = unlimited)
-  startsAt        DateTime? @map("starts_at")
-  expiresAt       DateTime? @map("expires_at")
-  waiveFuelSurcharge Boolean @default(false) @map("waive_fuel_surcharge")
-  isActive        Boolean   @default(true) @map("is_active")
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
+  id                 String       @id @default(cuid())
+  code               String       @unique
+  description        String?
+  discountType       DiscountType @default(percentage) @map("discount_type")
+  discountValue      Decimal      @map("discount_value") @db.Decimal(10, 2) // percentage or fixed amount
+  minOrderAmount     Decimal?     @map("min_order_amount") @db.Decimal(10, 2)
+  maxUses            Int?         @map("max_uses") // Max uses per customer (null = unlimited)
+  startsAt           DateTime?    @map("starts_at")
+  expiresAt          DateTime?    @map("expires_at")
+  waiveFuelSurcharge Boolean      @default(false) @map("waive_fuel_surcharge")
+  isActive           Boolean      @default(true) @map("is_active")
+  createdAt          DateTime     @default(now()) @map("created_at")
+  updatedAt          DateTime     @updatedAt @map("updated_at")
 
-  orders          Order[]
-  usages          PromoCodeUsage[]
+  orders Order[]
+  usages PromoCodeUsage[]
 
   @@map("promo_codes")
 }
 
 // Tracks per-customer promo code usage
 model PromoCodeUsage {
-  id          String    @id @default(cuid())
-  userId      String    @map("user_id")
-  promoCodeId String    @map("promo_code_id")
-  usedAt      DateTime  @default(now()) @map("used_at")
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  promoCodeId String   @map("promo_code_id")
+  usedAt      DateTime @default(now()) @map("used_at")
 
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  promoCode   PromoCode @relation(fields: [promoCodeId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  promoCode PromoCode @relation(fields: [promoCodeId], references: [id], onDelete: Cascade)
 
   @@map("promo_code_usages")
 }
@@ -729,32 +729,32 @@ enum HoldItemType {
 }
 
 model InventoryHold {
-  id                String        @id @default(cuid())
-  itemType          HoldItemType  @map("item_type")
-  itemId            String        @map("item_id")
+  id                         String       @id @default(cuid())
+  itemType                   HoldItemType @map("item_type")
+  itemId                     String       @map("item_id")
   // The user who "owns" the cart (charged Stripe customer / cart owner).
-  ownerUserId       String        @map("owner_user_id")
+  ownerUserId                String       @map("owner_user_id")
   // The user who clicked. Usually = ownerUserId, except when admin or
   // team_admin acts on behalf of a customer.
-  actorUserId       String        @map("actor_user_id")
+  actorUserId                String       @map("actor_user_id")
   // When admin/team_admin acts for a customer, this is that customer.
-  onBehalfOfUserId  String?       @map("on_behalf_of_user_id")
+  onBehalfOfUserId           String?      @map("on_behalf_of_user_id")
   // The TeamMember (agent) this item is/was assigned to, snapshotted at
   // hold creation. Lets us refuse mid-cart reassignment without a join.
-  assignedToMemberIdSnapshot String? @map("assigned_to_member_id_snapshot")
+  assignedToMemberIdSnapshot String?      @map("assigned_to_member_id_snapshot")
   // localStorage uuid today; swaps to server Cart.id when track #4 lands.
-  cartSessionId     String?       @map("cart_session_id")
+  cartSessionId              String?      @map("cart_session_id")
   // The CartItem-level id (one cart entry that this hold belongs to), so
   // removeItem() can release precisely without scanning the whole cart.
-  cartItemId        String?       @map("cart_item_id")
+  cartItemId                 String?      @map("cart_item_id")
   // Server-computed expiry. Use Postgres NOW() + interval, never Node.now,
   // to avoid clock skew. See acquireHold helper.
-  expiresAt         DateTime      @map("expires_at")
+  expiresAt                  DateTime     @map("expires_at")
   // Set when claimed at checkout; sweeper reaps these on next pass.
-  consumedByOrderId String?       @map("consumed_by_order_id")
+  consumedByOrderId          String?      @map("consumed_by_order_id")
   // Set on explicit release (cart remove / clearCart); sweeper reaps.
-  releasedAt        DateTime?     @map("released_at")
-  createdAt         DateTime      @default(now()) @map("created_at")
+  releasedAt                 DateTime?    @map("released_at")
+  createdAt                  DateTime     @default(now()) @map("created_at")
 
   owner           User   @relation("InventoryHoldOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
   actor           User   @relation("InventoryHoldActor", fields: [actorUserId], references: [id], onDelete: Cascade)
@@ -779,22 +779,22 @@ model InventoryHold {
 // actorEmail/actorRole are denormalized so the record survives user deletion.
 
 model AuditLog {
-  id          String   @id @default(cuid())
-  createdAt   DateTime @default(now()) @map("created_at")
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now()) @map("created_at")
 
-  actorUserId String?  @map("actor_user_id")
-  actorEmail  String?  @map("actor_email")
-  actorRole   String?  @map("actor_role")
+  actorUserId String? @map("actor_user_id")
+  actorEmail  String? @map("actor_email")
+  actorRole   String? @map("actor_role")
 
-  action      String
-  targetType  String?  @map("target_type")
-  targetId    String?  @map("target_id")
+  action     String
+  targetType String? @map("target_type")
+  targetId   String? @map("target_id")
 
-  metadata    Json?
-  ipAddress   String?  @map("ip_address")
-  userAgent   String?  @map("user_agent")
+  metadata  Json?
+  ipAddress String? @map("ip_address")
+  userAgent String? @map("user_agent")
 
-  actor       User?    @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  actor User? @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
 
   @@index([actorUserId])
   @@index([targetType, targetId])
@@ -812,24 +812,24 @@ model AuditLog {
 // so Ryan can tune bands without a redeploy.
 
 model ServiceCenter {
-  id                String   @id @default(cuid())
-  name              String   @unique
-  addressLine       String?  @map("address_line")
-  city              String
-  state             String   @db.VarChar(2)
-  zip               String   @db.VarChar(5)
+  id               String   @id @default(cuid())
+  name             String   @unique
+  addressLine      String?  @map("address_line")
+  city             String
+  state            String   @db.VarChar(2)
+  zip              String   @db.VarChar(5)
   // Geocoded once at create time — used by haversine to ZIP centroid.
-  lat               Decimal  @db.Decimal(9, 6)
-  lng               Decimal  @db.Decimal(9, 6)
+  lat              Decimal  @db.Decimal(9, 6)
+  lng              Decimal  @db.Decimal(9, 6)
   // Upper bound of standard band in minutes (<= = standard tier).
-  standardMinutes   Int      @map("standard_minutes")
+  standardMinutes  Int      @map("standard_minutes")
   // Upper bound of surcharge band in minutes (> = out_of_area tier).
-  surchargeMinutes  Int      @map("surcharge_minutes")
-  surchargeCents    Int      @default(5000) @map("surcharge_cents")
-  contactPhone      String   @default("859-395-8188") @map("contact_phone")
-  isActive          Boolean  @default(true) @map("is_active")
-  createdAt         DateTime @default(now()) @map("created_at")
-  updatedAt         DateTime @updatedAt @map("updated_at")
+  surchargeMinutes Int      @map("surcharge_minutes")
+  surchargeCents   Int      @default(5000) @map("surcharge_cents")
+  contactPhone     String   @default("859-395-8188") @map("contact_phone")
+  isActive         Boolean  @default(true) @map("is_active")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
 
   @@index([isActive])
   @@map("service_centers")
@@ -837,15 +837,15 @@ model ServiceCenter {
 
 // Per-user notification-preference change log — answers "when did Peggy opt out"
 model UserPreferenceChange {
-  id          String   @id @default(cuid())
-  userId      String   @map("user_id")
-  changedBy   String   @map("changed_by") // actor userId (usually == userId; admin override possible)
-  changes     Json     // { emailOrderConfirmations: { from: true, to: false }, ... }
-  ipAddress   String?  @map("ip_address")
-  userAgent   String?  @map("user_agent")
-  createdAt   DateTime @default(now()) @map("created_at")
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  changedBy String   @map("changed_by") // actor userId (usually == userId; admin override possible)
+  changes   Json // { emailOrderConfirmations: { from: true, to: false }, ... }
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
 
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
   @@map("user_preference_changes")
