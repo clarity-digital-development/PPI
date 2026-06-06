@@ -16,16 +16,25 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url)
     const search = searchParams.get('search')
+    const roleParam = searchParams.get('role')
     const limit = parseInt(searchParams.get('limit') || '500')
     const offset = parseInt(searchParams.get('offset') || '0')
 
     // Team admins see only the customers in their team. Pink Posts internal
     // admins see all customers AND team_admin accounts (so they can manage
     // teams + tag them).
+    // Internal admins can additionally narrow via ?role=customer|team_admin.
+    const isInternalAdmin = user.role !== 'team_admin'
+    const narrowRole =
+      isInternalAdmin && (roleParam === 'customer' || roleParam === 'team_admin')
+        ? (roleParam as 'customer' | 'team_admin')
+        : null
     const roleScope =
       user.role === 'team_admin'
         ? { role: 'customer' as const, teamId: user.teamId ?? '__no-team__' }
-        : { role: { in: ['customer', 'team_admin'] as ('customer' | 'team_admin')[] } }
+        : narrowRole
+          ? { role: narrowRole }
+          : { role: { in: ['customer', 'team_admin'] as ('customer' | 'team_admin')[] } }
 
     const where = {
       ...roleScope,

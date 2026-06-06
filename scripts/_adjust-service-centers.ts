@@ -42,7 +42,7 @@ async function main() {
     })
 
     await audit({
-      actor: { id: null, email: 'script:_adjust-service-centers', role: 'system' },
+      actor: { system: true },
       action: AuditAction.ServiceCenterUpdate,
       targetType: 'service_center',
       targetId: current.id,

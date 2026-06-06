@@ -2,8 +2,18 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Search, Eye, Package, Mail, Phone } from 'lucide-react'
 import { Input, Badge } from '@/components/ui'
+
+// Narrowed role filter; '' === All.
+type RoleFilter = '' | 'customer' | 'team_admin'
+
+const ROLE_PILLS: { value: RoleFilter; label: string }[] = [
+  { value: '', label: 'All' },
+  { value: 'team_admin', label: 'Brokers' },
+  { value: 'customer', label: 'Customers' },
+]
 
 interface Customer {
   id: string
@@ -20,16 +30,35 @@ interface Customer {
 }
 
 export default function CustomersPage() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  // Hydrate role from URL so reloads + shared links persist the filter.
+  const initialRole: RoleFilter = (() => {
+    const r = searchParams.get('role')
+    return r === 'customer' || r === 'team_admin' ? r : ''
+  })()
   const [customers, setCustomers] = useState<Customer[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+  const [roleFilter, setRoleFilter] = useState<RoleFilter>(initialRole)
+
+  // Push role into the URL without scroll/navigation thrash.
+  function selectRole(next: RoleFilter) {
+    setRoleFilter(next)
+    const params = new URLSearchParams(searchParams.toString())
+    if (next) params.set('role', next)
+    else params.delete('role')
+    const qs = params.toString()
+    router.replace(qs ? `/admin/customers?${qs}` : '/admin/customers', { scroll: false })
+  }
 
   useEffect(() => {
     async function fetchCustomers() {
       try {
         const params = new URLSearchParams()
         if (search) params.set('search', search)
+        if (roleFilter) params.set('role', roleFilter)
 
         const res = await fetch(`/api/admin/customers?${params}`)
         if (res.ok) {
@@ -46,7 +75,7 @@ export default function CustomersPage() {
 
     const debounce = setTimeout(fetchCustomers, 300)
     return () => clearTimeout(debounce)
-  }, [search])
+  }, [search, roleFilter])
 
   return (
     <div className="p-6">
@@ -73,6 +102,23 @@ export default function CustomersPage() {
             />
           </div>
         </div>
+      </div>
+
+      {/* Role filter pills - mirrors /admin/inventory type filter */}
+      <div className="flex gap-2 mb-4">
+        {ROLE_PILLS.map((pill) => (
+          <button
+            key={pill.value || 'all'}
+            onClick={() => selectRole(pill.value)}
+            className={`px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
+              roleFilter === pill.value
+                ? 'bg-pink-500 text-white'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            {pill.label}
+          </button>
+        ))}
       </div>
 
       {loading ? (

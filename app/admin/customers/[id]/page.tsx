@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
-import { ArrowLeft, Plus, Minus, Trash2, Package, Tag, Lock, FileBox, Pencil, UserX, Archive, Users, X, ChevronDown } from 'lucide-react'
+import { ArrowLeft, Plus, Minus, Trash2, Package, Tag, Lock, FileBox, Pencil, UserX, Archive, Users, X, ChevronDown, Search } from 'lucide-react'
 import { Card, CardContent, Button, Input, Badge, Modal, SearchableSelect } from '@/components/ui'
 
 interface CustomerData {
@@ -102,6 +102,20 @@ export default function CustomerDetailPage() {
   const [reassigning, setReassigning] = useState(false)
   // Per-row inline reassign in-flight, keyed by `${type}:${id}` — disables the dropdown so admins can't double-fire.
   const [rowReassigning, setRowReassigning] = useState<Record<string, boolean>>({})
+  // Agent-list scaling: raw input + debounced value drives a client-side substring match across name/email.
+  const [agentSearch, setAgentSearch] = useState('')
+  const [agentSearchDebounced, setAgentSearchDebounced] = useState('')
+  // Sectioned-collapse state for the 90/10 split (most agents have no inventory).
+  const [withInventoryOpen, setWithInventoryOpen] = useState(true)
+  const [noInventoryOpen, setNoInventoryOpen] = useState(false)
+  // Pagination cap for the "no inventory" section so 988 agents don't all paint at once.
+  const [noInventoryLimit, setNoInventoryLimit] = useState(50)
+
+  // Debounce search input 150ms — client-side filter only, no network.
+  useEffect(() => {
+    const t = setTimeout(() => setAgentSearchDebounced(agentSearch.trim().toLowerCase()), 150)
+    return () => clearTimeout(t)
+  }, [agentSearch])
 
   useEffect(() => {
     fetchCustomer()
@@ -433,6 +447,39 @@ export default function CustomerDetailPage() {
   // Per-agent grouping only makes sense when the customer's team has agents to assign to.
   const useGroupedView = !!(data?.team && data.team.members.length > 0)
 
+  // Partition agents into has-inventory / no-inventory and apply the debounced search filter.
+  // Sorted alphabetically (case-insensitive) within each section to avoid reshuffling on item moves.
+  const partitionedAgents = useMemo(() => {
+    if (!data?.team) return { withInventory: [], noInventory: [], totalWith: 0, totalNo: 0 }
+    const q = agentSearchDebounced
+    const sorted = [...data.team.members].sort((a, b) =>
+      (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
+    )
+    const withInventory: typeof sorted = []
+    const noInventory: typeof sorted = []
+    for (const m of sorted) {
+      const b = grouped[m.id] || { signs: [], riders: [], lockboxes: [], brochureBoxes: [] }
+      const total = b.signs.length + b.riders.length + b.lockboxes.length + b.brochureBoxes.length
+      if (total > 0) withInventory.push(m)
+      else noInventory.push(m)
+    }
+    const totalWith = withInventory.length
+    const totalNo = noInventory.length
+    if (!q) return { withInventory, noInventory, totalWith, totalNo }
+    const match = (m: { name: string; email: string | null }) =>
+      (m.name || '').toLowerCase().includes(q) || (m.email || '').toLowerCase().includes(q)
+    return {
+      withInventory: withInventory.filter(match),
+      noInventory: noInventory.filter(match),
+      totalWith,
+      totalNo,
+    }
+  }, [data?.team, grouped, agentSearchDebounced])
+
+  const isSearching = agentSearchDebounced.length > 0
+  // Safety cap on search-active rendering so a single-char query can't paint 1000+ cards open-able at once.
+  const SEARCH_CAP = 200
+
   if (loading) {
     return (
       <div className="p-6">
@@ -617,6 +664,7 @@ export default function CustomerDetailPage() {
             </CardContent>
           </Card>
 
+          {/* Unassigned pinned above the sectioned/searchable list — search filters agents, not items. */}
           <AgentInventorySection
             title="Unassigned"
             sublabel="Team pool — not yet assigned to any agent"
@@ -631,22 +679,164 @@ export default function CustomerDetailPage() {
             onReassign={handleRowReassign}
           />
 
-          {data.team.members.map((m) => (
-            <AgentInventorySection
-              key={m.id}
-              title={m.name}
-              sublabel={m.email || undefined}
-              defaultOpen={false}
-              bucket={grouped[m.id] || { signs: [], riders: [], lockboxes: [], brochureBoxes: [] }}
-              selectedItems={selectedItems}
-              onToggle={toggleItemSelected}
-              onDelete={handleDeleteInventory}
-              teamMembers={data.team!.members}
-              currentMemberId={m.id}
-              rowReassigning={rowReassigning}
-              onReassign={handleRowReassign}
-            />
-          ))}
+          {/* Sticky agent search — debounced 150ms, scales the per-agent list to 1000+ members. */}
+          <div className="sticky top-0 z-10 -mx-1 px-1 py-2 bg-gray-50/95 backdrop-blur supports-[backdrop-filter]:bg-gray-50/75">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+              <Input
+                value={agentSearch}
+                onChange={(e) => setAgentSearch(e.target.value)}
+                placeholder="Search agents by name or email..."
+                className="pl-9 pr-9 bg-white"
+              />
+              {agentSearch && (
+                <button
+                  type="button"
+                  onClick={() => setAgentSearch('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 rounded"
+                  aria-label="Clear search"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {(() => {
+            const { withInventory, noInventory, totalWith, totalNo } = partitionedAgents
+            const cappedWith = isSearching ? withInventory.slice(0, SEARCH_CAP) : withInventory
+            // No-inventory cap: when searching, lift to SEARCH_CAP; otherwise stick to user-controlled pagination.
+            const cappedNo = isSearching
+              ? noInventory.slice(0, Math.max(0, SEARCH_CAP - cappedWith.length))
+              : noInventory.slice(0, noInventoryLimit)
+            const noShownNow = cappedNo.length
+            const noRemaining = noInventory.length - noShownNow
+            const totalMatches = withInventory.length + noInventory.length
+            const overflow = isSearching && totalMatches > SEARCH_CAP
+
+            if (isSearching && totalMatches === 0) {
+              return (
+                <Card>
+                  <CardContent className="p-6">
+                    <p className="text-sm text-gray-500">
+                      No agents match &ldquo;{agentSearchDebounced}&rdquo;.
+                    </p>
+                  </CardContent>
+                </Card>
+              )
+            }
+
+            // When a search is active, force both sections visible regardless of collapse state.
+            const showWithSection = isSearching ? cappedWith.length > 0 : true
+            const showNoSection = isSearching ? cappedNo.length > 0 : noInventory.length > 0
+
+            return (
+              <>
+                {showWithSection && (
+                  <Card>
+                    <CardContent className="p-0">
+                      <button
+                        type="button"
+                        onClick={() => !isSearching && setWithInventoryOpen(o => !o)}
+                        disabled={isSearching}
+                        className="w-full flex items-center justify-between gap-3 px-6 py-3 text-left hover:bg-gray-50 transition-colors disabled:hover:bg-transparent disabled:cursor-default"
+                      >
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-semibold text-gray-900">Agents with inventory</h3>
+                          <Badge variant="info">
+                            {isSearching ? `${cappedWith.length} of ${totalWith}` : totalWith}
+                          </Badge>
+                        </div>
+                        {!isSearching && (
+                          <ChevronDown className={`w-5 h-5 text-gray-400 transition-transform ${withInventoryOpen ? 'rotate-180' : ''}`} />
+                        )}
+                      </button>
+                      {(isSearching || withInventoryOpen) && (
+                        <div className="px-3 pb-3 pt-1 space-y-2 border-t border-gray-100">
+                          {cappedWith.map((m) => (
+                            <AgentInventorySection
+                              key={m.id}
+                              title={m.name}
+                              sublabel={m.email || undefined}
+                              defaultOpen={false}
+                              bucket={grouped[m.id] || { signs: [], riders: [], lockboxes: [], brochureBoxes: [] }}
+                              selectedItems={selectedItems}
+                              onToggle={toggleItemSelected}
+                              onDelete={handleDeleteInventory}
+                              teamMembers={data.team!.members}
+                              currentMemberId={m.id}
+                              rowReassigning={rowReassigning}
+                              onReassign={handleRowReassign}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                )}
+
+                {showNoSection && (
+                  <Card>
+                    <CardContent className="p-0">
+                      <button
+                        type="button"
+                        onClick={() => !isSearching && setNoInventoryOpen(o => { if (o) setNoInventoryLimit(50); return !o })}
+                        disabled={isSearching}
+                        className="w-full flex items-center justify-between gap-3 px-6 py-3 text-left hover:bg-gray-50 transition-colors disabled:hover:bg-transparent disabled:cursor-default"
+                      >
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-semibold text-gray-900">Agents with no inventory</h3>
+                          <Badge variant="neutral">
+                            {isSearching ? `${cappedNo.length} of ${totalNo}` : totalNo}
+                          </Badge>
+                        </div>
+                        {!isSearching && (
+                          <ChevronDown className={`w-5 h-5 text-gray-400 transition-transform ${noInventoryOpen ? 'rotate-180' : ''}`} />
+                        )}
+                      </button>
+                      {(isSearching || noInventoryOpen) && (
+                        <div className="px-3 pb-3 pt-1 space-y-2 border-t border-gray-100">
+                          {cappedNo.map((m) => (
+                            <AgentInventorySection
+                              key={m.id}
+                              title={m.name}
+                              sublabel={m.email || undefined}
+                              defaultOpen={false}
+                              bucket={grouped[m.id] || { signs: [], riders: [], lockboxes: [], brochureBoxes: [] }}
+                              selectedItems={selectedItems}
+                              onToggle={toggleItemSelected}
+                              onDelete={handleDeleteInventory}
+                              teamMembers={data.team!.members}
+                              currentMemberId={m.id}
+                              rowReassigning={rowReassigning}
+                              onReassign={handleRowReassign}
+                            />
+                          ))}
+                          {!isSearching && noRemaining > 0 && (
+                            <div className="flex justify-center pt-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setNoInventoryLimit((n) => n + 50)}
+                              >
+                                Show {Math.min(50, noRemaining)} more agents ({noRemaining} remaining)
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                )}
+
+                {overflow && (
+                  <p className="text-xs text-gray-500 text-center">
+                    Showing first {SEARCH_CAP} matches — refine your search to narrow results.
+                  </p>
+                )}
+              </>
+            )
+          })()}
         </div>
       )}
 
@@ -1245,16 +1435,18 @@ export default function CustomerDetailPage() {
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Assign to agent <span className="text-gray-400 font-normal">(optional)</span>
               </label>
-              <select
+              {/* SearchableSelect scales to 1000+ agents — plain dropdown breaks down past ~20. */}
+              <SearchableSelect
                 value={formData.assigned_to_member_id}
-                onChange={(e) => setFormData({ ...formData, assigned_to_member_id: e.target.value })}
-                className="w-full px-4 py-2.5 rounded-lg border border-gray-200 focus:border-pink-500 focus:ring-2 focus:ring-pink-200 outline-none"
-              >
-                <option value="">Unassigned (team pool)</option>
-                {data.team.members.map((m) => (
-                  <option key={m.id} value={m.id}>{m.name}</option>
-                ))}
-              </select>
+                onChange={(next) => setFormData({ ...formData, assigned_to_member_id: next })}
+                options={[
+                  { value: '', label: 'Unassigned (team pool)' },
+                  ...data.team.members.map((m) => ({ value: m.id, label: m.name })),
+                ]}
+                placeholder="Unassigned (team pool)"
+                searchPlaceholder="Search agents..."
+                aria-label="Assign to agent"
+              />
               <p className="mt-1 text-xs text-gray-500">
                 Pre-assigning saves the team admin a step — they won&apos;t need to reassign in &quot;Team Inventory&quot; later.
               </p>
