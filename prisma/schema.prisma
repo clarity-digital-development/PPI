@@ -94,6 +94,12 @@ model User {
   emailMarketing             Boolean   @default(false) @map("email_marketing")
   notificationPrefsUpdatedAt DateTime? @map("notification_prefs_updated_at")
 
+  // Policy-notice acceptance — modal shown to non-exempt users on next dashboard
+  // load when policyNoticeVersion < CURRENT_NOTICE_VERSION (see lib/policy-notices.ts).
+  // Defaults make every existing user re-see v1 once; team_admin/admin are exempt.
+  policyNoticeAcceptedAt DateTime? @map("policy_notice_accepted_at")
+  policyNoticeVersion    Int       @default(0) @map("policy_notice_version")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

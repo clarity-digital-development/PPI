@@ -95,5 +95,8 @@ export const AuditAction = {
   UserExemptToggle:            'user.service_area_exempt_toggle',
   ServiceAreaBlock:            'service_area.block',
   ServiceAreaSurchargeApplied: 'service_area.surcharge_applied',
+  // Policy-notice acceptance — legal trail proving each non-exempt user
+  // saw and acknowledged the out-of-area fee + post-rental clarification.
+  PolicyNoticeAccepted: 'policy_notice.accepted',
 } as const
 export type AuditActionName = (typeof AuditAction)[keyof typeof AuditAction]
