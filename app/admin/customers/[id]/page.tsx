@@ -15,6 +15,7 @@ interface CustomerData {
     company_name: string | null
     license_number: string | null
     role: 'customer' | 'team_admin' | 'admin'
+    is_service_area_exempt?: boolean
   }
   team: {
     id: string
@@ -83,12 +84,14 @@ export default function CustomerDetailPage() {
     phone: string
     company_name: string
     role: 'customer' | 'team_admin' | 'admin'
+    is_service_area_exempt: boolean
   }>({
     full_name: '',
     email: '',
     phone: '',
     company_name: '',
     role: 'customer',
+    is_service_area_exempt: false,
   })
   const [saving, setSaving] = useState(false)
   // Per-row selection for the agent-grouped bulk-reassign action bar.
@@ -116,6 +119,7 @@ export default function CustomerDetailPage() {
           phone: data.customer.phone || '',
           company_name: data.customer.company_name || '',
           role: data.customer.role,
+          is_service_area_exempt: data.customer.is_service_area_exempt ?? false,
         })
       }
     } catch (error) {
@@ -137,6 +141,7 @@ export default function CustomerDetailPage() {
           phone: editData.phone,
           company: editData.company_name,
           role: editData.role,
+          is_service_area_exempt: editData.is_service_area_exempt,
         }),
       })
       if (res.ok) {
@@ -1073,6 +1078,24 @@ export default function CustomerDetailPage() {
                 Demoting from <strong>Admin</strong> will revoke all Pink Posts admin access for this user.
               </p>
             )}
+          </div>
+          {/* Per-customer service-area exemption. team_admin role is exempt automatically;
+              this flag covers individual relationship/VIP customers we want to accommodate. */}
+          <div>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={editData.is_service_area_exempt}
+                onChange={(e) => setEditData({ ...editData, is_service_area_exempt: e.target.checked })}
+                className="mt-0.5 w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
+              />
+              <span className="text-sm">
+                <span className="font-medium text-gray-700">Exempt from out-of-area service fee</span>
+                <span className="block text-xs text-gray-500">
+                  Bypasses the surcharge band and the hard cutoff for this customer. Team Admin accounts are exempt automatically.
+                </span>
+              </span>
+            </label>
           </div>
           <div className="flex justify-end gap-3 pt-4">
             <Button variant="outline" onClick={() => setShowEditModal(false)}>

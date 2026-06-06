@@ -179,6 +179,7 @@ export async function GET(
         company_name: customer.company,
         license_number: null,
         role: customer.role,
+        is_service_area_exempt: customer.isServiceAreaExempt,
       },
       team,
       inventory: {
@@ -262,6 +263,23 @@ export async function PUT(
     if (body.phone !== undefined) updateData.phone = body.phone
     if (body.company !== undefined) updateData.company = body.company
 
+    // Capture before-value so we can emit an audit row only when it actually flips.
+    let exemptChangeAudit: { from: boolean; to: boolean } | null = null
+    if (body.is_service_area_exempt !== undefined) {
+      const nextExempt = Boolean(body.is_service_area_exempt)
+      const cur = await prisma.user.findUnique({
+        where: { id },
+        select: { isServiceAreaExempt: true },
+      })
+      if (!cur) {
+        return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
+      }
+      if (cur.isServiceAreaExempt !== nextExempt) {
+        updateData.isServiceAreaExempt = nextExempt
+        exemptChangeAudit = { from: cur.isServiceAreaExempt, to: nextExempt }
+      }
+    }
+
     let roleChangeAudit: { from: string; to: AllowedRole } | null = null
     if (body.role !== undefined) {
       // Defense in depth: even though the route is already gated to admins
@@ -316,6 +334,17 @@ export async function PUT(
         targetType: 'user',
         targetId: customer.id,
         metadata: { email: customer.email, ...roleChangeAudit },
+        request,
+      })
+    }
+
+    if (exemptChangeAudit) {
+      await audit({
+        actor: { id: user.id, email: user.email, role: user.role },
+        action: AuditAction.UserExemptToggle,
+        targetType: 'user',
+        targetId: customer.id,
+        metadata: { email: customer.email, ...exemptChangeAudit },
         request,
       })
     }

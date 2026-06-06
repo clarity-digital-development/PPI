@@ -88,5 +88,12 @@ export const AuditAction = {
   InventoryHoldConflict:   'inventory_hold.conflict',
   InventoryHoldConsumed:   'inventory_hold.consumed',
   InventoryHoldOverridden: 'inventory_hold.overridden',
+  // Service-area gating (drive-time bands per service center).
+  ServiceCenterCreate:         'service_center.create',
+  ServiceCenterUpdate:         'service_center.update',
+  ServiceCenterDelete:         'service_center.delete',
+  UserExemptToggle:            'user.service_area_exempt_toggle',
+  ServiceAreaBlock:            'service_area.block',
+  ServiceAreaSurchargeApplied: 'service_area.surcharge_applied',
 } as const
 export type AuditActionName = (typeof AuditAction)[keyof typeof AuditAction]

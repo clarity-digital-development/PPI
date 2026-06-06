@@ -6,6 +6,7 @@ import { validateScheduling } from '@/lib/scheduling'
 import { audit, AuditAction } from '@/lib/audit'
 import { createPaymentIntent, createCustomer, calculateTax, getStripeErrorMessage } from '@/lib/stripe/server'
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
+import { resolveServiceArea } from '@/lib/service-area'
 
 const FUEL_SURCHARGE = 2.47
 const NO_POST_SURCHARGE = 40
@@ -129,6 +130,52 @@ export async function POST(request: NextRequest) {
         { error: scheduleCheck.error, code: scheduleCheck.code },
         { status: 400 }
       )
+    }
+
+    // Service-area gate. Payer (actor) gets the exemption per Ryan — they're
+    // the wallet. team_admin and isServiceAreaExempt customers always pass.
+    const effectiveUser = {
+      id: actor.id,
+      role: actor.role,
+      isServiceAreaExempt: actor.isServiceAreaExempt ?? false,
+    }
+    const sa = await resolveServiceArea({ zip: orderData.property_zip, user: effectiveUser })
+    if (sa.tier === 'out_of_area') {
+      await audit({
+        actor: { id: actor.id, email: actor.email, role: actor.role },
+        action: AuditAction.ServiceAreaBlock,
+        targetType: 'order',
+        metadata: {
+          zip: orderData.property_zip,
+          reason: sa.reason ?? null,
+          attemptedTotal: orderData.items.reduce((s, i) => s + i.total_price, 0),
+          centersChecked: 5,
+        },
+        request,
+      })
+      return NextResponse.json(
+        {
+          error: `We don't currently service ZIP ${orderData.property_zip}. Please call ${sa.contactPhone} to discuss options.`,
+          code: 'service_area_unavailable',
+          contactPhone: sa.contactPhone,
+        },
+        { status: 400 }
+      )
+    }
+    // surcharge → push a synthetic OrderItem so it flows through pricing + display.
+    if (sa.tier === 'surcharge' && sa.decidedBy) {
+      const surchargeDollars = sa.surchargeCents / 100
+      orderData.items.push({
+        // Server-injected: 'surcharge' is intentionally NOT in the client Zod enum
+        // (clients can't fake a $0 surcharge line). The outer object cast widens to the
+        // route's items[] union; this property cast bridges through `any`.
+        item_type: 'surcharge' as never,
+        item_category: undefined,
+        description: `Out-of-area service fee – ${sa.decidedBy.centerName} ~${Math.round(sa.decidedBy.driveTimeMinutes)}min`,
+        quantity: 1,
+        unit_price: surchargeDollars,
+        total_price: surchargeDollars,
+      } as typeof orderData.items[number])
     }
 
     // Calculate totals
@@ -388,6 +435,24 @@ export async function POST(request: NextRequest) {
         orderItems: true,
       },
     })
+
+    // Audit surcharge application now that the order row exists.
+    if (sa.tier === 'surcharge' && sa.decidedBy) {
+      await audit({
+        actor: { id: actor.id, email: actor.email, role: actor.role },
+        action: AuditAction.ServiceAreaSurchargeApplied,
+        targetType: 'order',
+        targetId: order.id,
+        metadata: {
+          centerId: sa.decidedBy.centerId,
+          centerName: sa.decidedBy.centerName,
+          driveTimeMinutes: sa.decidedBy.driveTimeMinutes,
+          surchargeCents: sa.surchargeCents,
+          zip: orderData.property_zip,
+        },
+        request,
+      })
+    }
 
     // Mark inventory items as no longer in storage after order is created.
     // If payment later fails (3DS abandoned, card declined, etc.), the webhook

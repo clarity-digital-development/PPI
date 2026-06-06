@@ -77,6 +77,41 @@ export async function PUT(
       updateData.paymentStatus = body.payment_status
     }
 
+    // propertyZip override on admin edit. The service-area gate is NOT
+    // re-applied — admins are trusted to override intentionally — but we log a
+    // WARN audit when the customer is non-exempt so there's a paper trail of
+    // who pushed an order outside the normal coverage rules.
+    if (typeof body.property_zip === 'string' && body.property_zip.trim()) {
+      const newZip = body.property_zip.trim().slice(0, 5)
+      const existing = await prisma.order.findUnique({
+        where: { id },
+        select: {
+          propertyZip: true,
+          user: { select: { id: true, role: true, isServiceAreaExempt: true } },
+        },
+      })
+      if (existing && existing.propertyZip !== newZip) {
+        const owner = existing.user
+        const isExempt = owner.role === 'team_admin' || owner.isServiceAreaExempt
+        if (!isExempt) {
+          await audit({
+            actor: { id: user.id, email: user.email, role: user.role },
+            action: AuditAction.ServiceAreaBlock, // WARN: admin override on non-exempt user's ZIP
+            targetType: 'order',
+            targetId: id,
+            metadata: {
+              warn: 'admin_zip_override_no_regate',
+              from: existing.propertyZip,
+              to: newZip,
+              ownerUserId: owner.id,
+            },
+            request,
+          })
+        }
+        updateData.propertyZip = newZip
+      }
+    }
+
     if (body.scheduled_date) {
       // Same business rules apply to admin-initiated schedule changes —
       // support can't "fix a date" past the 4pm cutoff via this route.

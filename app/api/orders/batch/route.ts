@@ -7,6 +7,7 @@ import { claimHoldsInTx, HoldConflictError, releaseHolds, type HoldClaim } from 
 import { validateScheduling } from '@/lib/scheduling'
 import crypto from 'node:crypto'
 import { audit, AuditAction } from '@/lib/audit'
+import { resolveServiceArea, type ResolveResult } from '@/lib/service-area'
 import type { HoldItemType } from '@prisma/client'
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 
@@ -96,8 +97,14 @@ export async function POST(request: NextRequest) {
       postTypeId: string | null
       // Holds claimed during checkout (one entry per item that came with a hold_id).
       claims: HoldClaim[]
+      // Service-area resolution for this order (surcharge winner is carried to OrderItem create).
+      serviceArea: ResolveResult
     }
     const computed: Computed[] = []
+
+    // Service-area gate runs per-order. ANY out_of_area aborts the whole batch
+    // so the customer's card isn't charged for a partially-doomed cart.
+    const saBlocks: Array<{ orderIndex: number; zip: string; reason?: string; contactPhone?: string }> = []
 
     for (let i = 0; i < orders.length; i++) {
       const o = orders[i]
@@ -119,6 +126,50 @@ export async function POST(request: NextRequest) {
           { error: `Order ${i + 1}: ${scheduleCheck.error}`, code: scheduleCheck.code },
           { status: 400 }
         )
+      }
+
+      // Service-area gate. Actor is the wallet → exemption check is on actor.
+      const effectiveUser = {
+        id: actor.id,
+        role: actor.role,
+        isServiceAreaExempt: actor.isServiceAreaExempt ?? false,
+      }
+      const sa = await resolveServiceArea({ zip: o.property_zip, user: effectiveUser })
+      if (sa.tier === 'out_of_area') {
+        saBlocks.push({
+          orderIndex: i,
+          zip: o.property_zip,
+          reason: sa.reason,
+          contactPhone: sa.contactPhone,
+        })
+        await audit({
+          actor: { id: actor.id, email: actor.email, role: actor.role },
+          action: AuditAction.ServiceAreaBlock,
+          targetType: 'cart',
+          targetId: cartSessionId,
+          metadata: {
+            orderIndex: i,
+            zip: o.property_zip,
+            reason: sa.reason ?? null,
+            attemptedTotal: o.items.reduce((s, it) => s + it.total_price, 0),
+            centersChecked: 5,
+          },
+          request,
+        })
+        // Continue scanning so the response can list every failed order at once.
+        continue
+      }
+      // surcharge → push a synthetic OrderItem so it flows through pricing + display.
+      if (sa.tier === 'surcharge' && sa.decidedBy) {
+        const surchargeDollars = sa.surchargeCents / 100
+        o.items.push({
+          item_type: 'surcharge',
+          item_category: undefined,
+          description: `Out-of-area service fee – ${sa.decidedBy.centerName} ~${Math.round(sa.decidedBy.driveTimeMinutes)}min`,
+          quantity: 1,
+          unit_price: surchargeDollars,
+          total_price: surchargeDollars,
+        } as BatchOrderBody['items'][number])
       }
 
       // Look up the post type (skip 'open_house' and missing post_type)
@@ -157,7 +208,26 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      computed.push({ orderBody: o, pricing, postTypeId, claims })
+      computed.push({ orderBody: o, pricing, postTypeId, claims, serviceArea: sa })
+    }
+
+    // Any out-of-area order kills the whole batch — abort BEFORE Stripe.
+    if (saBlocks.length > 0) {
+      const firstPhone = saBlocks.find((b) => b.contactPhone)?.contactPhone
+      const list = saBlocks.map((b) => `#${b.orderIndex + 1} (${b.zip})`).join(', ')
+      return NextResponse.json(
+        {
+          error: `We don't currently service the ZIP for order(s) ${list}. Please call ${firstPhone ?? '859-395-8188'} to discuss options.`,
+          code: 'service_area_unavailable',
+          contactPhone: firstPhone,
+          failed_orders: saBlocks.map((b) => ({
+            order_index: b.orderIndex,
+            zip: b.zip,
+            reason: b.reason,
+          })),
+        },
+        { status: 400 }
+      )
     }
 
     const grandTotal = computed.reduce((sum, c) => sum + c.pricing.total, 0)
@@ -456,6 +526,27 @@ export async function POST(request: NextRequest) {
     console.log(
       `Batch order placed: ${createdOrders.length} orders, $${grandTotal.toFixed(2)} total, PI ${piId} status=${paymentIntent.status}`
     )
+
+    // Audit each surcharge that landed on a successfully-created order.
+    for (let i = 0; i < createdOrders.length; i++) {
+      const sa = computed[i].serviceArea
+      if (sa.tier === 'surcharge' && sa.decidedBy) {
+        await audit({
+          actor: { id: actor.id, email: actor.email, role: actor.role },
+          action: AuditAction.ServiceAreaSurchargeApplied,
+          targetType: 'order',
+          targetId: createdOrders[i].id,
+          metadata: {
+            centerId: sa.decidedBy.centerId,
+            centerName: sa.decidedBy.centerName,
+            driveTimeMinutes: sa.decidedBy.driveTimeMinutes,
+            surchargeCents: sa.surchargeCents,
+            zip: computed[i].orderBody.property_zip,
+          },
+          request,
+        })
+      }
+    }
 
     // Synchronously send confirmation + admin notification for each order whose
     // payment already succeeded. Prior to this, batch checkout relied entirely
