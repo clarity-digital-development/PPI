@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Search, Eye, Package, Mail, Phone } from 'lucide-react'
@@ -29,7 +29,17 @@ interface Customer {
   created_at: string
 }
 
+// Wrapped in <Suspense> because useSearchParams() requires it during
+// static prerender (Next.js 14 bails out otherwise).
 export default function CustomersPage() {
+  return (
+    <Suspense fallback={null}>
+      <CustomersPageInner />
+    </Suspense>
+  )
+}
+
+function CustomersPageInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
   // Hydrate role from URL so reloads + shared links persist the filter.
