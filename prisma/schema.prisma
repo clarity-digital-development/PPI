@@ -360,13 +360,16 @@ model CustomerBrochureBox {
 }
 
 model CustomerOtherItem {
-  id          String   @id @default(cuid())
-  userId      String   @map("user_id")
-  description String
-  createdAt   DateTime @default(now()) @map("created_at")
+  id                 String   @id @default(cuid())
+  userId             String   @map("user_id")
+  description        String
+  // Team feature: assigns this item to one of the team's TeamMembers (null = pool).
+  assignedToMemberId String?  @map("assigned_to_member_id")
+  createdAt          DateTime @default(now()) @map("created_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([assignedToMemberId])
   @@map("customer_other_items")
 }
 

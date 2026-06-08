@@ -163,6 +163,7 @@ export async function POST(
         const otherData = Array.from({ length: quantity }, () => ({
           userId: customerId,
           description: data.description,
+          assignedToMemberId,
         }))
         if (quantity === 1) {
           result = await prisma.customerOtherItem.create({ data: otherData[0] })
@@ -175,9 +176,8 @@ export async function POST(
         return NextResponse.json({ error: 'Invalid type' }, { status: 400 })
     }
 
-    // Audit the assign-at-add when a target agent was set (assignedToMemberId
-    // is only relevant for sign/rider/lockbox/brochure_box, not 'other').
-    if (assignedToMemberId && type !== 'other') {
+    // Audit the assign-at-add when a target agent was set.
+    if (assignedToMemberId) {
       await audit({
         actor: { id: user.id, email: user.email, role: user.role },
         action: AuditAction.InventoryAssign,

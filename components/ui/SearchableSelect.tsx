@@ -110,7 +110,9 @@ const SearchableSelect = ({
   // Close on scroll/resize so the floating popover never detaches from its trigger.
   useEffect(() => {
     if (!open) return
-    const close = () => {
+    const close = (e?: Event) => {
+      // Ignore scrolls originating inside the popover — let the option list scroll independently.
+      if (e && e.type === 'scroll' && popoverRef.current?.contains(e.target as Node)) return
       setOpen(false)
       setQuery('')
     }

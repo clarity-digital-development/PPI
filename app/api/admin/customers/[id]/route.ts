@@ -215,15 +215,24 @@ export async function GET(
             inStorage: b.inStorage,
             assignedToMemberId: b.assignedToMemberId,
           })),
+          // Per-row Other for the team-grouped UI (with per-row Assign dropdown).
+          otherItems: otherItemsRaw.map(o => ({
+            id: o.id,
+            description: o.description,
+            assignedToMemberId: o.assignedToMemberId,
+          })),
         },
-        // Group duplicate descriptions onto one line with a quantity count
+        // Group duplicate (description, assignee) pairs onto one line with a quantity count
+        // for the non-grouped legacy view. Assignee in the key prevents two agents'
+        // identical-named items from collapsing into one row.
         otherItems: (() => {
-          const grouped: Record<string, { id: string; description: string; quantity: number }> = {}
+          const grouped: Record<string, { id: string; description: string; quantity: number; assignedToMemberId: string | null }> = {}
           for (const item of otherItemsRaw) {
-            if (grouped[item.description]) {
-              grouped[item.description].quantity += 1
+            const key = `${item.description}::${item.assignedToMemberId ?? ''}`
+            if (grouped[key]) {
+              grouped[key].quantity += 1
             } else {
-              grouped[item.description] = { id: item.id, description: item.description, quantity: 1 }
+              grouped[key] = { id: item.id, description: item.description, quantity: 1, assignedToMemberId: item.assignedToMemberId }
             }
           }
           return Object.values(grouped)

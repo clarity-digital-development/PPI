@@ -27,12 +27,13 @@ interface CustomerData {
     riders: Array<{ id: string; rider_id: string; rider_type: string; quantity: number }>
     lockboxes: Array<{ id: string; lockbox_type_id: string; lockbox_type: string; lockbox_code: string | null }>
     brochureBoxes: { id: string; quantity: number } | null
-    otherItems: Array<{ id: string; description: string; quantity?: number }>
+    otherItems: Array<{ id: string; description: string; quantity?: number; assignedToMemberId?: string | null }>
     items: {
       signs: Array<{ id: string; description: string; inStorage: boolean; assignedToMemberId: string | null }>
       riders: Array<{ id: string; riderName: string; inStorage: boolean; assignedToMemberId: string | null }>
       lockboxes: Array<{ id: string; type: string; code: string | null; serialNumber: string | null; inStorage: boolean; assignedToMemberId: string | null }>
       brochureBoxes: Array<{ id: string; description: string | null; inStorage: boolean; assignedToMemberId: string | null }>
+      otherItems: Array<{ id: string; description: string; assignedToMemberId: string | null }>
     }
     deployed?: {
       signs: Array<{ id: string; description: string }>
@@ -97,7 +98,7 @@ export default function CustomerDetailPage() {
   // Per-row selection for the agent-grouped bulk-reassign action bar.
   // Maps a composite key `${type}:${id}` to {type, id} so we can both
   // dedupe and serialize to the bulk endpoint without losing the type.
-  const [selectedItems, setSelectedItems] = useState<Map<string, { type: 'sign' | 'rider' | 'lockbox' | 'brochure_box'; id: string }>>(new Map())
+  const [selectedItems, setSelectedItems] = useState<Map<string, { type: 'sign' | 'rider' | 'lockbox' | 'brochure_box' | 'other'; id: string }>>(new Map())
   const [reassignTargetId, setReassignTargetId] = useState<string>('')
   const [reassigning, setReassigning] = useState(false)
   // Per-row inline reassign in-flight, keyed by `${type}:${id}` — disables the dropdown so admins can't double-fire.
@@ -240,9 +241,8 @@ export default function CustomerDetailPage() {
       body.quantity = formData.quantity
     }
     // Only forward the agent assignment if the customer actually has a
-    // team — non-team customers don't have members to assign to. 'other'
-    // items aren't agent-assignable anyway (no column on the table).
-    if (formData.assigned_to_member_id && addType !== 'other') {
+    // team — non-team customers don't have members to assign to.
+    if (formData.assigned_to_member_id) {
       body.assigned_to_member_id = formData.assigned_to_member_id
     }
 
@@ -306,7 +306,7 @@ export default function CustomerDetailPage() {
     }
   }
 
-  function toggleItemSelected(type: 'sign' | 'rider' | 'lockbox' | 'brochure_box', itemId: string) {
+  function toggleItemSelected(type: 'sign' | 'rider' | 'lockbox' | 'brochure_box' | 'other', itemId: string) {
     setSelectedItems((prev) => {
       const next = new Map(prev)
       const key = `${type}:${itemId}`
@@ -354,7 +354,7 @@ export default function CustomerDetailPage() {
 
   // Per-row inline reassign — reuses the bulk endpoint with a single-item payload so we share the hold-conflict logic.
   async function handleRowReassign(
-    type: 'sign' | 'rider' | 'lockbox' | 'brochure_box',
+    type: 'sign' | 'rider' | 'lockbox' | 'brochure_box' | 'other',
     itemId: string,
     targetMemberId: string | null,
   ) {
@@ -417,6 +417,7 @@ export default function CustomerDetailPage() {
       riders: [] as Array<{ id: string; riderName: string; assignedToMemberId: string | null }>,
       lockboxes: [] as Array<{ id: string; type: string; code: string | null; assignedToMemberId: string | null }>,
       brochureBoxes: [] as Array<{ id: string; description: string | null; assignedToMemberId: string | null }>,
+      otherItems: [] as Array<{ id: string; description: string; assignedToMemberId: string | null }>,
     }
     if (!data?.inventory.items) return empty
     const items = data.inventory.items
@@ -429,6 +430,8 @@ export default function CustomerDetailPage() {
       riders: items.riders.filter(r => r.inStorage && matches(r.assignedToMemberId)),
       lockboxes: items.lockboxes.filter(l => l.inStorage && matches(l.assignedToMemberId)),
       brochureBoxes: items.brochureBoxes.filter(b => b.inStorage && matches(b.assignedToMemberId)),
+      // Other items have no inStorage flag — every row is in-storage by definition.
+      otherItems: (items.otherItems ?? []).filter(o => matches(o.assignedToMemberId)),
     }
   }, [data, agentFilter])
 
@@ -566,7 +569,7 @@ export default function CustomerDetailPage() {
 
         // Per-row renderer — mirrors /dashboard/inventory:299-341 but adds the bulk checkbox + delete trash for admin.
         const renderRow = (
-          type: 'sign' | 'rider' | 'lockbox' | 'brochure_box',
+          type: 'sign' | 'rider' | 'lockbox' | 'brochure_box' | 'other',
           item: { id: string; label: string; code?: string | null; assignedToMemberId: string | null },
         ) => {
           const key = `${type}:${item.id}`
@@ -766,41 +769,31 @@ export default function CustomerDetailPage() {
                   )}
                 </CardContent>
               </Card>
-            </div>
 
-            {/* Other items remain a separate card — customer_other_items has no assignedToMemberId column,
-                so the filter-by-agent control doesn't apply. Post-migration this list is typically empty. */}
-            {data.inventory.otherItems && data.inventory.otherItems.length > 0 && (
+              {/* Other — per-row Assign dropdown matches Signs/Riders/Lockboxes/BrochureBoxes. */}
               <Card>
                 <CardContent className="p-6">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-2">
-                      <Archive className="w-5 h-5 text-pink-500" />
-                      <h2 className="font-semibold text-gray-900">Other</h2>
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-lg bg-pink-100 flex items-center justify-center">
+                      <Archive className="w-5 h-5 text-pink-600" />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-gray-900">Other</h3>
+                      <p className="text-sm text-gray-500">{filteredInventory.otherItems.length} in storage</p>
                     </div>
                   </div>
-                  <div className="space-y-2">
-                    {data.inventory.otherItems.map((item) => (
-                      <div key={item.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                        <p className="font-medium text-gray-900">
-                          {item.description}
-                          {item.quantity && item.quantity > 1 && (
-                            <span className="ml-2 text-sm font-normal text-gray-500">×{item.quantity}</span>
-                          )}
-                        </p>
-                        <button
-                          onClick={() => handleDeleteInventory('other', item.id)}
-                          className="text-gray-400 hover:text-red-500"
-                          title={item.quantity && item.quantity > 1 ? 'Removes one of these items' : 'Delete'}
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
+                  {filteredInventory.otherItems.length > 0 ? (
+                    <ul className={filteredInventory.otherItems.length > 5 ? 'space-y-3 max-h-[280px] overflow-y-auto pr-1 -mr-1' : 'space-y-3'}>
+                      {filteredInventory.otherItems.map(o => renderRow('other', {
+                        id: o.id, label: o.description, assignedToMemberId: o.assignedToMemberId,
+                      }))}
+                    </ul>
+                  ) : (
+                    <p className="text-sm text-gray-500 italic">No other items in storage</p>
+                  )}
                 </CardContent>
               </Card>
-            )}
+            </div>
           </div>
         )
       })()}
@@ -1377,9 +1370,8 @@ export default function CustomerDetailPage() {
               onChange={(e) => setFormData({ ...formData, quantity: parseInt(e.target.value) || 1 })}
             />
           )}
-          {/* Assign-at-add: only for team_admin customers with members,
-              and not for "other" items (no assignment column on that table). */}
-          {addType !== 'other' && data.team && data.team.members.length > 0 && (
+          {/* Assign-at-add: only for team_admin customers with members. */}
+          {data.team && data.team.members.length > 0 && (
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Assign to agent <span className="text-gray-400 font-normal">(optional)</span>

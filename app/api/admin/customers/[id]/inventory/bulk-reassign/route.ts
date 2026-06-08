@@ -4,7 +4,7 @@ import { getCurrentUser } from '@/lib/auth-utils'
 import { audit, AuditAction } from '@/lib/audit'
 
 interface BulkReassignItem {
-  type: 'sign' | 'rider' | 'lockbox' | 'brochure_box'
+  type: 'sign' | 'rider' | 'lockbox' | 'brochure_box' | 'other'
   id: string
 }
 
@@ -75,7 +75,7 @@ export async function POST(
 
     // Bucket by type so each table gets one updateMany.
     const buckets: Record<BulkReassignItem['type'], string[]> = {
-      sign: [], rider: [], lockbox: [], brochure_box: [],
+      sign: [], rider: [], lockbox: [], brochure_box: [], other: [],
     }
     for (const it of items) {
       if (it.type in buckets && typeof it.id === 'string') buckets[it.type].push(it.id)
@@ -146,6 +146,15 @@ export async function POST(
       })
       reassigned += r.count
     }
+    // Other items have no hold mechanic (no heldByHoldId/heldUntil columns),
+    // so we skip the pre-check above and reassign directly.
+    if (buckets.other.length) {
+      const r = await prisma.customerOtherItem.updateMany({
+        where: { id: { in: buckets.other }, userId: customerId },
+        data: { assignedToMemberId: targetMemberId },
+      })
+      reassigned += r.count
+    }
 
     await audit({
       actor: { id: user.id, email: user.email, role: user.role },
@@ -160,6 +169,7 @@ export async function POST(
           rider: buckets.rider.length,
           lockbox: buckets.lockbox.length,
           brochure_box: buckets.brochure_box.length,
+          other: buckets.other.length,
         },
       },
       request,
