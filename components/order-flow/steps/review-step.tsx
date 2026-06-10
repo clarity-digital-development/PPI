@@ -55,6 +55,15 @@ export function ReviewStep({
   const [calculatedTax, setCalculatedTax] = useState<number | null>(null)
   const [taxRate, setTaxRate] = useState<string>('6%') // Default display
   const [loadingTax, setLoadingTax] = useState(false)
+  // WHY: cart preview needs the same surcharge the server will inject — otherwise display ≠ charge.
+  const [serviceAreaQuote, setServiceAreaQuote] = useState<{
+    tier: 'standard' | 'surcharge' | 'out_of_area' | 'exempt'
+    surchargeCents: number
+    centerName?: string
+    driveTimeMinutes?: number
+    contactPhone?: string
+    reason?: string
+  } | null>(null)
 
   // Build the "— Serial: X · Code: Y" suffix for a selected stored lockbox so
   // the install crew can see which physical box to bring (flows into emails too)
@@ -221,9 +230,14 @@ export function ReviewStep({
     })
   }
 
-  const subtotal = orderItems.reduce((sum, item) => sum + item.price, 0)
+  // WHY: server pushes a synthetic surcharge OrderItem into items[] then sums — mirror that here.
+  const serviceAreaSurcharge = serviceAreaQuote?.tier === 'surcharge'
+    ? serviceAreaQuote.surchargeCents / 100
+    : 0
+  const itemsSubtotal = orderItems.reduce((sum, item) => sum + item.price, 0)
+  const subtotal = itemsSubtotal + serviceAreaSurcharge
   // Discountable subtotal excludes items like brochure box purchases
-  const discountableSubtotal = orderItems.filter(item => !item.excludeFromDiscount).reduce((sum, item) => sum + item.price, 0)
+  const discountableSubtotal = orderItems.filter(item => !item.excludeFromDiscount).reduce((sum, item) => sum + item.price, 0) + serviceAreaSurcharge
   const expediteFee = formData.schedule_type === 'expedited' ? PRICING.expedite_fee : 0
   const discount = formData.discount || 0
   const fuelSurchargeWaived = formData.fuel_surcharge_waived || false
@@ -348,6 +362,33 @@ export function ReviewStep({
     discount,
     buildTaxItems,
   ])
+
+  // WHY: customer must see the out-of-area surcharge BEFORE submit — server-side injection alone hides it.
+  useEffect(() => {
+    const zip = (formData.property_zip || '').trim()
+    if (!/^\d{5}$/.test(zip)) {
+      setServiceAreaQuote(null)
+      return
+    }
+    let cancelled = false
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/service-area/quote?zip=${encodeURIComponent(zip)}`)
+        if (!res.ok) {
+          if (!cancelled) setServiceAreaQuote(null)
+          return
+        }
+        const data = await res.json()
+        if (!cancelled) setServiceAreaQuote(data)
+      } catch {
+        if (!cancelled) setServiceAreaQuote(null)
+      }
+    }, 300)
+    return () => {
+      cancelled = true
+      clearTimeout(t)
+    }
+  }, [formData.property_zip])
 
   // Handle promo code application
   const handleApplyPromoCode = async () => {
@@ -1175,6 +1216,17 @@ export function ReviewStep({
               <span className="text-gray-900">${noPostSurcharge.toFixed(2)}</span>
             </div>
           )}
+          {serviceAreaSurcharge > 0 && serviceAreaQuote?.tier === 'surcharge' && (
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-600">
+                Out-of-area service fee
+                {serviceAreaQuote.centerName && serviceAreaQuote.driveTimeMinutes != null
+                  ? ` — ${serviceAreaQuote.centerName} (~${serviceAreaQuote.driveTimeMinutes} min)`
+                  : ''}
+              </span>
+              <span className="text-gray-900">${serviceAreaSurcharge.toFixed(2)}</span>
+            </div>
+          )}
           <div className="flex justify-between text-sm">
             <span className="text-gray-600">Fuel Surcharge</span>
             <span className={cn("text-gray-900", fuelSurchargeWaived && "line-through text-gray-400")}>
@@ -1327,6 +1379,20 @@ export function ReviewStep({
         </div>
       </div>
 
+      {/* Out-of-area pre-empt — mirrors server 400 so customer isn't stranded at submit */}
+      {serviceAreaQuote?.tier === 'out_of_area' && (
+        <div className="flex items-start gap-2 p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800">
+          <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+          <p>
+            We don&apos;t currently service ZIP {formData.property_zip}. Please call{' '}
+            <a href={`tel:${serviceAreaQuote.contactPhone ?? '859-395-8188'}`} className="font-medium underline">
+              {serviceAreaQuote.contactPhone ?? '859-395-8188'}
+            </a>{' '}
+            to discuss options.
+          </p>
+        </div>
+      )}
+
       {/* Error */}
       {error && (
         <div className="flex items-center gap-2 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
@@ -1342,7 +1408,7 @@ export function ReviewStep({
           size="lg"
           className="w-full"
           onClick={handleSaveEdit}
-          disabled={isSubmitting}
+          disabled={isSubmitting || serviceAreaQuote?.tier === 'out_of_area'}
         >
           {isSubmitting ? 'Saving…' : 'Save Changes'}
         </Button>
@@ -1352,7 +1418,7 @@ export function ReviewStep({
             size="lg"
             className="w-full"
             onClick={handleAddToCart}
-            disabled={isSubmitting || addingToCart}
+            disabled={isSubmitting || addingToCart || serviceAreaQuote?.tier === 'out_of_area'}
           >
             {addingToCart
               ? (editingCartItemId ? 'Saving…' : 'Adding…')
@@ -1371,7 +1437,7 @@ export function ReviewStep({
           size="lg"
           className="w-full"
           onClick={handleSubmit}
-          disabled={isSubmitting || (!activePaymentMethods?.length && !formData.payment_method_id)}
+          disabled={isSubmitting || (!activePaymentMethods?.length && !formData.payment_method_id) || serviceAreaQuote?.tier === 'out_of_area'}
         >
           {isSubmitting ? 'Processing...' : `Place Order — $${total.toFixed(2)}`}
         </Button>

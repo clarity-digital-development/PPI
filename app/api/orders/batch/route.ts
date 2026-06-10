@@ -347,6 +347,9 @@ export async function POST(request: NextRequest) {
               discount: c.pricing.discount,
               tax: c.pricing.tax,
               total: c.pricing.total,
+              // WHY: persist actual surcharge so reporting + invoice math match what the customer paid.
+              serviceAreaSurchargeCents: c.serviceArea.tier === 'surcharge' ? c.serviceArea.surchargeCents : 0,
+              serviceAreaCenterId: c.serviceArea.decidedBy?.centerId ?? null,
               paymentIntentId: null,
               paymentStatus: 'pending',
               paidAt: null,

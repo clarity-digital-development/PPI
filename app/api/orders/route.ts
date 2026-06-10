@@ -412,6 +412,9 @@ export async function POST(request: NextRequest) {
         discount,
         tax,
         total,
+        // WHY: persist actual surcharge so reporting + invoice math match what the customer paid.
+        serviceAreaSurchargeCents: sa.tier === 'surcharge' ? sa.surchargeCents : 0,
+        serviceAreaCenterId: sa.decidedBy?.centerId ?? null,
         promoCodeId,
         paymentIntentId: paymentIntent?.id || null,
         paymentStatus: !paymentIntent ? 'succeeded' : paymentIntent.status === 'succeeded' ? 'succeeded' : 'processing',
