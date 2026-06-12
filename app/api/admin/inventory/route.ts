@@ -35,7 +35,40 @@ export async function GET(request: NextRequest) {
       customer_name: string
       in_storage: boolean
       created_at: string
+      quantity: number
     }> = []
+
+    // Identical rows (same type + customer + description + storage state) collapse
+    // onto one row with a quantity count so the global list isn't a wall of dupes.
+    // Lockboxes are excluded because each has a unique code/serial — grouping would
+    // hide that. `id` keeps the most-recent row so the "Manage" link still works.
+    const groupKey = (
+      type: 'sign' | 'rider' | 'brochure_box',
+      customerId: string,
+      description: string,
+      inStorage: boolean,
+    ) => `${type}::${customerId}::${description}::${inStorage ? 1 : 0}`
+    const buckets = new Map<string, (typeof items)[number]>()
+    const pushOrIncrement = (row: (typeof items)[number]) => {
+      // Lockbox rows are unique per-record; never bucket.
+      if (row.type === 'lockbox') {
+        items.push(row)
+        return
+      }
+      const key = groupKey(row.type, row.customer_id, row.description, row.in_storage)
+      const existing = buckets.get(key)
+      if (existing) {
+        existing.quantity += 1
+        // Prefer the freshest created_at + id so the Manage link points at a real row.
+        if (row.created_at > existing.created_at) {
+          existing.created_at = row.created_at
+          existing.id = row.id
+        }
+      } else {
+        buckets.set(key, row)
+        items.push(row)
+      }
+    }
 
     // Fetch signs
     if (!type || type === 'sign') {
@@ -58,7 +91,7 @@ export async function GET(request: NextRequest) {
       })
 
       signs.forEach((sign) => {
-        items.push({
+        pushOrIncrement({
           id: sign.id,
           type: 'sign',
           description: sign.description,
@@ -66,6 +99,7 @@ export async function GET(request: NextRequest) {
           customer_name: sign.user.fullName || sign.user.name || sign.user.email,
           in_storage: sign.inStorage,
           created_at: sign.createdAt.toISOString(),
+          quantity: 1,
         })
       })
     }
@@ -92,7 +126,7 @@ export async function GET(request: NextRequest) {
       })
 
       riders.forEach((rider) => {
-        items.push({
+        pushOrIncrement({
           id: rider.id,
           type: 'rider',
           description: rider.rider.name,
@@ -100,6 +134,7 @@ export async function GET(request: NextRequest) {
           customer_name: rider.user.fullName || rider.user.name || rider.user.email,
           in_storage: rider.inStorage,
           created_at: rider.createdAt.toISOString(),
+          quantity: 1,
         })
       })
     }
@@ -126,7 +161,7 @@ export async function GET(request: NextRequest) {
       })
 
       lockboxes.forEach((lockbox) => {
-        items.push({
+        pushOrIncrement({
           id: lockbox.id,
           type: 'lockbox',
           description: `${lockbox.lockboxType.name}${lockbox.code ? ` (Code: ${lockbox.code})` : ''}`,
@@ -134,6 +169,7 @@ export async function GET(request: NextRequest) {
           customer_name: lockbox.user.fullName || lockbox.user.name || lockbox.user.email,
           in_storage: lockbox.inStorage,
           created_at: lockbox.createdAt.toISOString(),
+          quantity: 1,
         })
       })
     }
@@ -159,7 +195,7 @@ export async function GET(request: NextRequest) {
       })
 
       brochureBoxes.forEach((box) => {
-        items.push({
+        pushOrIncrement({
           id: box.id,
           type: 'brochure_box',
           description: box.description || 'Brochure Box',
@@ -167,6 +203,7 @@ export async function GET(request: NextRequest) {
           customer_name: box.user.fullName || box.user.name || box.user.email,
           in_storage: box.inStorage,
           created_at: box.createdAt.toISOString(),
+          quantity: 1,
         })
       })
     }

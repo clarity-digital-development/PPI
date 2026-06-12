@@ -107,6 +107,11 @@ export async function createPaymentIntent(
      * retry from creating two PIs (and thus two charges).
      */
     idempotencyKey?: string
+    /**
+     * Free-form metadata attached to the PI — surfaces in the Stripe dashboard
+     * AND in webhook payloads. Used to route the webhook (orders vs invoices).
+     */
+    metadata?: Record<string, string>
   }
 ) {
   const params: Stripe.PaymentIntentCreateParams = {
@@ -118,6 +123,9 @@ export async function createPaymentIntent(
   }
   if (opts?.captureMethod) {
     params.capture_method = opts.captureMethod
+  }
+  if (opts?.metadata) {
+    params.metadata = opts.metadata
   }
 
   if (customerId) {

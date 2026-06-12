@@ -17,6 +17,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const search = searchParams.get('search')
     const roleParam = searchParams.get('role')
+    const invoiceBillingOnly = searchParams.get('invoiceBillingOnly') === '1'
     const limit = parseInt(searchParams.get('limit') || '500')
     const offset = parseInt(searchParams.get('offset') || '0')
 
@@ -38,6 +39,7 @@ export async function GET(request: NextRequest) {
 
     const where = {
       ...roleScope,
+      ...(invoiceBillingOnly ? { invoiceBilling: true } : {}),
       ...(search
         ? {
             OR: [

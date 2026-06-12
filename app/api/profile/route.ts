@@ -36,6 +36,7 @@ export async function GET() {
         company: true,
         role: true,
         teamId: true,
+        invoiceBilling: true,
         // Notification preference flags (default-true for transactional, default-false for marketing)
         emailOrderConfirmations: true,
         emailServiceRequests: true,
@@ -44,8 +45,15 @@ export async function GET() {
       },
     })
 
+    // Expose the admin-set invoice flag under a stable snake_case key so the
+    // cart can detect it without coupling to Prisma's column naming.
+    const exposed = profile && {
+      ...profile,
+      invoice_billing: profile.invoiceBilling,
+    }
+
     // `user` mirrors `profile` for callers that want either shape
-    return NextResponse.json({ profile, user: profile })
+    return NextResponse.json({ profile: exposed, user: exposed })
   } catch (error) {
     console.error('Error fetching profile:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

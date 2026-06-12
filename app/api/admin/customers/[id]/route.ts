@@ -155,7 +155,7 @@ export async function GET(
 
     // Include the team roster for any team-member customer (admin OR agent)
     // so the per-agent inventory grouping works regardless of role.
-    let team: { id: string; name: string; members: Array<{ id: string; name: string; email: string | null; hasLogin: boolean }> } | null = null
+    let team: { id: string; name: string; members: Array<{ id: string; name: string; email: string | null; phone: string | null; hasLogin: boolean }> } | null = null
     if (customer.teamId) {
       const t = await prisma.team.findUnique({
         where: { id: customer.teamId },
@@ -165,7 +165,7 @@ export async function GET(
         team = {
           id: t.id,
           name: t.name,
-          members: t.teamMembers.map((m) => ({ id: m.id, name: m.name, email: m.email, hasLogin: !!m.userId })),
+          members: t.teamMembers.map((m) => ({ id: m.id, name: m.name, email: m.email, phone: m.phone, hasLogin: !!m.userId })),
         }
       }
     }
@@ -180,6 +180,7 @@ export async function GET(
         license_number: null,
         role: customer.role,
         is_service_area_exempt: customer.isServiceAreaExempt,
+        invoice_billing: customer.invoiceBilling,
       },
       team,
       inventory: {
@@ -289,6 +290,23 @@ export async function PUT(
       }
     }
 
+    // Mirror the exempt-flag audit pattern for the invoice-billing toggle.
+    let invoiceBillingAudit: { from: boolean; to: boolean } | null = null
+    if (body.invoice_billing !== undefined) {
+      const nextInvoiceBilling = Boolean(body.invoice_billing)
+      const cur = await prisma.user.findUnique({
+        where: { id },
+        select: { invoiceBilling: true },
+      })
+      if (!cur) {
+        return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
+      }
+      if (cur.invoiceBilling !== nextInvoiceBilling) {
+        updateData.invoiceBilling = nextInvoiceBilling
+        invoiceBillingAudit = { from: cur.invoiceBilling, to: nextInvoiceBilling }
+      }
+    }
+
     let roleChangeAudit: { from: string; to: AllowedRole } | null = null
     if (body.role !== undefined) {
       // Defense in depth: even though the route is already gated to admins
@@ -354,6 +372,17 @@ export async function PUT(
         targetType: 'user',
         targetId: customer.id,
         metadata: { email: customer.email, ...exemptChangeAudit },
+        request,
+      })
+    }
+
+    if (invoiceBillingAudit) {
+      await audit({
+        actor: { id: user.id, email: user.email, role: user.role },
+        action: AuditAction.UserInvoiceBillingToggle,
+        targetType: 'user',
+        targetId: customer.id,
+        metadata: { email: customer.email, ...invoiceBillingAudit },
         request,
       })
     }

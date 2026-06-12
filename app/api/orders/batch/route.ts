@@ -10,6 +10,7 @@ import { audit, AuditAction } from '@/lib/audit'
 import { resolveServiceArea, type ResolveResult } from '@/lib/service-area'
 import type { HoldItemType } from '@prisma/client'
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
+import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
 
 /**
  * Batch order placement. The cart hits this endpoint once with N orders
@@ -83,10 +84,15 @@ export async function POST(request: NextRequest) {
     const paymentMethodId: string | undefined = body.payment_method_id
     const cartSessionId: string | null = typeof body.cart_session_id === 'string' ? body.cart_session_id : null
 
+    // Invoice-billing accounts (admin-toggled at /admin/customers/[id]) skip
+    // the Stripe charge at checkout entirely. Orders are saved as
+    // pending_invoice and bundled later by an admin from /admin/invoices.
+    const isInvoiceBilling = !!actor.invoiceBilling
+
     if (!Array.isArray(orders) || orders.length === 0) {
       return NextResponse.json({ error: 'Batch must contain at least one order' }, { status: 400 })
     }
-    if (!paymentMethodId) {
+    if (!isInvoiceBilling && !paymentMethodId) {
       return NextResponse.json({ error: 'payment_method_id is required' }, { status: 400 })
     }
 
@@ -283,8 +289,10 @@ export async function POST(request: NextRequest) {
     }
 
     // ---- Step 2: ensure actor has a Stripe customer (the payer) ----
+    // Skipped for invoice-billing accounts; the Stripe customer is created
+    // lazily on the customer-facing invoice page when the customer pays.
     let stripeCustomerId = actor.stripeCustomerId
-    if (!stripeCustomerId) {
+    if (!isInvoiceBilling && !stripeCustomerId) {
       try {
         const c = await createCustomer(actor.email, actor.fullName || actor.name || '')
         stripeCustomerId = c.id
@@ -351,7 +359,7 @@ export async function POST(request: NextRequest) {
               serviceAreaSurchargeCents: c.serviceArea.tier === 'surcharge' ? c.serviceArea.surchargeCents : 0,
               serviceAreaCenterId: c.serviceArea.decidedBy?.centerId ?? null,
               paymentIntentId: null,
-              paymentStatus: 'pending',
+              paymentStatus: isInvoiceBilling ? 'pending_invoice' : 'pending',
               paidAt: null,
               orderItems: {
                 create: o.items.map((item) => ({
@@ -461,6 +469,135 @@ export async function POST(request: NextRequest) {
       throw txError
     }
 
+    // ---- Step 3.5: invoice-billing branch — orders are saved as
+    //                pending_invoice, no Stripe PI, no charge. Send confirmation
+    //                emails so the customer + admin know the order landed, then
+    //                return successfully. The admin bundles + collects later.
+    if (isInvoiceBilling) {
+      // Audit each surcharge — same as the paid flow.
+      for (let i = 0; i < createdOrders.length; i++) {
+        const sa = computed[i].serviceArea
+        if (sa.tier === 'surcharge' && sa.decidedBy) {
+          await audit({
+            actor: { id: actor.id, email: actor.email, role: actor.role },
+            action: AuditAction.ServiceAreaSurchargeApplied,
+            targetType: 'order',
+            targetId: createdOrders[i].id,
+            metadata: {
+              centerId: sa.decidedBy.centerId,
+              centerName: sa.decidedBy.centerName,
+              driveTimeMinutes: sa.decidedBy.driveTimeMinutes,
+              surchargeCents: sa.surchargeCents,
+              zip: computed[i].orderBody.property_zip,
+            },
+            request,
+          })
+        }
+      }
+
+      for (const co of createdOrders) {
+        const reserved = await prisma.order.updateMany({
+          where: { id: co.id, confirmationEmailSentAt: null },
+          data: { confirmationEmailSentAt: new Date() },
+        })
+        if (reserved.count === 0) continue
+        try {
+          const full = await prisma.order.findUnique({
+            where: { id: co.id },
+            include: { orderItems: true, user: true },
+          })
+          if (!full) continue
+          const assignedAgent = await resolveAssignedAgent({
+            placedForAgentName: full.placedForAgentName,
+            teamId: full.user.teamId,
+          })
+          await Promise.all([
+            sendOrderConfirmationEmail({
+              customerName: full.user.fullName || full.user.name || '',
+              customerEmail: full.user.email,
+              orderNumber: full.orderNumber,
+              propertyAddress: `${full.propertyAddress}, ${full.propertyCity}, ${full.propertyState} ${full.propertyZip}`,
+              total: Number(full.total),
+              items: full.orderItems.map((it) => ({
+                description: it.description,
+                quantity: it.quantity,
+                total_price: Number(it.totalPrice),
+              })),
+              requestedDate: full.scheduledDate?.toISOString(),
+              installationNotes: full.propertyNotes || undefined,
+              recipientUserId: full.userId,
+              isInvoiceBilling: true,
+            }),
+            sendAdminOrderNotification({
+              orderNumber: full.orderNumber,
+              customerName: full.user.fullName || full.user.name || '',
+              customerEmail: full.user.email,
+              customerPhone: full.user.phone || '',
+              propertyAddress: `${full.propertyAddress}, ${full.propertyCity}, ${full.propertyState} ${full.propertyZip}`,
+              total: Number(full.total),
+              items: full.orderItems.map((it) => ({
+                description: it.description,
+                quantity: it.quantity,
+                total_price: Number(it.totalPrice),
+              })),
+              requestedDate: full.scheduledDate?.toISOString(),
+              isExpedited: full.isExpedited,
+              installationNotes: full.propertyNotes || undefined,
+              installationLocation: full.installationLocation || undefined,
+              isGatedCommunity: full.isGatedCommunity,
+              gateCode: full.gateCode || undefined,
+              hasMarkerPlaced: full.hasMarkerPlaced,
+              signOrientation: full.signOrientation || undefined,
+              signOrientationOther: full.signOrientationOther || undefined,
+              subtotal: Number(full.subtotal),
+              discount: Number(full.discount),
+              fuelSurcharge: Number(full.fuelSurcharge),
+              noPostSurcharge: Number(full.noPostSurcharge),
+              expediteFee: Number(full.expediteFee),
+              tax: Number(full.tax),
+              assignedAgentName: assignedAgent?.name ?? null,
+              assignedAgentPhone: assignedAgent?.phone ?? null,
+              isInvoiceBilling: true,
+            }),
+          ])
+        } catch (emailError) {
+          console.error(`Batch (invoice): failed to send emails for order ${co.orderNumber}:`, emailError)
+          await prisma.order.updateMany({
+            where: { id: co.id, confirmationEmailSentAt: { not: null } },
+            data: { confirmationEmailSentAt: null },
+          }).catch(() => {})
+        }
+      }
+
+      try {
+        await audit({
+          actor: { id: actor.id, email: actor.email, role: actor.role },
+          action: AuditAction.CartCheckoutSucceed,
+          targetType: 'cart',
+          targetId: cartSessionId,
+          metadata: {
+            orderIds: createdOrders.map((o) => o.id),
+            orderCount: createdOrders.length,
+            grandTotal,
+            paymentIntentId: null,
+            paymentStatus: 'pending_invoice',
+            invoiceBilling: true,
+          },
+          request,
+        })
+      } catch (auditErr) {
+        console.error('Batch (invoice): failed to audit success:', auditErr)
+      }
+
+      return NextResponse.json({
+        status: 'pending_invoice',
+        client_secret: null,
+        grand_total: grandTotal,
+        orders: createdOrders,
+        invoice_billing: true,
+      })
+    }
+
     // ---- Step 4: create the PaymentIntent NOW that orders exist ----
     //
     // Deterministic idempotency key — same cart + same actor + same total
@@ -477,7 +614,7 @@ export async function POST(request: NextRequest) {
 
     let paymentIntent
     try {
-      paymentIntent = await createPaymentIntent(grandTotal, stripeCustomerId, paymentMethodId, { idempotencyKey: idemKey })
+      paymentIntent = await createPaymentIntent(grandTotal, stripeCustomerId ?? undefined, paymentMethodId, { idempotencyKey: idemKey })
     } catch (err) {
       console.error('Batch: PI creation failed AFTER tx commit. Orders exist unpaid:', createdOrders.map((o) => o.id), err)
       try {
@@ -570,6 +707,10 @@ export async function POST(request: NextRequest) {
             include: { orderItems: true, user: true },
           })
           if (!full) continue
+          const assignedAgent = await resolveAssignedAgent({
+            placedForAgentName: full.placedForAgentName,
+            teamId: full.user.teamId,
+          })
           await Promise.all([
             sendOrderConfirmationEmail({
               customerName: full.user.fullName || full.user.name || '',
@@ -614,6 +755,8 @@ export async function POST(request: NextRequest) {
               noPostSurcharge: Number(full.noPostSurcharge),
               expediteFee: Number(full.expediteFee),
               tax: Number(full.tax),
+              assignedAgentName: assignedAgent?.name ?? null,
+              assignedAgentPhone: assignedAgent?.phone ?? null,
             }),
           ])
         } catch (emailError) {

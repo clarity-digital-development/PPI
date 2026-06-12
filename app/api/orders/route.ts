@@ -7,6 +7,7 @@ import { audit, AuditAction } from '@/lib/audit'
 import { createPaymentIntent, createCustomer, calculateTax, getStripeErrorMessage } from '@/lib/stripe/server'
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 import { resolveServiceArea } from '@/lib/service-area'
+import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
 
 const FUEL_SURCHARGE = 2.47
 const NO_POST_SURCHARGE = 40
@@ -25,6 +26,33 @@ export async function GET(request: NextRequest) {
     const agent = searchParams.get('agent') // team_admin: filter by placed-for agent name
     const limit = parseInt(searchParams.get('limit') || '50')
     const offset = parseInt(searchParams.get('offset') || '0')
+    // Optional ISO date range used by the accounting report. Inclusive of both
+    // ends — endDate is treated as "end of that day" so a range like
+    // 2026-06-08..2026-06-14 captures the full week. Invalid dates are ignored.
+    const startDateRaw = searchParams.get('startDate')
+    const endDateRaw = searchParams.get('endDate')
+    const startDate = startDateRaw && !isNaN(Date.parse(startDateRaw)) ? new Date(startDateRaw) : null
+    const endDate = endDateRaw && !isNaN(Date.parse(endDateRaw)) ? new Date(endDateRaw) : null
+    if (endDate) {
+      // Roll forward to 23:59:59.999 so a same-day range matches that day's orders.
+      endDate.setHours(23, 59, 59, 999)
+    }
+    const createdAtFilter = startDate || endDate
+      ? { createdAt: { ...(startDate ? { gte: startDate } : {}), ...(endDate ? { lte: endDate } : {}) } }
+      : {}
+    // Optional min/max price (in dollars). Lets accounting filter out any order
+    // at-or-below a threshold — Seminen wants to exclude the "standard" base
+    // order, so they set min to ~63.95 and only see add-on orders.
+    const minPriceRaw = parseFloat(searchParams.get('minPrice') || '')
+    const maxPriceRaw = parseFloat(searchParams.get('maxPrice') || '')
+    const totalFilter = Number.isFinite(minPriceRaw) || Number.isFinite(maxPriceRaw)
+      ? {
+          total: {
+            ...(Number.isFinite(minPriceRaw) ? { gte: minPriceRaw } : {}),
+            ...(Number.isFinite(maxPriceRaw) ? { lte: maxPriceRaw } : {}),
+          },
+        }
+      : {}
 
     // team_admins see orders they own AND orders they placed on behalf of an
     // agent (placedByUserId). Regular customers see only their own.
@@ -38,6 +66,8 @@ export async function GET(request: NextRequest) {
         ...ownership,
         ...(status ? { status: status as any } : {}),
         ...(agent ? { placedForAgentName: agent } : {}),
+        ...createdAtFilter,
+        ...totalFilter,
       },
       include: {
         orderItems: true,
@@ -284,11 +314,15 @@ export async function POST(request: NextRequest) {
 
     const total = discountedSubtotal + actualFuelSurcharge + expediteFee + noPostSurcharge + tax
 
+    // Invoice-billing payers skip the Stripe charge at checkout — their orders
+    // accumulate as pending_invoice and an admin collects via /admin/invoices.
+    const isInvoiceBilling = !!payer.invoiceBilling
+
     // Create or get Stripe customer — always the payer (who is charged),
     // never the agent. For on-behalf-of orders this means the team_admin's
-    // Stripe customer.
+    // Stripe customer. Skipped entirely for invoice-billing payers.
     let stripeCustomerId = payer.stripeCustomerId
-    if (!stripeCustomerId) {
+    if (!isInvoiceBilling && !stripeCustomerId) {
       try {
         const stripeCustomer = await createCustomer(payer.email, payer.fullName || payer.name || '')
         stripeCustomerId = stripeCustomer.id
@@ -307,13 +341,14 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Create payment intent (skip for $0 orders - fully discounted)
+    // Create payment intent (skip for $0 orders - fully discounted; skip
+    // entirely for invoice-billing payers — collection happens later).
     let paymentIntent: { id: string; status: string; client_secret: string | null } | null = null
-    if (total > 0) {
+    if (!isInvoiceBilling && total > 0) {
       try {
         paymentIntent = await createPaymentIntent(
           total,
-          stripeCustomerId,
+          stripeCustomerId ?? undefined,
           orderData.payment_method_id
         )
       } catch (paymentError) {
@@ -417,7 +452,9 @@ export async function POST(request: NextRequest) {
         serviceAreaCenterId: sa.decidedBy?.centerId ?? null,
         promoCodeId,
         paymentIntentId: paymentIntent?.id || null,
-        paymentStatus: !paymentIntent ? 'succeeded' : paymentIntent.status === 'succeeded' ? 'succeeded' : 'processing',
+        paymentStatus: isInvoiceBilling
+          ? 'pending_invoice'
+          : !paymentIntent ? 'succeeded' : paymentIntent.status === 'succeeded' ? 'succeeded' : 'processing',
         orderItems: {
           create: orderData.items.map((item) => ({
             itemType: item.item_type,
@@ -511,10 +548,13 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Send emails if payment succeeded (or order is free)
-    const orderPaymentStatus = !paymentIntent ? 'succeeded' : paymentIntent.status
+    // Send emails if payment succeeded (or order is free). Invoice-billing
+    // orders also send synchronously since no PI / webhook will fire later.
+    const orderPaymentStatus = isInvoiceBilling
+      ? 'pending_invoice'
+      : !paymentIntent ? 'succeeded' : paymentIntent.status
     console.log(`Order ${order.orderNumber} created, payment status: ${orderPaymentStatus}`)
-    if (orderPaymentStatus === 'succeeded') {
+    if (orderPaymentStatus === 'succeeded' || isInvoiceBilling) {
       // Reserve the email slot first so the webhook (which also fires for this
       // PI) can't double-send. Whichever path wins the conditional update sends.
       const emailReserved = await prisma.order.updateMany({
@@ -523,6 +563,10 @@ export async function POST(request: NextRequest) {
       })
       if (emailReserved.count > 0) {
         console.log(`Payment succeeded immediately, sending emails for order ${order.orderNumber}`)
+        const assignedAgent = await resolveAssignedAgent({
+          placedForAgentName: order.placedForAgentName,
+          teamId: user.teamId,
+        })
         try {
           await Promise.all([
             sendOrderConfirmationEmail({
@@ -536,6 +580,7 @@ export async function POST(request: NextRequest) {
               installationNotes: orderData.installation_notes || undefined,
               // Pref gate — checkout user is the recipient of the order confirmation.
               recipientUserId: user.id,
+              isInvoiceBilling,
             }),
             sendAdminOrderNotification({
               orderNumber: order.orderNumber,
@@ -563,6 +608,9 @@ export async function POST(request: NextRequest) {
               noPostSurcharge,
               expediteFee,
               tax,
+              assignedAgentName: assignedAgent?.name ?? null,
+              assignedAgentPhone: assignedAgent?.phone ?? null,
+              isInvoiceBilling,
             }),
           ])
           console.log(`Emails sent successfully for order ${order.orderNumber}`)

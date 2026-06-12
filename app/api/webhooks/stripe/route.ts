@@ -6,6 +6,7 @@ import { prisma } from '@/lib/prisma'
 import { sendOrderConfirmationEmail, sendAdminOrderNotification, sendRefundConfirmationEmail } from '@/lib/email'
 import { releaseOrderHoldsAndRestoreInventory } from '@/lib/inventory-holds'
 import { resolveRefundRecipient } from '@/lib/orders/refund-recipient'
+import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
 import { audit, AuditAction } from '@/lib/audit'
 
 /**
@@ -61,6 +62,54 @@ export async function POST(request: NextRequest) {
       case 'payment_intent.succeeded': {
         const paymentIntent = event.data.object as Stripe.PaymentIntent
 
+        // Invoice-payment branch — tagged by app/api/invoices/[id]/pay-intent
+        // with metadata.kind = 'invoice'. Flip the Invoice to paid AND every
+        // bundled Order's paymentStatus from pending_invoice → succeeded.
+        if (paymentIntent.metadata?.kind === 'invoice' && paymentIntent.metadata.invoiceId) {
+          const invoiceId = paymentIntent.metadata.invoiceId
+          const invoice = await prisma.invoice.findUnique({
+            where: { id: invoiceId },
+            include: { orders: { select: { id: true } } },
+          })
+          if (!invoice) {
+            console.warn(`Webhook: invoice ${invoiceId} not found for PI ${paymentIntent.id} — returning 500 for Stripe retry`)
+            return NextResponse.json({ error: 'invoice_not_ready', paymentIntentId: paymentIntent.id }, { status: 500 })
+          }
+          // Idempotent — if already paid, do nothing.
+          if (invoice.status === 'paid') {
+            console.log(`Webhook: invoice ${invoiceId} already paid — skipping`)
+            return NextResponse.json({ received: true })
+          }
+
+          await prisma.$transaction([
+            prisma.invoice.update({
+              where: { id: invoice.id },
+              data: { status: 'paid', paidAt: new Date(), paymentIntentId: paymentIntent.id },
+            }),
+            // Flip every bundled order to succeeded in one shot.
+            prisma.order.updateMany({
+              where: { id: { in: invoice.orders.map((o) => o.id) } },
+              data: { paymentStatus: 'succeeded', paidAt: new Date(), paymentIntentId: paymentIntent.id },
+            }),
+          ])
+
+          await audit({
+            actor: { system: true },
+            action: AuditAction.InvoicePaid,
+            targetType: 'invoice',
+            targetId: invoice.id,
+            metadata: {
+              paymentIntentId: paymentIntent.id,
+              orderCount: invoice.orders.length,
+              total: Number(invoice.total),
+            },
+            request,
+          })
+
+          console.log(`Webhook: invoice ${invoice.invoiceNumber} marked paid (${invoice.orders.length} orders flipped)`)
+          return NextResponse.json({ received: true })
+        }
+
         // Find ALL orders for this payment intent — a single PI may back
         // a batch of orders placed via /api/orders/batch
         const existingOrders = await prisma.order.findMany({
@@ -102,6 +151,10 @@ export async function POST(request: NextRequest) {
           })
           if (!order) continue
           console.log(`Webhook: Sending emails for order ${order.orderNumber}`)
+          const assignedAgent = await resolveAssignedAgent({
+            placedForAgentName: order.placedForAgentName,
+            teamId: order.user.teamId,
+          })
           try {
             await Promise.all([
               sendOrderConfirmationEmail({
@@ -147,6 +200,8 @@ export async function POST(request: NextRequest) {
                 noPostSurcharge: Number(order.noPostSurcharge),
                 expediteFee: Number(order.expediteFee),
                 tax: Number(order.tax),
+                assignedAgentName: assignedAgent?.name ?? null,
+                assignedAgentPhone: assignedAgent?.phone ?? null,
               }),
             ])
           } catch (emailError) {

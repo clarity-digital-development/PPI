@@ -16,11 +16,12 @@ interface CustomerData {
     license_number: string | null
     role: 'customer' | 'team_admin' | 'admin'
     is_service_area_exempt?: boolean
+    invoice_billing?: boolean
   }
   team: {
     id: string
     name: string
-    members: Array<{ id: string; name: string; email: string | null; hasLogin: boolean }>
+    members: Array<{ id: string; name: string; email: string | null; phone: string | null; hasLogin: boolean }>
   } | null
   inventory: {
     signs: Array<{ id: string; description: string; size: string | null; quantity: number }>
@@ -86,6 +87,7 @@ export default function CustomerDetailPage() {
     company_name: string
     role: 'customer' | 'team_admin' | 'admin'
     is_service_area_exempt: boolean
+    invoice_billing: boolean
   }>({
     full_name: '',
     email: '',
@@ -93,6 +95,7 @@ export default function CustomerDetailPage() {
     company_name: '',
     role: 'customer',
     is_service_area_exempt: false,
+    invoice_billing: false,
   })
   const [saving, setSaving] = useState(false)
   // Per-row selection for the agent-grouped bulk-reassign action bar.
@@ -135,6 +138,7 @@ export default function CustomerDetailPage() {
           company_name: data.customer.company_name || '',
           role: data.customer.role,
           is_service_area_exempt: data.customer.is_service_area_exempt ?? false,
+          invoice_billing: data.customer.invoice_billing ?? false,
         })
       }
     } catch (error) {
@@ -157,6 +161,7 @@ export default function CustomerDetailPage() {
           company: editData.company_name,
           role: editData.role,
           is_service_area_exempt: editData.is_service_area_exempt,
+          invoice_billing: editData.invoice_billing,
         }),
       })
       if (res.ok) {
@@ -477,6 +482,12 @@ export default function CustomerDetailPage() {
               {data.customer.role === 'team_admin' && (
                 <Badge className="bg-blue-100 text-blue-800 border-blue-200">Team Admin</Badge>
               )}
+              {data.customer.invoice_billing && (
+                <Badge className="bg-pink-100 text-pink-800 border-pink-200">Invoice Billing</Badge>
+              )}
+              {data.customer.is_service_area_exempt && (
+                <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200">No Out-of-Area Fee</Badge>
+              )}
             </div>
             <p className="text-gray-600">{data.customer.email} {data.customer.phone && `\u2022 ${data.customer.phone}`}</p>
             {data.customer.company_name && (
@@ -535,8 +546,8 @@ export default function CustomerDetailPage() {
                   >
                     <div>
                       <p className="font-medium text-gray-900">{member.name}</p>
-                      {member.email && (
-                        <p className="text-sm text-gray-500">{member.email}</p>
+                      {member.phone && (
+                        <p className="text-sm text-gray-500">{member.phone}</p>
                       )}
                     </div>
                     <Badge variant={member.hasLogin ? 'success' : 'neutral'}>
@@ -1225,6 +1236,24 @@ export default function CustomerDetailPage() {
                 <span className="font-medium text-gray-700">Exempt from out-of-area service fee</span>
                 <span className="block text-xs text-gray-500">
                   Bypasses the surcharge band and the hard cutoff for this customer. Team Admin accounts are exempt automatically.
+                </span>
+              </span>
+            </label>
+          </div>
+          {/* Invoice billing — orders skip Stripe at checkout and accumulate as
+              pending_invoice until bundled by an admin from /admin/invoices. */}
+          <div>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={editData.invoice_billing}
+                onChange={(e) => setEditData({ ...editData, invoice_billing: e.target.checked })}
+                className="mt-0.5 w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
+              />
+              <span className="text-sm">
+                <span className="font-medium text-gray-700">Pay on invoice (no charge at checkout)</span>
+                <span className="block text-xs text-gray-500">
+                  This customer's orders are placed without a Stripe charge and accumulate as <em>Pending invoice</em>. Bundle and send invoices from <strong>/admin/invoices</strong>.
                 </span>
               </span>
             </label>

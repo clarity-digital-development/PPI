@@ -83,6 +83,10 @@ model User {
   // Per-customer exemption from service-area gating (out-of-area block + surcharge).
   // Admin-toggleable for relationship customers; team_admin role is always exempt.
   isServiceAreaExempt Boolean  @default(false) @map("is_service_area_exempt")
+  // Admin-toggle that switches a customer's checkout from "Pay now" to
+  // "Add to invoice". Their orders skip Stripe at placement and accumulate
+  // until an admin bundles them into an Invoice for collection.
+  invoiceBilling      Boolean  @default(false) @map("invoice_billing")
 
   // Team membership (for RE teams managed by a team_admin who places orders
   // on behalf of their agents). Both team_admins and agents have a teamId.
@@ -109,6 +113,7 @@ model User {
 
   // Business relations
   orders                Order[]
+  invoices              Invoice[]
   installations         Installation[]
   customerSigns         CustomerSign[]
   customerRiders        CustomerRider[]
@@ -460,6 +465,11 @@ model Order {
   postRentalEnabledOverride Boolean   @default(false) @map("post_rental_enabled_override")
   postRentalStoppedAt       DateTime? @map("post_rental_stopped_at")
 
+  // Invoice the order was bundled onto for collection. Null while the order is
+  // still pending_invoice. Set when an admin bundles a date range of unpaid
+  // orders into an Invoice via /admin/invoices.
+  invoiceId String? @map("invoice_id")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -472,10 +482,56 @@ model Order {
   installation      Installation?
   consumedHolds     InventoryHold[]    @relation("InventoryHoldConsumer")
   postRentalCharges PostRentalCharge[]
+  invoice           Invoice?           @relation(fields: [invoiceId], references: [id])
 
   @@index([placedByUserId])
   @@index([cancelledByUserId])
+  @@index([invoiceId])
   @@map("orders")
+}
+
+// Bundled invoice covering a customer's pending_invoice orders within a date
+// range. Created by an admin via /admin/invoices when collecting from accounts
+// on monthly/weekly cadence. One Stripe PaymentIntent per invoice — when it
+// succeeds, every child Order's paymentStatus flips to `succeeded`.
+model Invoice {
+  id            String        @id @default(cuid())
+  invoiceNumber String        @unique @map("invoice_number")
+  userId        String        @map("user_id")
+
+  // Date range the invoice covers (snapshotted for display + audit).
+  rangeStart DateTime @map("range_start")
+  rangeEnd   DateTime @map("range_end")
+
+  subtotal Decimal @db.Decimal(10, 2)
+  total    Decimal @db.Decimal(10, 2)
+
+  status InvoiceStatus @default(sent)
+
+  sentAt          DateTime? @map("sent_at")
+  paidAt          DateTime? @map("paid_at")
+  voidedAt        DateTime? @map("voided_at")
+  paymentIntentId String?   @unique @map("payment_intent_id")
+
+  // Single email-send reservation flag mirroring Order.confirmationEmailSentAt
+  // to keep the "send invoice" call idempotent even if a webhook retries it.
+  invoiceEmailSentAt DateTime? @map("invoice_email_sent_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders Order[]
+
+  @@index([userId])
+  @@index([status])
+  @@map("invoices")
+}
+
+enum InvoiceStatus {
+  sent
+  paid
+  void
 }
 
 model OrderItem {
@@ -529,6 +585,10 @@ enum PaymentStatus {
   succeeded
   failed
   refunded
+  // Order placed by an invoice-billing customer. No Stripe charge happened at
+  // placement. Flips to `succeeded` when the parent Invoice's payment intent
+  // succeeds (see app/api/webhooks/stripe handler).
+  pending_invoice
 }
 
 // ============================================

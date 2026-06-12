@@ -42,6 +42,9 @@ export default function CartPage() {
   const [checkingOut, setCheckingOut] = useState(false)
   const [results, setResults] = useState<CheckoutResult[]>([])
   const [done, setDone] = useState(false)
+  // Admin-set flag on the actor — when true, the "Pay now" CTA becomes
+  // "Add to invoice" and we skip the payment-method requirement.
+  const [invoiceBilling, setInvoiceBilling] = useState(false)
   // Rows where the bump heartbeat returned extended:false — checkout for
   // these is blocked until the user re-picks (we don't auto-reacquire to
   // avoid silently re-grabbing inventory that may have changed hands).
@@ -76,7 +79,19 @@ export default function CartPage() {
         console.error('Error loading payment methods:', err)
       }
     }
+    async function fetchProfile() {
+      try {
+        const res = await fetch('/api/profile')
+        if (res.ok) {
+          const data = await res.json()
+          setInvoiceBilling(!!data.user?.invoice_billing)
+        }
+      } catch {
+        // Default (false) keeps the regular cart behavior on any failure.
+      }
+    }
     fetchPayments()
+    fetchProfile()
   }, [])
 
   const grandTotal = items.reduce((sum, item) => sum + item.estimatedTotal, 0)
@@ -91,17 +106,20 @@ export default function CartPage() {
     : '/dashboard/place-order'
 
   async function handleCheckoutAll() {
-    if (items.length === 0 || !selectedPaymentMethod) return
+    if (items.length === 0) return
+    // Invoice-billing carts don't require a payment method.
+    if (!invoiceBilling && !selectedPaymentMethod) return
     setCheckingOut(true)
     setDone(false)
     setResults(items.map(i => ({ cartItemId: i.id, status: 'processing' })))
 
     try {
       // Build the batch payload — every cart row becomes one order in the batch,
-      // all sharing a SINGLE Stripe charge for the combined total
-      // Each item carries its hold_id so the server can claim it atomically.
+      // all sharing a SINGLE Stripe charge for the combined total. Invoice-
+      // billing carts omit payment_method_id; the server saves orders as
+      // pending_invoice and collection happens later via /admin/invoices.
       const batchPayload = {
-        payment_method_id: selectedPaymentMethod,
+        ...(invoiceBilling ? {} : { payment_method_id: selectedPaymentMethod }),
         cart_session_id: getOrCreateCartSessionId(),
         orders: items.map(cartItem => {
           const fd = cartItem.formData
@@ -381,7 +399,12 @@ export default function CartPage() {
         {items.length > 0 && !done && (
           <Card>
             <CardContent className="p-5 space-y-3">
-              {paymentMethods.length === 0 ? (
+              {invoiceBilling ? (
+                <div className="text-sm text-pink-900 bg-pink-50 border border-pink-200 rounded-lg p-3">
+                  <p className="font-semibold mb-1">Pay on invoice</p>
+                  <p>Your account is set up to pay by invoice. Orders are placed without charge and added to your next invoice.</p>
+                </div>
+              ) : paymentMethods.length === 0 ? (
                 <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
                   No payment method on file. Add one from your{' '}
                   <Link href="/dashboard/billing" className="underline font-medium">billing page</Link>.
@@ -409,15 +432,24 @@ export default function CartPage() {
                 size="lg"
                 className="w-full"
                 onClick={handleCheckoutAll}
-                disabled={checkingOut || !selectedPaymentMethod || paymentMethods.length === 0 || expiredRows.size > 0}
-              >
-                {checkingOut
-                  ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Placing {items.length} orders…</>
-                  : `Place ${items.length} order${items.length === 1 ? '' : 's'} — $${grandTotal.toFixed(2)}+`
+                disabled={
+                  checkingOut ||
+                  expiredRows.size > 0 ||
+                  (!invoiceBilling && (!selectedPaymentMethod || paymentMethods.length === 0))
                 }
+              >
+                {checkingOut ? (
+                  <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> {invoiceBilling ? 'Adding to invoice…' : `Placing ${items.length} orders…`}</>
+                ) : invoiceBilling ? (
+                  `Add ${items.length} order${items.length === 1 ? '' : 's'} to invoice — $${grandTotal.toFixed(2)}+`
+                ) : (
+                  `Place ${items.length} order${items.length === 1 ? '' : 's'} — $${grandTotal.toFixed(2)}+`
+                )}
               </Button>
               <p className="text-xs text-center text-gray-500">
-                Single charge for the combined total — appears once on your statement.
+                {invoiceBilling
+                  ? 'No charge today — Pink Posts will send a consolidated invoice for collection.'
+                  : 'Single charge for the combined total — appears once on your statement.'}
               </p>
               <Link href={nextOrderHref} className="block">
                 <Button variant="outline" className="w-full" disabled={checkingOut}>

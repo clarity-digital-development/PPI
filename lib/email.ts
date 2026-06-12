@@ -30,6 +30,9 @@ interface OrderConfirmationEmailProps {
   recipientUserId?: string | null
   // Optional inline user prefs to skip a DB roundtrip when caller already has them.
   recipientPrefs?: UserEmailPrefs | null
+  // True when this customer pays by invoice (no charge at checkout). Swaps the
+  // "thanks for your order" copy for an "added to invoice — bill coming" copy.
+  isInvoiceBilling?: boolean
 }
 
 export async function sendOrderConfirmationEmail({
@@ -43,6 +46,7 @@ export async function sendOrderConfirmationEmail({
   installationNotes,
   recipientUserId,
   recipientPrefs,
+  isInvoiceBilling,
 }: OrderConfirmationEmailProps) {
   // Pref gate — opt-out short-circuits before any Resend call.
   if (!(await shouldSendEmail(recipientUserId, 'emailOrderConfirmations', recipientPrefs))) {
@@ -75,12 +79,13 @@ export async function sendOrderConfirmationEmail({
         </div>
 
         <p style="color: #333;">Hi ${customerName},</p>
-        <p style="color: #333;">Thank you for your order! We've received your request and will begin processing it shortly.</p>
+        <p style="color: #333;">${isInvoiceBilling ? `This order has been added to your account and will appear on your next invoice. No payment has been collected yet.` : `Thank you for your order! We've received your request and will begin processing it shortly.`}</p>
 
         <div style="background-color: #FFF0F3; border-radius: 8px; padding: 16px; margin: 24px 0;">
           <p style="margin: 0; color: #666;"><strong>Order Number:</strong> ${orderNumber}</p>
           <p style="margin: 8px 0 0; color: #666;"><strong>Property:</strong> ${propertyAddress}</p>
           ${requestedDate ? `<p style="margin: 8px 0 0; color: #666;"><strong>Requested Date:</strong> ${requestedDate}</p>` : ''}
+          ${isInvoiceBilling ? `<p style="margin: 8px 0 0; color: #B45309;"><strong>Billing:</strong> Pay on invoice</p>` : ''}
         </div>
 
         ${installationNotes ? `
@@ -122,7 +127,7 @@ export async function sendOrderConfirmationEmail({
   return getResend().emails.send({
     from: 'Pink Posts Installations <orders@pinkposts.com>',
     to: customerEmail,
-    subject: `Order Confirmation - ${orderNumber}`,
+    subject: isInvoiceBilling ? `Order Added to Invoice - ${orderNumber}` : `Order Confirmation - ${orderNumber}`,
     html,
   })
 }
@@ -154,6 +159,15 @@ interface AdminNotificationEmailProps {
   noPostSurcharge?: number
   expediteFee?: number
   tax?: number
+  // Free-text agent name the team_admin tagged at checkout, plus phone from the
+  // matching TeamMember row when available. Lets ops know which agent to call
+  // about the order without digging into the dashboard.
+  assignedAgentName?: string | null
+  assignedAgentPhone?: string | null
+  // True when this order was placed by an invoice-billing customer (no charge
+  // collected at checkout). Surfaces a banner in the admin email so Ryan
+  // doesn't expect a payment record.
+  isInvoiceBilling?: boolean
 }
 
 export async function sendAdminOrderNotification({
@@ -182,6 +196,9 @@ export async function sendAdminOrderNotification({
   noPostSurcharge,
   expediteFee,
   tax,
+  assignedAgentName,
+  assignedAgentPhone,
+  isInvoiceBilling,
 }: AdminNotificationEmailProps) {
   const adminEmail = process.env.ADMIN_EMAIL
   if (!adminEmail) {
@@ -242,16 +259,20 @@ export async function sendAdminOrderNotification({
     installationDetails += `\n\nSpecial Requests / Notes:\n${installationNotes}`
   }
 
+  const assignedAgentLine = assignedAgentName
+    ? `\nAssigned Agent: ${assignedAgentName}${assignedAgentPhone ? ` (${assignedAgentPhone})` : ''}`
+    : ''
+
   const text = `
 New Order Received!
 
 Order Number: ${orderNumber}
-${isExpedited ? '⚡ EXPEDITED ORDER' : ''}
+${isExpedited ? '⚡ EXPEDITED ORDER' : ''}${isInvoiceBilling ? '\n📄 INVOICE BILLING — no payment collected at checkout. Bundle from /admin/invoices.' : ''}
 
 Customer Information:
 - Name: ${customerName}
 - Email: ${customerEmail}
-- Phone: ${customerPhone}
+- Phone: ${customerPhone}${assignedAgentLine}
 
 Property: ${propertyAddress}
 ${requestedDate ? `Requested Date: ${requestedDate}` : 'Requested Date: Next Available'}
@@ -271,7 +292,7 @@ View order details in the admin dashboard.
     const result = await getResend().emails.send({
       from: 'Pink Posts Installations <orders@pinkposts.com>',
       to: adminEmail,
-      subject: `${isExpedited ? '⚡ EXPEDITED ' : ''}New Order: ${orderNumber}`,
+      subject: `${isExpedited ? '⚡ EXPEDITED ' : ''}${isInvoiceBilling ? '📄 INVOICE ' : ''}New Order: ${orderNumber}`,
       text,
     })
     console.log(`Admin notification sent successfully for order ${orderNumber}:`, result)
@@ -280,6 +301,94 @@ View order details in the admin dashboard.
     console.error(`Failed to send admin notification for order ${orderNumber}:`, error)
     throw error
   }
+}
+
+interface InvoiceEmailProps {
+  invoiceId: string
+  invoiceNumber: string
+  customerName: string
+  customerEmail: string
+  companyName?: string | null
+  rangeStart: string // yyyy-mm-dd
+  rangeEnd: string // yyyy-mm-dd
+  total: number
+  orderCount: number
+  recipientUserId?: string | null
+  recipientPrefs?: UserEmailPrefs | null
+}
+
+/**
+ * Sent when an admin bundles a date range of pending_invoice orders into an
+ * Invoice. Customer clicks "Pay invoice" → lands on /dashboard/invoices/[id]
+ * which renders the Stripe Payment Element for the total.
+ */
+export async function sendInvoiceEmail({
+  invoiceId,
+  invoiceNumber,
+  customerName,
+  customerEmail,
+  companyName,
+  rangeStart,
+  rangeEnd,
+  total,
+  orderCount,
+  recipientUserId,
+  recipientPrefs,
+}: InvoiceEmailProps) {
+  // Reuse the order-confirmation preference key — same channel for the same
+  // transactional purpose; we don't want a separate opt-out for invoices.
+  if (!(await shouldSendEmail(recipientUserId, 'emailOrderConfirmations', recipientPrefs))) {
+    logSuppressed('sendInvoiceEmail', recipientUserId, 'emailOrderConfirmations')
+    return { suppressed: true as const }
+  }
+
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'https://pinkposts.com'
+  const payUrl = `${baseUrl}/dashboard/invoices/${invoiceId}`
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>Invoice ${invoiceNumber} - Pink Posts Installations</title>
+    </head>
+    <body style="font-family: 'Poppins', Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #FFF0F3;">
+      <div style="background-color: white; border-radius: 12px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <h1 style="color: #E84A7A; margin: 0;">Pink Posts Installations</h1>
+          <p style="color: #666; margin: 8px 0 0;">Invoice ${invoiceNumber}</p>
+        </div>
+
+        <p style="color: #333;">Hi ${customerName},</p>
+        <p style="color: #333;">Your invoice for orders placed between <strong>${rangeStart}</strong> and <strong>${rangeEnd}</strong> is ready.</p>
+
+        <div style="background-color: #FFF0F3; border-radius: 8px; padding: 20px; margin: 24px 0;">
+          ${companyName ? `<p style="margin: 0 0 8px; color: #666;"><strong>${escapeHtml(companyName)}</strong></p>` : ''}
+          <p style="margin: 0; color: #666;"><strong>${orderCount} order${orderCount === 1 ? '' : 's'}</strong> bundled on this invoice</p>
+          <p style="margin: 16px 0 0; font-size: 28px; font-weight: bold; color: #E84A7A;">$${total.toFixed(2)}</p>
+        </div>
+
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${payUrl}" style="background-color: #E84A7A; color: white; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block; font-size: 16px;">View &amp; Pay Invoice</a>
+        </div>
+
+        <p style="color: #666; font-size: 14px; text-align: center;">All bundled orders will be marked paid in a single transaction.</p>
+
+        <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid #eee; text-align: center;">
+          <p style="color: #666; margin: 0; font-size: 14px;">Questions? Contact us at support@pinkposts.com</p>
+          <p style="color: #999; margin: 8px 0 0; font-size: 12px;">&copy; ${new Date().getFullYear()} Pink Posts Installations. All rights reserved.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `
+
+  return getResend().emails.send({
+    from: 'Pink Posts Installations <orders@pinkposts.com>',
+    to: customerEmail,
+    subject: `Invoice ${invoiceNumber} — $${total.toFixed(2)}`,
+    html,
+  })
 }
 
 export async function sendPasswordResetEmail(

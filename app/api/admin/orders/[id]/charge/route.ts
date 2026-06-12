@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { createPaymentIntent, confirmPaymentIntent, getStripeErrorMessage } from '@/lib/stripe/server'
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
+import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
 
 export async function POST(
   request: NextRequest,
@@ -81,6 +82,10 @@ export async function POST(
           data: { confirmationEmailSentAt: new Date() },
         })
         if (reserved.count > 0) {
+          const assignedAgent = await resolveAssignedAgent({
+            placedForAgentName: order.placedForAgentName,
+            teamId: order.user.teamId,
+          })
           try {
             await Promise.all([
               sendOrderConfirmationEmail({
@@ -112,6 +117,8 @@ export async function POST(
                 })),
                 isExpedited: order.isExpedited,
                 installationNotes: order.propertyNotes || undefined,
+                assignedAgentName: assignedAgent?.name ?? null,
+                assignedAgentPhone: assignedAgent?.phone ?? null,
               }),
             ])
           } catch (emailError) {

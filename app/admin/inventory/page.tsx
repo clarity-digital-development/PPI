@@ -13,6 +13,7 @@ interface InventoryItem {
   customer_name: string
   in_storage: boolean
   created_at: string
+  quantity: number
 }
 
 interface InventorySummary {
@@ -224,7 +225,12 @@ export default function InventoryPage() {
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                      <p className="text-gray-900">{item.description}</p>
+                      <p className="text-gray-900">
+                        {item.description}
+                        {item.quantity > 1 && (
+                          <span className="ml-2 text-sm font-medium text-gray-500">×{item.quantity}</span>
+                        )}
+                      </p>
                     </td>
                     <td className="px-6 py-4">
                       <Link

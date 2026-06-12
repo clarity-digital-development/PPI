@@ -15,6 +15,7 @@ import {
   X,
   Wrench,
   MapPin,
+  FileText,
 } from 'lucide-react'
 import { Logo } from '@/components/shared'
 import { cn } from '@/lib/utils'
@@ -24,6 +25,7 @@ const fullNavItems = [
   { href: '/admin', label: 'Overview', icon: LayoutDashboard },
   { href: '/admin/customers', label: 'Customers', icon: Users },
   { href: '/admin/orders', label: 'Orders', icon: ShoppingCart },
+  { href: '/admin/invoices', label: 'Invoices', icon: FileText },
   { href: '/admin/service-requests', label: 'Service Requests', icon: Wrench },
   { href: '/admin/inventory', label: 'Inventory', icon: Package },
   { href: '/admin/service-areas', label: 'Service Areas', icon: MapPin },

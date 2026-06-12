@@ -93,6 +93,10 @@ export const AuditAction = {
   ServiceCenterUpdate:         'service_center.update',
   ServiceCenterDelete:         'service_center.delete',
   UserExemptToggle:            'user.service_area_exempt_toggle',
+  UserInvoiceBillingToggle:    'user.invoice_billing_toggle',
+  InvoiceCreated:              'invoice.created',
+  InvoicePaid:                 'invoice.paid',
+  InvoiceVoided:               'invoice.voided',
   ServiceAreaBlock:            'service_area.block',
   ServiceAreaSurchargeApplied: 'service_area.surcharge_applied',
   // Policy-notice acceptance — legal trail proving each non-exempt user
