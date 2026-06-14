@@ -45,6 +45,10 @@ export default function CartPage() {
   // Admin-set flag on the actor — when true, the "Pay now" CTA becomes
   // "Add to invoice" and we skip the payment-method requirement.
   const [invoiceBilling, setInvoiceBilling] = useState(false)
+  // Track whether the profile fetch has completed so we don't render the
+  // misleading "No payment method on file" message during the first ~200ms
+  // window when invoiceBilling defaults to false but the real value is true.
+  const [profileLoaded, setProfileLoaded] = useState(false)
   // Rows where the bump heartbeat returned extended:false — checkout for
   // these is blocked until the user re-picks (we don't auto-reacquire to
   // avoid silently re-grabbing inventory that may have changed hands).
@@ -81,13 +85,17 @@ export default function CartPage() {
     }
     async function fetchProfile() {
       try {
-        const res = await fetch('/api/profile')
+        // cache: 'no-store' so a stale browser cache can't pin invoiceBilling=false
+        // after an admin flips the flag — fetch always hits the server.
+        const res = await fetch('/api/profile', { cache: 'no-store' })
         if (res.ok) {
           const data = await res.json()
           setInvoiceBilling(!!data.user?.invoice_billing)
         }
       } catch {
         // Default (false) keeps the regular cart behavior on any failure.
+      } finally {
+        setProfileLoaded(true)
       }
     }
     fetchPayments()
@@ -399,7 +407,12 @@ export default function CartPage() {
         {items.length > 0 && !done && (
           <Card>
             <CardContent className="p-5 space-y-3">
-              {invoiceBilling ? (
+              {!profileLoaded ? (
+                <div className="text-sm text-gray-500 flex items-center gap-2 p-3">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Checking billing setup…
+                </div>
+              ) : invoiceBilling ? (
                 <div className="text-sm text-pink-900 bg-pink-50 border border-pink-200 rounded-lg p-3">
                   <p className="font-semibold mb-1">Pay on invoice</p>
                   <p>Your account is set up to pay by invoice. Orders are placed without charge and added to your next invoice.</p>
@@ -434,6 +447,7 @@ export default function CartPage() {
                 onClick={handleCheckoutAll}
                 disabled={
                   checkingOut ||
+                  !profileLoaded ||
                   expiredRows.size > 0 ||
                   (!invoiceBilling && (!selectedPaymentMethod || paymentMethods.length === 0))
                 }
