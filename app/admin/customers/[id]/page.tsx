@@ -1253,7 +1253,7 @@ export default function CustomerDetailPage() {
               <span className="text-sm">
                 <span className="font-medium text-gray-700">Pay on invoice (no charge at checkout)</span>
                 <span className="block text-xs text-gray-500">
-                  This customer's orders are placed without a Stripe charge and accumulate as <em>Pending invoice</em>. Bundle and send invoices from <strong>/admin/invoices</strong>.
+                  This customer&apos;s orders are placed without a Stripe charge and accumulate as <em>Pending invoice</em>. Bundle and send invoices from <strong>/admin/invoices</strong>.
                 </span>
               </span>
             </label>

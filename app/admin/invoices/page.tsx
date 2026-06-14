@@ -199,7 +199,7 @@ export default function AdminInvoicesPage() {
               />
               {customers.length === 0 && !customersLoading && (
                 <p className="mt-1 text-xs text-amber-700">
-                  No customers have invoice billing enabled. Flip the toggle on a customer's <strong>/admin/customers/[id]</strong> page first.
+                  No customers have invoice billing enabled. Flip the toggle on a customer&apos;s <strong>/admin/customers/[id]</strong> page first.
                 </p>
               )}
             </div>
