@@ -1204,7 +1204,21 @@ export default function CustomerDetailPage() {
             <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
             <select
               value={editData.role}
-              onChange={(e) => setEditData({ ...editData, role: e.target.value as 'customer' | 'team_admin' | 'admin' })}
+              onChange={(e) => {
+                const nextRole = e.target.value as 'customer' | 'team_admin' | 'admin'
+                setEditData((prev) => ({
+                  ...prev,
+                  role: nextRole,
+                  // Default invoice-billing ON when promoting INTO team_admin —
+                  // matches how brokerages pay (net-30, not card-at-checkout).
+                  // Admin can still untick before saving. Only fires on the
+                  // transition INTO team_admin so we don't override a manual
+                  // untick when admin just re-opens the modal.
+                  ...(nextRole === 'team_admin' && prev.role !== 'team_admin'
+                    ? { invoice_billing: true }
+                    : {}),
+                }))
+              }}
               className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-pink-500 focus:outline-none focus:ring-1 focus:ring-pink-500"
             >
               <option value="customer">Customer</option>

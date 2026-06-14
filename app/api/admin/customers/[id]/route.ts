@@ -346,6 +346,24 @@ export async function PUT(
         }
         updateData.role = body.role
         roleChangeAudit = { from: current.role, to: body.role }
+
+        // Cascade: when an API caller PROMOTES into team_admin without an
+        // opinion on invoice_billing, default it to ON. Brokerage accounts
+        // bill net-30 by policy. The admin UI always sends invoice_billing
+        // on every PUT (handled by the branch above), so this only fires
+        // for scripted/internal callers that mutate role in isolation. The
+        // UI also auto-ticks the checkbox client-side when role flips into
+        // team_admin, so the two paths converge on the same default.
+        if (body.role === 'team_admin' && body.invoice_billing === undefined) {
+          const ib = await prisma.user.findUnique({
+            where: { id },
+            select: { invoiceBilling: true },
+          })
+          if (ib && !ib.invoiceBilling) {
+            updateData.invoiceBilling = true
+            invoiceBillingAudit = { from: false, to: true }
+          }
+        }
       }
     }
 

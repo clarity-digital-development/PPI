@@ -46,6 +46,9 @@ async function main() {
   const user = await prisma.user.create({
     data: {
       email, password, role: 'team_admin',
+      // team_admin accounts default to invoice billing — matches the
+      // promotion cascade in /api/admin/customers/[id] PUT.
+      invoiceBilling: true,
       fullName: 'Ryan Test (Team Admin)', name: 'Ryan Test',
       phone: '859-555-0100', company: 'Test Realty Group', teamId: team.id,
     },
