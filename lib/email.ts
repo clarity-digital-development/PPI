@@ -319,6 +319,12 @@ interface InvoiceEmailProps {
   // Optional rendered PDF (from buildInvoicePdfBytes). When present, attached
   // to the email so the customer has the document in their inbox for records.
   pdfBytes?: Uint8Array | null
+  // Public URL that opens the invoice PDF inline in the browser (token-gated
+  // via /api/invoices/[id]/pdf?token=…). Primary "view" link in the email.
+  pdfUrl?: string | null
+  // Stripe-hosted Checkout Session URL. Primary "pay" link in the email —
+  // customer pays on Stripe without visiting pinkposts.com.
+  payUrl?: string | null
   // Override the From and Subject — used by the example-email path to make
   // it visually distinct from a real customer invoice.
   fromOverride?: string
@@ -339,7 +345,7 @@ interface InvoiceEmailProps {
  * has the document in their inbox alongside the Pay link.
  */
 export async function sendInvoiceEmail({
-  invoiceId,
+  invoiceId: _invoiceId,
   invoiceNumber,
   customerName,
   customerEmail,
@@ -350,6 +356,8 @@ export async function sendInvoiceEmail({
   orderCount,
   serviceRequestCount = 0,
   pdfBytes,
+  pdfUrl,
+  payUrl,
   fromOverride,
   subjectOverride,
   bannerHtml,
@@ -363,15 +371,31 @@ export async function sendInvoiceEmail({
     return { suppressed: true as const }
   }
 
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'https://pinkposts.com'
-  const payUrl = `${baseUrl}/dashboard/invoices/${invoiceId}`
-
   // Build the bundle-count line — "N orders + M service trips" when both,
   // collapses cleanly when only one kind is present.
   const countLineParts: string[] = []
   if (orderCount > 0) countLineParts.push(`${orderCount} order${orderCount === 1 ? '' : 's'}`)
   if (serviceRequestCount > 0) countLineParts.push(`${serviceRequestCount} service trip${serviceRequestCount === 1 ? '' : 's'}`)
   const countLine = countLineParts.join(' + ') || 'this invoice'
+
+  // The two CTAs the email body offers. Both point AWAY from pinkposts.com
+  // proper — pdfUrl lands on a token-gated PDF route that the browser
+  // renders inline, payUrl is a Stripe-hosted Checkout Session.
+  const viewPdfButton = pdfUrl
+    ? `
+        <div style="text-align: center; margin: 32px 0 16px;">
+          <a href="${pdfUrl}" style="background-color: #ffffff; color: #E84A7A; border: 2px solid #E84A7A; padding: 12px 28px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block; font-size: 15px;">View Invoice (PDF)</a>
+        </div>
+    `
+    : ''
+  const payButton = payUrl
+    ? `
+        <div style="text-align: center; margin: 8px 0 32px;">
+          <a href="${payUrl}" style="background-color: #E84A7A; color: white; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block; font-size: 16px;">Pay $${total.toFixed(2)} via Stripe</a>
+          <p style="color: #999; font-size: 12px; margin: 8px 0 0;">Secure payment processed by Stripe — no account required.</p>
+        </div>
+    `
+    : ''
 
   const html = `
     <!DOCTYPE html>
@@ -397,12 +421,11 @@ export async function sendInvoiceEmail({
           <p style="margin: 16px 0 0; font-size: 28px; font-weight: bold; color: #E84A7A;">$${total.toFixed(2)}</p>
         </div>
 
-        <div style="text-align: center; margin: 32px 0;">
-          <a href="${payUrl}" style="background-color: #E84A7A; color: white; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block; font-size: 16px;">View &amp; Pay Invoice</a>
-        </div>
+        ${viewPdfButton}
+        ${payButton}
 
-        ${pdfBytes ? `<p style="color: #666; font-size: 13px; text-align: center;">A PDF copy is attached to this email for your records.</p>` : ''}
-        <p style="color: #666; font-size: 14px; text-align: center;">All bundled items will be marked paid in a single transaction.</p>
+        ${pdfBytes ? `<p style="color: #666; font-size: 13px; text-align: center;">A PDF copy is also attached to this email for your records.</p>` : ''}
+        <p style="color: #666; font-size: 13px; text-align: center;">All bundled items will be marked paid once the Stripe payment clears.</p>
 
         <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid #eee; text-align: center;">
           <p style="color: #666; margin: 0; font-size: 14px;">Questions? Contact us at support@pinkposts.com</p>

@@ -513,6 +513,18 @@ model Invoice {
   voidedAt        DateTime? @map("voided_at")
   paymentIntentId String?   @unique @map("payment_intent_id")
 
+  // Stripe Checkout Session created at bundler-time so the email can link
+  // directly to Stripe-hosted payment (customer never lands on pinkposts.com
+  // to pay). Sessions expire after 30 days — admin can regenerate via the
+  // bundler if a customer takes longer than that to pay.
+  checkoutSessionId String? @map("checkout_session_id")
+  checkoutUrl       String? @map("checkout_url")
+
+  // Opaque random token granting public read-only access to this invoice's
+  // PDF via /api/invoices/[id]/pdf?token=…. Unguessable so anyone with the
+  // emailed link (and only them) can view the PDF without logging in.
+  publicPdfToken String? @map("public_pdf_token")
+
   // Single email-send reservation flag mirroring Order.confirmationEmailSentAt
   // to keep the "send invoice" call idempotent even if a webhook retries it.
   invoiceEmailSentAt DateTime? @map("invoice_email_sent_at")

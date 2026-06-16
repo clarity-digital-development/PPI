@@ -322,6 +322,65 @@ export async function calculateTax(
   }
 }
 
+/**
+ * Create a Stripe Checkout Session for an invoice. The returned URL is the
+ * Stripe-hosted payment page customers click from their invoice email —
+ * keeps them off pinkposts.com entirely. Metadata propagates to the underlying
+ * PaymentIntent so the existing payment_intent.succeeded webhook routes back
+ * to /api/webhooks/stripe → invoice-paid branch correctly.
+ *
+ * Sessions expire after 30 days (Stripe maximum). For unpaid invoices older
+ * than that, the bundler can regenerate.
+ */
+export async function createInvoiceCheckoutSession(opts: {
+  invoiceId: string
+  invoiceNumber: string
+  amountInCents: number
+  customerEmail: string
+  successUrl: string
+  cancelUrl: string
+  description?: string
+}) {
+  const expiresAt = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60 // 30 days
+  return getStripe().checkout.sessions.create(
+    {
+      mode: 'payment',
+      line_items: [
+        {
+          price_data: {
+            currency: 'usd',
+            product_data: {
+              name: `Pink Posts Invoice ${opts.invoiceNumber}`,
+              description: opts.description ?? `Bundled invoice payment`,
+            },
+            unit_amount: opts.amountInCents,
+          },
+          quantity: 1,
+        },
+      ],
+      // Metadata on the PI so the existing webhook keeps working.
+      payment_intent_data: {
+        metadata: {
+          invoiceId: opts.invoiceId,
+          invoiceNumber: opts.invoiceNumber,
+          kind: 'invoice',
+        },
+      },
+      // Also on the session for cross-referencing in the Stripe dashboard.
+      metadata: { invoiceId: opts.invoiceId, invoiceNumber: opts.invoiceNumber, kind: 'invoice' },
+      customer_email: opts.customerEmail,
+      expires_at: expiresAt,
+      success_url: opts.successUrl,
+      cancel_url: opts.cancelUrl,
+    },
+    {
+      // Stable key per invoice so a replay/retry returns the same Session
+      // instead of creating duplicates.
+      idempotencyKey: `invoice-checkout:${opts.invoiceId}`,
+    },
+  )
+}
+
 // Check if Stripe Tax is enabled (useful for feature flagging)
 export async function isStripeTaxEnabled(): Promise<boolean> {
   try {

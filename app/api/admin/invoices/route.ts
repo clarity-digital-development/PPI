@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { randomBytes } from 'node:crypto'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { audit, AuditAction } from '@/lib/audit'
 import { sendInvoiceEmail } from '@/lib/email'
 import { buildInvoicePdfBytes, type InvoiceDetail } from '@/lib/invoices/invoice-pdf'
+import { createInvoiceCheckoutSession } from '@/lib/stripe/server'
 
 /**
  * Admin invoice bundler.
@@ -28,6 +30,12 @@ function generateInvoiceNumber(): string {
   const ts = Date.now().toString(36).toUpperCase()
   const rand = Math.random().toString(36).substring(2, 6).toUpperCase()
   return `PPI-INV-${ts}-${rand}`
+}
+
+// 64-char hex token; unguessable so the emailed PDF URL is effectively
+// capability-protected without forcing the customer to log in.
+function generatePublicPdfToken(): string {
+  return randomBytes(32).toString('hex')
 }
 
 /**
@@ -303,8 +311,11 @@ export async function POST(request: NextRequest) {
         total,
         status: 'sent',
         sentAt: new Date(),
+        // Capability token for the public PDF viewer. Generated at bundler
+        // time so the email link can include it directly.
+        publicPdfToken: generatePublicPdfToken(),
       },
-      select: { id: true, invoiceNumber: true, total: true, subtotal: true },
+      select: { id: true, invoiceNumber: true, total: true, subtotal: true, publicPdfToken: true },
     })
 
     // Race guard: filter the UPDATE on `invoiceId: null` too, then verify
@@ -339,6 +350,7 @@ export async function POST(request: NextRequest) {
       total,
       orderNumbers: orders.map((o) => o.orderNumber),
       serviceRequestIds: serviceRequests.map((sr) => sr.id),
+      publicPdfToken: invoice.publicPdfToken!,
     }
   })
 
@@ -347,6 +359,31 @@ export async function POST(request: NextRequest) {
       { error: 'No pending-invoice orders or service trips found in this date range.' },
       { status: 400 },
     )
+  }
+
+  // Create the Stripe Checkout Session AFTER the transaction commits so the
+  // invoice + bundled rows are definitely persisted before we point Stripe
+  // at this invoice id. If session creation fails, we still let the email
+  // send (without a Pay button) — admin can regenerate later.
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'https://pinkposts.com'
+  let checkoutUrl: string | null = null
+  try {
+    const session = await createInvoiceCheckoutSession({
+      invoiceId: result.invoice.id,
+      invoiceNumber: result.invoice.invoiceNumber,
+      amountInCents: Math.round(Number(result.invoice.total) * 100),
+      customerEmail: customer.email,
+      description: `${result.ordersCount} order(s) + ${result.serviceRequestsCount} service trip(s) — ${startDate.toISOString().slice(0, 10)} → ${endDate.toISOString().slice(0, 10)}`,
+      successUrl: `${baseUrl}/invoice-paid?invoice=${result.invoice.invoiceNumber}`,
+      cancelUrl: `${baseUrl}/invoice-cancelled?invoice=${result.invoice.invoiceNumber}`,
+    })
+    checkoutUrl = session.url
+    await prisma.invoice.update({
+      where: { id: result.invoice.id },
+      data: { checkoutSessionId: session.id, checkoutUrl: session.url },
+    })
+  } catch (stripeErr) {
+    console.error('Invoice checkout-session create failed (email will still send without Pay button):', stripeErr)
   }
 
   // Email the customer. Reservation flag stops a double-send if the admin
@@ -380,6 +417,8 @@ export async function POST(request: NextRequest) {
         orderCount: result.ordersCount,
         serviceRequestCount: result.serviceRequestsCount,
         pdfBytes,
+        pdfUrl: `${baseUrl}/api/invoices/${result.invoice.id}/pdf?token=${result.publicPdfToken}`,
+        payUrl: checkoutUrl,
         recipientUserId: customerId,
       })
     } catch (err) {
