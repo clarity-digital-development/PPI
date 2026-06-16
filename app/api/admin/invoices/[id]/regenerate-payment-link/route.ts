@@ -4,7 +4,8 @@ import { getCurrentUser } from '@/lib/auth-utils'
 import { audit, AuditAction } from '@/lib/audit'
 import { createInvoiceCheckoutSession, stripe } from '@/lib/stripe/server'
 import { sendInvoiceEmail } from '@/lib/email'
-import { buildInvoicePdfBytes, type InvoiceDetail } from '@/lib/invoices/invoice-pdf'
+import { buildInvoicePdfBytes } from '@/lib/invoices/invoice-pdf'
+import { loadInvoiceDetailForPdf } from '@/lib/invoices/load-detail'
 
 /**
  * Admin: regenerate the Stripe Payment Link for an invoice.
@@ -105,51 +106,9 @@ export async function POST(
   // resend always goes out (the regenerate button is an explicit
   // human-initiated retry — flag is for accidental double-bundling, not
   // intentional manual resend).
-  const detail: InvoiceDetail = {
-    id: invoice.id,
-    invoice_number: invoice.invoiceNumber,
-    status: invoice.status as 'sent' | 'paid' | 'void',
-    range_start: invoice.rangeStart.toISOString(),
-    range_end: invoice.rangeEnd.toISOString(),
-    subtotal: Number(invoice.subtotal),
-    total: Number(invoice.total),
-    sent_at: invoice.sentAt?.toISOString() ?? null,
-    paid_at: invoice.paidAt?.toISOString() ?? null,
-    customer: {
-      id: invoice.user.id,
-      name: invoice.user.fullName || invoice.user.name || invoice.user.email,
-      email: invoice.user.email,
-      company: invoice.user.company,
-    },
-    orders: invoice.orders.map((o) => ({
-      id: o.id,
-      order_number: o.orderNumber,
-      created_at: o.createdAt.toISOString(),
-      property_address: o.propertyAddress,
-      property_city: o.propertyCity,
-      property_state: o.propertyState,
-      property_zip: o.propertyZip,
-      total: Number(o.total),
-      placed_for_agent_name: o.placedForAgentName,
-      items: o.orderItems.map((it) => ({
-        description: it.description,
-        quantity: it.quantity,
-        unit_price: Number(it.unitPrice),
-        total_price: Number(it.totalPrice),
-      })),
-    })),
-    service_requests: invoice.serviceRequests.map((sr) => ({
-      id: sr.id,
-      type: sr.type,
-      description: sr.description,
-      completed_at: sr.completedAt?.toISOString() ?? null,
-      created_at: sr.createdAt.toISOString(),
-      property_address: sr.installation?.propertyAddress ?? sr.unlistedAddress ?? null,
-      property_city: sr.installation?.propertyCity ?? sr.unlistedCity ?? null,
-      property_state: sr.installation?.propertyState ?? sr.unlistedState ?? null,
-      property_zip: sr.installation?.propertyZip ?? sr.unlistedZip ?? null,
-      amount: Number(sr.invoiceAmount || 0),
-    })),
+  const detail = await loadInvoiceDetailForPdf(invoice.id)
+  if (!detail) {
+    return NextResponse.json({ error: 'Invoice disappeared during regenerate.' }, { status: 500 })
   }
 
   let emailSent = false

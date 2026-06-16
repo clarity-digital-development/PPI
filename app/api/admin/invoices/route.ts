@@ -4,7 +4,8 @@ import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { audit, AuditAction } from '@/lib/audit'
 import { sendInvoiceEmail } from '@/lib/email'
-import { buildInvoicePdfBytes, type InvoiceDetail } from '@/lib/invoices/invoice-pdf'
+import { buildInvoicePdfBytes } from '@/lib/invoices/invoice-pdf'
+import { loadInvoiceDetailForPdf } from '@/lib/invoices/load-detail'
 import { createInvoiceCheckoutSession } from '@/lib/stripe/server'
 
 /**
@@ -36,72 +37,6 @@ function generateInvoiceNumber(): string {
 // capability-protected without forcing the customer to log in.
 function generatePublicPdfToken(): string {
   return randomBytes(32).toString('hex')
-}
-
-/**
- * Fetch an invoice in the exact shape the PDF builder + customer page expect.
- * Mirrors the response of /api/invoices/[id] so both paths render the same
- * document from the same fields.
- */
-async function loadInvoiceDetailForPdf(invoiceId: string): Promise<InvoiceDetail | null> {
-  const invoice = await prisma.invoice.findUnique({
-    where: { id: invoiceId },
-    include: {
-      user: { select: { id: true, fullName: true, name: true, email: true, company: true } },
-      orders: { include: { orderItems: true }, orderBy: { createdAt: 'asc' } },
-      serviceRequests: {
-        include: { installation: { select: { propertyAddress: true, propertyCity: true, propertyState: true, propertyZip: true } } },
-        orderBy: { completedAt: 'asc' },
-      },
-    },
-  })
-  if (!invoice) return null
-  return {
-    id: invoice.id,
-    invoice_number: invoice.invoiceNumber,
-    status: invoice.status as 'sent' | 'paid' | 'void',
-    range_start: invoice.rangeStart.toISOString(),
-    range_end: invoice.rangeEnd.toISOString(),
-    subtotal: Number(invoice.subtotal),
-    total: Number(invoice.total),
-    sent_at: invoice.sentAt?.toISOString() ?? null,
-    paid_at: invoice.paidAt?.toISOString() ?? null,
-    customer: {
-      id: invoice.user.id,
-      name: invoice.user.fullName || invoice.user.name || invoice.user.email,
-      email: invoice.user.email,
-      company: invoice.user.company,
-    },
-    orders: invoice.orders.map((o) => ({
-      id: o.id,
-      order_number: o.orderNumber,
-      created_at: o.createdAt.toISOString(),
-      property_address: o.propertyAddress,
-      property_city: o.propertyCity,
-      property_state: o.propertyState,
-      property_zip: o.propertyZip,
-      total: Number(o.total),
-      placed_for_agent_name: o.placedForAgentName,
-      items: o.orderItems.map((it) => ({
-        description: it.description,
-        quantity: it.quantity,
-        unit_price: Number(it.unitPrice),
-        total_price: Number(it.totalPrice),
-      })),
-    })),
-    service_requests: invoice.serviceRequests.map((sr) => ({
-      id: sr.id,
-      type: sr.type,
-      description: sr.description,
-      completed_at: sr.completedAt?.toISOString() ?? null,
-      created_at: sr.createdAt.toISOString(),
-      property_address: sr.installation?.propertyAddress ?? sr.unlistedAddress ?? null,
-      property_city: sr.installation?.propertyCity ?? sr.unlistedCity ?? null,
-      property_state: sr.installation?.propertyState ?? sr.unlistedState ?? null,
-      property_zip: sr.installation?.propertyZip ?? sr.unlistedZip ?? null,
-      amount: Number(sr.invoiceAmount || 0),
-    })),
-  }
 }
 
 export async function GET(request: NextRequest) {
