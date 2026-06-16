@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import {
   Card,
@@ -123,6 +123,21 @@ export default function ServiceRequestsPage() {
   const [invoiceAmount, setInvoiceAmount] = useState('')
   const [invoicing, setInvoicing] = useState(false)
   const [invoiceError, setInvoiceError] = useState<string | null>(null)
+  // Auto-prompt state — set when admin marks an invoice-billing SR as
+  // completed without a billing amount yet. Keeps the modal open, scrolls
+  // the amount input into view, focuses it, and renders a yellow nudge
+  // banner so admin doesn't accidentally leave the SR completed-but-unbilled.
+  const [needsInvoiceAmount, setNeedsInvoiceAmount] = useState(false)
+  const invoiceAmountInputRef = useRef<HTMLInputElement>(null)
+
+  // When the auto-prompt fires, focus + scroll the amount input on the
+  // next render so the user sees + can type into it immediately.
+  useEffect(() => {
+    if (needsInvoiceAmount && invoiceAmountInputRef.current) {
+      invoiceAmountInputRef.current.focus()
+      invoiceAmountInputRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  }, [needsInvoiceAmount])
 
   useEffect(() => {
     fetchRequests()
@@ -155,6 +170,7 @@ export default function ServiceRequestsPage() {
     setScheduledDate(request.requestedDate ? request.requestedDate.split('T')[0] : '')
     setInvoiceAmount(request.invoiceAmount != null ? String(request.invoiceAmount) : '')
     setInvoiceError(null)
+    setNeedsInvoiceAmount(false)
     setShowModal(true)
   }
 
@@ -182,6 +198,9 @@ export default function ServiceRequestsPage() {
         prev.map((r) => (r.id === selectedRequest.id ? { ...r, ...data.serviceRequest } : r))
       )
       setSelectedRequest((prev) => (prev ? { ...prev, ...data.serviceRequest } : prev))
+      // Auto-prompt fulfilled — clear the nudge so the yellow banner goes
+      // away and the "pending_invoice" / "paid" success banner takes over.
+      setNeedsInvoiceAmount(false)
     } catch (err) {
       setInvoiceError(err instanceof Error ? err.message : 'Charge failed')
     } finally {
@@ -206,11 +225,31 @@ export default function ServiceRequestsPage() {
 
       if (res.ok) {
         const data = await res.json()
+        const updated = { ...selectedRequest, ...data.serviceRequest }
         setRequests((prev) =>
           prev.map((r) => (r.id === selectedRequest.id ? { ...r, ...data.serviceRequest } : r))
         )
-        setShowModal(false)
-        fetchRequests() // Refresh counts
+
+        // Auto-prompt: if admin just marked an invoice-billing SR completed
+        // and no invoice amount is set yet, keep the modal open + nudge
+        // them to enter the billing amount instead of closing and leaving
+        // the SR completed-but-unbilled. Effect hook above handles the
+        // focus + scroll once needsInvoiceAmount flips true.
+        const shouldPrompt =
+          newStatus === 'completed' &&
+          updated.user?.invoiceBilling &&
+          (updated.invoiceAmount == null || Number(updated.invoiceAmount) <= 0) &&
+          updated.invoiceStatus !== 'paid' &&
+          updated.invoiceStatus !== 'pending_invoice'
+
+        if (shouldPrompt) {
+          setSelectedRequest(updated)
+          setNeedsInvoiceAmount(true)
+          fetchRequests() // refresh counts in the background
+        } else {
+          setShowModal(false)
+          fetchRequests() // Refresh counts
+        }
       }
     } catch (error) {
       console.error('Error updating service request:', error)
@@ -434,7 +473,7 @@ export default function ServiceRequestsPage() {
       {/* Detail Modal */}
       <Modal
         isOpen={showModal}
-        onClose={() => setShowModal(false)}
+        onClose={() => { setShowModal(false); setNeedsInvoiceAmount(false) }}
         title="Service Request Details"
       >
         {selectedRequest && (
@@ -618,6 +657,28 @@ export default function ServiceRequestsPage() {
                 </div>
               ) : (
                 <div className="space-y-2">
+                  {/* Auto-prompt nudge — fires once when admin transitions
+                      an invoice-billing SR to 'completed' without setting
+                      an amount, so they don't leave the modal with the SR
+                      completed-but-unbilled. Clears when amount submits. */}
+                  {needsInvoiceAmount && (
+                    <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
+                      <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        <p className="font-medium">Set invoice amount before closing</p>
+                        <p className="text-xs mt-0.5">
+                          This trip is marked complete. Enter the amount below to add it to this customer&apos;s next bundled invoice — otherwise it stays unbilled.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setNeedsInvoiceAmount(false)}
+                        className="text-amber-700 hover:text-amber-900 text-xs underline"
+                      >
+                        Skip
+                      </button>
+                    </div>
+                  )}
                   <p className="text-xs text-gray-500">
                     {isInvoiceBilling
                       ? 'This customer pays by invoice. The amount will be added to their next bundled invoice — no card will be charged now.'
@@ -626,6 +687,7 @@ export default function ServiceRequestsPage() {
                   <div className="flex items-end gap-2">
                     <div className="flex-1">
                       <Input
+                        ref={invoiceAmountInputRef}
                         type="number"
                         label="Amount (USD)"
                         value={invoiceAmount}
