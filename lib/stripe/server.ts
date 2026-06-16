@@ -323,14 +323,24 @@ export async function calculateTax(
 }
 
 /**
- * Create a Stripe Checkout Session for an invoice. The returned URL is the
+ * Create a Stripe Payment Link for an invoice. The returned URL is the
  * Stripe-hosted payment page customers click from their invoice email —
- * keeps them off pinkposts.com entirely. Metadata propagates to the underlying
- * PaymentIntent so the existing payment_intent.succeeded webhook routes back
- * to /api/webhooks/stripe → invoice-paid branch correctly.
+ * keeps them off pinkposts.com entirely.
  *
- * Sessions expire after 30 days (Stripe maximum). For unpaid invoices older
- * than that, the bundler can regenerate.
+ * We use Payment Links instead of Checkout Sessions because Checkout Session
+ * `expires_at` caps at 24 hours, which is far too short for net-30 invoice
+ * billing. Payment Links don't expire; instead we cap them at one successful
+ * checkout via `restrictions.completed_sessions.limit = 1` so the URL
+ * auto-deactivates after the customer pays (prevents double-charging if the
+ * link is forwarded or re-clicked).
+ *
+ * The metadata on `payment_intent_data` propagates from the Payment Link
+ * through every Checkout Session it spawns to the underlying PaymentIntent,
+ * so the existing payment_intent.succeeded webhook routes back to
+ * /api/webhooks/stripe → invoice-paid branch correctly.
+ *
+ * Returns the same shape as the prior checkout-session implementation so
+ * callers stay consistent: { id, url, ... }.
  */
 export async function createInvoiceCheckoutSession(opts: {
   invoiceId: string
@@ -338,13 +348,11 @@ export async function createInvoiceCheckoutSession(opts: {
   amountInCents: number
   customerEmail: string
   successUrl: string
-  cancelUrl: string
+  cancelUrl: string // accepted for API compatibility, unused for Payment Links
   description?: string
 }) {
-  const expiresAt = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60 // 30 days
-  return getStripe().checkout.sessions.create(
+  return getStripe().paymentLinks.create(
     {
-      mode: 'payment',
       line_items: [
         {
           price_data: {
@@ -358,7 +366,19 @@ export async function createInvoiceCheckoutSession(opts: {
           quantity: 1,
         },
       ],
-      // Metadata on the PI so the existing webhook keeps working.
+      // Auto-deactivate after one successful payment so the link can't be
+      // used to double-charge if the customer (or anyone they forward to)
+      // clicks it again.
+      restrictions: { completed_sessions: { limit: 1 } },
+      // Send customers somewhere after they pay — Stripe-hosted success page
+      // doesn't need to go back to our app.
+      after_completion: {
+        type: 'redirect',
+        redirect: { url: opts.successUrl },
+      },
+      // Metadata on the PI so the existing webhook keeps working — Stripe
+      // propagates payment_intent_data.metadata from PaymentLink → Checkout
+      // Session → PaymentIntent.
       payment_intent_data: {
         metadata: {
           invoiceId: opts.invoiceId,
@@ -366,17 +386,13 @@ export async function createInvoiceCheckoutSession(opts: {
           kind: 'invoice',
         },
       },
-      // Also on the session for cross-referencing in the Stripe dashboard.
+      // Also on the link for cross-referencing in the Stripe dashboard.
       metadata: { invoiceId: opts.invoiceId, invoiceNumber: opts.invoiceNumber, kind: 'invoice' },
-      customer_email: opts.customerEmail,
-      expires_at: expiresAt,
-      success_url: opts.successUrl,
-      cancel_url: opts.cancelUrl,
     },
     {
-      // Stable key per invoice so a replay/retry returns the same Session
+      // Stable key per invoice so a replay/retry returns the same Link
       // instead of creating duplicates.
-      idempotencyKey: `invoice-checkout:${opts.invoiceId}`,
+      idempotencyKey: `invoice-payment-link:${opts.invoiceId}`,
     },
   )
 }

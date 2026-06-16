@@ -164,7 +164,9 @@ export function buildInvoicePdfDoc(invoice: InvoiceDetail): jsPDF {
   doc.text('BILLING PERIOD', margin + 220, metaTop)
   doc.setFontSize(11)
   doc.setTextColor(INK.r, INK.g, INK.b)
-  doc.text(`${invoice.range_start.slice(0, 10)}  →  ${invoice.range_end.slice(0, 10)}`, margin + 220, metaTop + 14)
+  // ASCII-only — jspdf's standard helvetica is Latin-1 and renders the
+  // Unicode arrow as "!", so " to " is the safest reliable separator.
+  doc.text(`${invoice.range_start.slice(0, 10)}  to  ${invoice.range_end.slice(0, 10)}`, margin + 220, metaTop + 14)
   if (invoice.sent_at) {
     doc.setFontSize(9)
     doc.setTextColor(MUTED.r, MUTED.g, MUTED.b)
@@ -309,21 +311,32 @@ export function buildInvoicePdfDoc(invoice: InvoiceDetail): jsPDF {
     tY = 80
   }
 
+  // Subtotal row (10pt, muted).
+  const subtotalY = tY
   doc.setFontSize(10)
   doc.setTextColor(MUTED.r, MUTED.g, MUTED.b)
-  doc.text('Subtotal', pageWidth - margin - 90, tY, { align: 'right' })
+  doc.text('Subtotal', pageWidth - margin - 90, subtotalY, { align: 'right' })
   doc.setTextColor(INK.r, INK.g, INK.b)
-  doc.text(fmtCurrency(invoice.subtotal), pageWidth - margin, tY, { align: 'right' })
-  tY += 18
+  doc.text(fmtCurrency(invoice.subtotal), pageWidth - margin, subtotalY, { align: 'right' })
+
+  // Divider line — sits 12pt below the Subtotal baseline so it's clear of
+  // both the descenders of "Subtotal" and the cap-height of the 13pt "Total"
+  // beneath it. The earlier (tY - 8) put it right inside the "Total" text.
+  const lineY = subtotalY + 12
   doc.setDrawColor(220, 220, 220)
-  doc.line(pageWidth - margin - 160, tY - 8, pageWidth - margin, tY - 8)
+  doc.line(pageWidth - margin - 160, lineY, pageWidth - margin, lineY)
+
+  // Total row (13pt bold). 22pt gap below the line gives the cap-height of
+  // the bigger font room to sit cleanly without crashing into the divider.
+  const totalY = lineY + 22
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(13)
   doc.setTextColor(MUTED.r, MUTED.g, MUTED.b)
-  doc.text('Total', pageWidth - margin - 90, tY, { align: 'right' })
+  doc.text('Total', pageWidth - margin - 90, totalY, { align: 'right' })
   doc.setTextColor(PINK.r, PINK.g, PINK.b)
-  doc.text(fmtCurrency(invoice.total), pageWidth - margin, tY, { align: 'right' })
+  doc.text(fmtCurrency(invoice.total), pageWidth - margin, totalY, { align: 'right' })
   doc.setFont('helvetica', 'normal')
+  tY = totalY
 
   // Pay-online link (only if outstanding)
   if (invoice.status === 'sent') {

@@ -513,10 +513,12 @@ model Invoice {
   voidedAt        DateTime? @map("voided_at")
   paymentIntentId String?   @unique @map("payment_intent_id")
 
-  // Stripe Checkout Session created at bundler-time so the email can link
-  // directly to Stripe-hosted payment (customer never lands on pinkposts.com
-  // to pay). Sessions expire after 30 days — admin can regenerate via the
-  // bundler if a customer takes longer than that to pay.
+  // Stripe Payment Link (plink_*) created at bundler-time so the email can
+  // link directly to Stripe-hosted payment (customer never lands on
+  // pinkposts.com to pay). Payment Links don't expire; auto-deactivate after
+  // one successful checkout via restrictions.completed_sessions.limit=1.
+  // (Column kept as checkout_session_id for back-compat with the rejected
+  // Checkout Session approach — stores the Payment Link id either way.)
   checkoutSessionId String? @map("checkout_session_id")
   checkoutUrl       String? @map("checkout_url")
 
