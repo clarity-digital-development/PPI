@@ -313,14 +313,30 @@ interface InvoiceEmailProps {
   rangeEnd: string // yyyy-mm-dd
   total: number
   orderCount: number
+  // Bundled service-trip count alongside orders. Optional so older call sites
+  // continue to compile; defaults to 0 in the body copy when absent.
+  serviceRequestCount?: number
+  // Optional rendered PDF (from buildInvoicePdfBytes). When present, attached
+  // to the email so the customer has the document in their inbox for records.
+  pdfBytes?: Uint8Array | null
+  // Override the From and Subject — used by the example-email path to make
+  // it visually distinct from a real customer invoice.
+  fromOverride?: string
+  subjectOverride?: string
+  // Optional yellow banner above the greeting, used by the example flow to
+  // make it obvious this is a preview and the customer wasn't really billed.
+  bannerHtml?: string
   recipientUserId?: string | null
   recipientPrefs?: UserEmailPrefs | null
 }
 
 /**
- * Sent when an admin bundles a date range of pending_invoice orders into an
- * Invoice. Customer clicks "Pay invoice" → lands on /dashboard/invoices/[id]
- * which renders the Stripe Payment Element for the total.
+ * Sent when an admin bundles a date range of pending_invoice orders (and
+ * service trips) into an Invoice. Customer clicks "Pay invoice" → lands on
+ * /dashboard/invoices/[id] which renders the Stripe Payment Element.
+ *
+ * When `pdfBytes` is supplied, the rendered PDF is attached so the customer
+ * has the document in their inbox alongside the Pay link.
  */
 export async function sendInvoiceEmail({
   invoiceId,
@@ -332,6 +348,11 @@ export async function sendInvoiceEmail({
   rangeEnd,
   total,
   orderCount,
+  serviceRequestCount = 0,
+  pdfBytes,
+  fromOverride,
+  subjectOverride,
+  bannerHtml,
   recipientUserId,
   recipientPrefs,
 }: InvoiceEmailProps) {
@@ -345,6 +366,13 @@ export async function sendInvoiceEmail({
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'https://pinkposts.com'
   const payUrl = `${baseUrl}/dashboard/invoices/${invoiceId}`
 
+  // Build the bundle-count line — "N orders + M service trips" when both,
+  // collapses cleanly when only one kind is present.
+  const countLineParts: string[] = []
+  if (orderCount > 0) countLineParts.push(`${orderCount} order${orderCount === 1 ? '' : 's'}`)
+  if (serviceRequestCount > 0) countLineParts.push(`${serviceRequestCount} service trip${serviceRequestCount === 1 ? '' : 's'}`)
+  const countLine = countLineParts.join(' + ') || 'this invoice'
+
   const html = `
     <!DOCTYPE html>
     <html>
@@ -354,17 +382,18 @@ export async function sendInvoiceEmail({
     </head>
     <body style="font-family: 'Poppins', Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #FFF0F3;">
       <div style="background-color: white; border-radius: 12px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+        ${bannerHtml ?? ''}
         <div style="text-align: center; margin-bottom: 24px;">
           <h1 style="color: #E84A7A; margin: 0;">Pink Posts Installations</h1>
           <p style="color: #666; margin: 8px 0 0;">Invoice ${invoiceNumber}</p>
         </div>
 
         <p style="color: #333;">Hi ${customerName},</p>
-        <p style="color: #333;">Your invoice for orders placed between <strong>${rangeStart}</strong> and <strong>${rangeEnd}</strong> is ready.</p>
+        <p style="color: #333;">Your invoice for activity between <strong>${rangeStart}</strong> and <strong>${rangeEnd}</strong> is ready.</p>
 
         <div style="background-color: #FFF0F3; border-radius: 8px; padding: 20px; margin: 24px 0;">
           ${companyName ? `<p style="margin: 0 0 8px; color: #666;"><strong>${escapeHtml(companyName)}</strong></p>` : ''}
-          <p style="margin: 0; color: #666;"><strong>${orderCount} order${orderCount === 1 ? '' : 's'}</strong> bundled on this invoice</p>
+          <p style="margin: 0; color: #666;"><strong>${countLine}</strong> bundled on this invoice</p>
           <p style="margin: 16px 0 0; font-size: 28px; font-weight: bold; color: #E84A7A;">$${total.toFixed(2)}</p>
         </div>
 
@@ -372,7 +401,8 @@ export async function sendInvoiceEmail({
           <a href="${payUrl}" style="background-color: #E84A7A; color: white; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block; font-size: 16px;">View &amp; Pay Invoice</a>
         </div>
 
-        <p style="color: #666; font-size: 14px; text-align: center;">All bundled orders will be marked paid in a single transaction.</p>
+        ${pdfBytes ? `<p style="color: #666; font-size: 13px; text-align: center;">A PDF copy is attached to this email for your records.</p>` : ''}
+        <p style="color: #666; font-size: 14px; text-align: center;">All bundled items will be marked paid in a single transaction.</p>
 
         <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid #eee; text-align: center;">
           <p style="color: #666; margin: 0; font-size: 14px;">Questions? Contact us at support@pinkposts.com</p>
@@ -383,11 +413,18 @@ export async function sendInvoiceEmail({
     </html>
   `
 
+  // Resend's attachments expect base64 string OR a Node Buffer — Buffer is
+  // available server-side in Next.js API routes and the example-email path.
+  const attachments = pdfBytes
+    ? [{ filename: `invoice-${invoiceNumber}.pdf`, content: Buffer.from(pdfBytes) }]
+    : undefined
+
   return getResend().emails.send({
-    from: 'Pink Posts Installations <orders@pinkposts.com>',
+    from: fromOverride ?? 'Pink Posts Installations <orders@pinkposts.com>',
     to: customerEmail,
-    subject: `Invoice ${invoiceNumber} — $${total.toFixed(2)}`,
+    subject: subjectOverride ?? `Invoice ${invoiceNumber} — $${total.toFixed(2)}`,
     html,
+    ...(attachments ? { attachments } : {}),
   })
 }
 

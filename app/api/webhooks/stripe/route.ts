@@ -69,7 +69,10 @@ export async function POST(request: NextRequest) {
           const invoiceId = paymentIntent.metadata.invoiceId
           const invoice = await prisma.invoice.findUnique({
             where: { id: invoiceId },
-            include: { orders: { select: { id: true } } },
+            include: {
+              orders: { select: { id: true } },
+              serviceRequests: { select: { id: true } },
+            },
           })
           if (!invoice) {
             console.warn(`Webhook: invoice ${invoiceId} not found for PI ${paymentIntent.id} — returning 500 for Stripe retry`)
@@ -81,15 +84,23 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ received: true })
           }
 
+          const paidAt = new Date()
           await prisma.$transaction([
             prisma.invoice.update({
               where: { id: invoice.id },
-              data: { status: 'paid', paidAt: new Date(), paymentIntentId: paymentIntent.id },
+              data: { status: 'paid', paidAt, paymentIntentId: paymentIntent.id },
             }),
             // Flip every bundled order to succeeded in one shot.
             prisma.order.updateMany({
               where: { id: { in: invoice.orders.map((o) => o.id) } },
-              data: { paymentStatus: 'succeeded', paidAt: new Date(), paymentIntentId: paymentIntent.id },
+              data: { paymentStatus: 'succeeded', paidAt, paymentIntentId: paymentIntent.id },
+            }),
+            // Same flip for bundled service requests — invoiceStatus moves from
+            // pending_invoice → paid and the SR-level invoicePaidAt + PI id are
+            // stamped for parity with the legacy single-SR charge flow.
+            prisma.serviceRequest.updateMany({
+              where: { id: { in: invoice.serviceRequests.map((sr) => sr.id) } },
+              data: { invoiceStatus: 'paid', invoicePaidAt: paidAt, invoicePaymentIntentId: paymentIntent.id },
             }),
           ])
 
@@ -101,12 +112,13 @@ export async function POST(request: NextRequest) {
             metadata: {
               paymentIntentId: paymentIntent.id,
               orderCount: invoice.orders.length,
+              serviceRequestCount: invoice.serviceRequests.length,
               total: Number(invoice.total),
             },
             request,
           })
 
-          console.log(`Webhook: invoice ${invoice.invoiceNumber} marked paid (${invoice.orders.length} orders flipped)`)
+          console.log(`Webhook: invoice ${invoice.invoiceNumber} marked paid (${invoice.orders.length} orders + ${invoice.serviceRequests.length} SRs flipped)`)
           return NextResponse.json({ received: true })
         }
 

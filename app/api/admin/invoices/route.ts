@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { audit, AuditAction } from '@/lib/audit'
 import { sendInvoiceEmail } from '@/lib/email'
+import { buildInvoicePdfBytes, type InvoiceDetail } from '@/lib/invoices/invoice-pdf'
 
 /**
  * Admin invoice bundler.
@@ -29,6 +30,72 @@ function generateInvoiceNumber(): string {
   return `PPI-INV-${ts}-${rand}`
 }
 
+/**
+ * Fetch an invoice in the exact shape the PDF builder + customer page expect.
+ * Mirrors the response of /api/invoices/[id] so both paths render the same
+ * document from the same fields.
+ */
+async function loadInvoiceDetailForPdf(invoiceId: string): Promise<InvoiceDetail | null> {
+  const invoice = await prisma.invoice.findUnique({
+    where: { id: invoiceId },
+    include: {
+      user: { select: { id: true, fullName: true, name: true, email: true, company: true } },
+      orders: { include: { orderItems: true }, orderBy: { createdAt: 'asc' } },
+      serviceRequests: {
+        include: { installation: { select: { propertyAddress: true, propertyCity: true, propertyState: true, propertyZip: true } } },
+        orderBy: { completedAt: 'asc' },
+      },
+    },
+  })
+  if (!invoice) return null
+  return {
+    id: invoice.id,
+    invoice_number: invoice.invoiceNumber,
+    status: invoice.status as 'sent' | 'paid' | 'void',
+    range_start: invoice.rangeStart.toISOString(),
+    range_end: invoice.rangeEnd.toISOString(),
+    subtotal: Number(invoice.subtotal),
+    total: Number(invoice.total),
+    sent_at: invoice.sentAt?.toISOString() ?? null,
+    paid_at: invoice.paidAt?.toISOString() ?? null,
+    customer: {
+      id: invoice.user.id,
+      name: invoice.user.fullName || invoice.user.name || invoice.user.email,
+      email: invoice.user.email,
+      company: invoice.user.company,
+    },
+    orders: invoice.orders.map((o) => ({
+      id: o.id,
+      order_number: o.orderNumber,
+      created_at: o.createdAt.toISOString(),
+      property_address: o.propertyAddress,
+      property_city: o.propertyCity,
+      property_state: o.propertyState,
+      property_zip: o.propertyZip,
+      total: Number(o.total),
+      placed_for_agent_name: o.placedForAgentName,
+      items: o.orderItems.map((it) => ({
+        description: it.description,
+        quantity: it.quantity,
+        unit_price: Number(it.unitPrice),
+        total_price: Number(it.totalPrice),
+      })),
+    })),
+    service_requests: invoice.serviceRequests.map((sr) => ({
+      id: sr.id,
+      type: sr.type,
+      description: sr.description,
+      completed_at: sr.completedAt?.toISOString() ?? null,
+      created_at: sr.createdAt.toISOString(),
+      property_address: sr.installation?.propertyAddress ?? sr.unlistedAddress ?? null,
+      property_city: sr.installation?.propertyCity ?? sr.unlistedCity ?? null,
+      property_state: sr.installation?.propertyState ?? sr.unlistedState ?? null,
+      property_zip: sr.installation?.propertyZip ?? sr.unlistedZip ?? null,
+      amount: Number(sr.invoiceAmount || 0),
+    })),
+  }
+}
+
 export async function GET(request: NextRequest) {
   const user = await getCurrentUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -42,38 +109,59 @@ export async function GET(request: NextRequest) {
   )
   const mode = searchParams.get('mode') // 'preview' | undefined (list)
 
-  // Preview mode: return matching unpaid orders + totals so the admin can
-  // verify before sending. Same filter the POST uses to create the invoice.
+  // Preview mode: return matching unpaid orders + SRs + totals so the admin
+  // can verify before sending. Same filter the POST uses to create the invoice.
   if (mode === 'preview') {
     if (!customerId) {
       return NextResponse.json({ error: 'customerId is required for preview' }, { status: 400 })
     }
-    const orders = await prisma.order.findMany({
-      where: {
-        userId: customerId,
-        paymentStatus: 'pending_invoice',
-        invoiceId: null,
-        ...(startDate || endDate
-          ? { createdAt: { ...(startDate ? { gte: startDate } : {}), ...(endDate ? { lte: endDate } : {}) } }
-          : {}),
-      },
-      select: {
-        id: true,
-        orderNumber: true,
-        createdAt: true,
-        propertyAddress: true,
-        propertyCity: true,
-        propertyState: true,
-        propertyZip: true,
-        total: true,
-        subtotal: true,
-        placedForAgentName: true,
-      },
-      orderBy: { createdAt: 'asc' },
-    })
+    const [orders, serviceRequests] = await Promise.all([
+      prisma.order.findMany({
+        where: {
+          userId: customerId,
+          paymentStatus: 'pending_invoice',
+          invoiceId: null,
+          ...(startDate || endDate
+            ? { createdAt: { ...(startDate ? { gte: startDate } : {}), ...(endDate ? { lte: endDate } : {}) } }
+            : {}),
+        },
+        select: {
+          id: true,
+          orderNumber: true,
+          createdAt: true,
+          propertyAddress: true,
+          propertyCity: true,
+          propertyState: true,
+          propertyZip: true,
+          total: true,
+          subtotal: true,
+          placedForAgentName: true,
+        },
+        orderBy: { createdAt: 'asc' },
+      }),
+      // SRs are anchored to completedAt (when the work was done) so admin
+      // bills for the billing period the trip actually happened in. SRs
+      // without completedAt aren't bundle-ready even if amount is set.
+      prisma.serviceRequest.findMany({
+        where: {
+          userId: customerId,
+          invoiceId: null,
+          invoiceStatus: 'pending_invoice',
+          invoiceAmount: { not: null },
+          ...(startDate || endDate
+            ? { completedAt: { ...(startDate ? { gte: startDate } : {}), ...(endDate ? { lte: endDate } : {}) } }
+            : {}),
+        },
+        include: { installation: { select: { propertyAddress: true, propertyCity: true, propertyState: true, propertyZip: true } } },
+        orderBy: { completedAt: 'asc' },
+      }),
+    ])
 
-    const subtotal = orders.reduce((s, o) => s + Number(o.subtotal || 0), 0)
-    const total = orders.reduce((s, o) => s + Number(o.total || 0), 0)
+    const ordersSubtotal = orders.reduce((s, o) => s + Number(o.subtotal || 0), 0)
+    const ordersTotal = orders.reduce((s, o) => s + Number(o.total || 0), 0)
+    const srTotal = serviceRequests.reduce((s, sr) => s + Number(sr.invoiceAmount || 0), 0)
+    const subtotal = ordersSubtotal + srTotal
+    const total = ordersTotal + srTotal
     return NextResponse.json({
       orders: orders.map((o) => ({
         id: o.id,
@@ -83,9 +171,23 @@ export async function GET(request: NextRequest) {
         total: Number(o.total),
         placed_for_agent_name: o.placedForAgentName,
       })),
+      service_requests: serviceRequests.map((sr) => ({
+        id: sr.id,
+        type: sr.type,
+        description: sr.description,
+        completed_at: sr.completedAt?.toISOString() ?? null,
+        property: sr.installation
+          ? `${sr.installation.propertyAddress}, ${sr.installation.propertyCity}, ${sr.installation.propertyState} ${sr.installation.propertyZip}`
+          : sr.unlistedAddress
+            ? `${sr.unlistedAddress}, ${sr.unlistedCity ?? ''} ${sr.unlistedState ?? ''} ${sr.unlistedZip ?? ''}`.trim()
+            : '—',
+        amount: Number(sr.invoiceAmount || 0),
+      })),
       subtotal,
       total,
-      count: orders.length,
+      count: orders.length + serviceRequests.length,
+      order_count: orders.length,
+      service_request_count: serviceRequests.length,
     })
   }
 
@@ -150,26 +252,46 @@ export async function POST(request: NextRequest) {
   })
   if (!customer) return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
 
-  // Find every unpaid invoice-billing order in range that isn't already on
-  // an invoice. Locked in a transaction so two concurrent admin sends can't
-  // double-bundle the same order.
+  // Find every unpaid invoice-billing order AND every completed pending-invoice
+  // service-request in range that isn't already on another invoice. The
+  // updateMany filters on `invoiceId: null` AND we verify the affected count
+  // equals what we read so two concurrent admin sends can't double-bundle the
+  // same rows (race fix — without the count check, READ COMMITTED isolation
+  // allows two transactions to both bundle the same orders).
   const result = await prisma.$transaction(async (tx) => {
-    const orders = await tx.order.findMany({
-      where: {
-        userId: customerId,
-        paymentStatus: 'pending_invoice',
-        invoiceId: null,
-        createdAt: { gte: startDate, lte: endDate },
-      },
-      select: { id: true, subtotal: true, total: true, orderNumber: true },
-      orderBy: { createdAt: 'asc' },
-    })
-    if (orders.length === 0) {
-      return { invoice: null, ordersCount: 0, subtotal: 0, total: 0 }
+    const [orders, serviceRequests] = await Promise.all([
+      tx.order.findMany({
+        where: {
+          userId: customerId,
+          paymentStatus: 'pending_invoice',
+          invoiceId: null,
+          createdAt: { gte: startDate, lte: endDate },
+        },
+        select: { id: true, subtotal: true, total: true, orderNumber: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+      tx.serviceRequest.findMany({
+        where: {
+          userId: customerId,
+          invoiceId: null,
+          invoiceStatus: 'pending_invoice',
+          invoiceAmount: { not: null },
+          completedAt: { gte: startDate, lte: endDate },
+        },
+        select: { id: true, invoiceAmount: true, type: true },
+        orderBy: { completedAt: 'asc' },
+      }),
+    ])
+
+    if (orders.length === 0 && serviceRequests.length === 0) {
+      return { invoice: null, ordersCount: 0, serviceRequestsCount: 0, subtotal: 0, total: 0 }
     }
 
-    const subtotal = orders.reduce((s, o) => s + Number(o.subtotal || 0), 0)
-    const total = orders.reduce((s, o) => s + Number(o.total || 0), 0)
+    const ordersSubtotal = orders.reduce((s, o) => s + Number(o.subtotal || 0), 0)
+    const ordersTotal = orders.reduce((s, o) => s + Number(o.total || 0), 0)
+    const srTotal = serviceRequests.reduce((s, sr) => s + Number(sr.invoiceAmount || 0), 0)
+    const subtotal = ordersSubtotal + srTotal
+    const total = ordersTotal + srTotal
 
     const invoice = await tx.invoice.create({
       data: {
@@ -185,17 +307,44 @@ export async function POST(request: NextRequest) {
       select: { id: true, invoiceNumber: true, total: true, subtotal: true },
     })
 
-    await tx.order.updateMany({
-      where: { id: { in: orders.map((o) => o.id) } },
-      data: { invoiceId: invoice.id },
-    })
+    // Race guard: filter the UPDATE on `invoiceId: null` too, then verify
+    // the affected count matches what we read. If a parallel admin send
+    // grabbed any of these rows between the SELECT and the UPDATE, the
+    // count won't match — we throw to roll back the whole transaction and
+    // the second admin gets a 500 they can retry from a clean state.
+    if (orders.length > 0) {
+      const ordersUpdate = await tx.order.updateMany({
+        where: { id: { in: orders.map((o) => o.id) }, invoiceId: null },
+        data: { invoiceId: invoice.id },
+      })
+      if (ordersUpdate.count !== orders.length) {
+        throw new Error(`Concurrent bundle race: expected to attach ${orders.length} orders, attached ${ordersUpdate.count}`)
+      }
+    }
+    if (serviceRequests.length > 0) {
+      const srUpdate = await tx.serviceRequest.updateMany({
+        where: { id: { in: serviceRequests.map((sr) => sr.id) }, invoiceId: null },
+        data: { invoiceId: invoice.id },
+      })
+      if (srUpdate.count !== serviceRequests.length) {
+        throw new Error(`Concurrent bundle race: expected to attach ${serviceRequests.length} SRs, attached ${srUpdate.count}`)
+      }
+    }
 
-    return { invoice, ordersCount: orders.length, subtotal, total, orderNumbers: orders.map((o) => o.orderNumber) }
+    return {
+      invoice,
+      ordersCount: orders.length,
+      serviceRequestsCount: serviceRequests.length,
+      subtotal,
+      total,
+      orderNumbers: orders.map((o) => o.orderNumber),
+      serviceRequestIds: serviceRequests.map((sr) => sr.id),
+    }
   })
 
   if (!result.invoice) {
     return NextResponse.json(
-      { error: 'No pending-invoice orders found in this date range.' },
+      { error: 'No pending-invoice orders or service trips found in this date range.' },
       { status: 400 },
     )
   }
@@ -208,6 +357,17 @@ export async function POST(request: NextRequest) {
   })
   if (reserved.count > 0) {
     try {
+      // Fetch the freshly-bundled invoice with everything the PDF needs, so
+      // the customer gets the document attached and doesn't have to log in
+      // to download it. PDF gen errors are non-fatal — fall back to sending
+      // the email without an attachment so the customer still gets the link.
+      let pdfBytes: Uint8Array | null = null
+      try {
+        const full = await loadInvoiceDetailForPdf(result.invoice.id)
+        if (full) pdfBytes = buildInvoicePdfBytes(full)
+      } catch (pdfErr) {
+        console.error('Invoice PDF generation failed; sending email without attachment:', pdfErr)
+      }
       await sendInvoiceEmail({
         invoiceId: result.invoice.id,
         invoiceNumber: result.invoice.invoiceNumber,
@@ -218,6 +378,8 @@ export async function POST(request: NextRequest) {
         rangeEnd: endDate.toISOString().slice(0, 10),
         total: Number(result.invoice.total),
         orderCount: result.ordersCount,
+        serviceRequestCount: result.serviceRequestsCount,
+        pdfBytes,
         recipientUserId: customerId,
       })
     } catch (err) {
@@ -241,6 +403,8 @@ export async function POST(request: NextRequest) {
       customerEmail: customer.email,
       orderCount: result.ordersCount,
       orderNumbers: result.orderNumbers,
+      serviceRequestCount: result.serviceRequestsCount,
+      serviceRequestIds: result.serviceRequestIds,
       total: result.total,
       rangeStart: startDate.toISOString(),
       rangeEnd: endDate.toISOString(),
@@ -254,6 +418,7 @@ export async function POST(request: NextRequest) {
       invoice_number: result.invoice.invoiceNumber,
       total: Number(result.invoice.total),
       order_count: result.ordersCount,
+      service_request_count: result.serviceRequestsCount,
     },
   })
 }

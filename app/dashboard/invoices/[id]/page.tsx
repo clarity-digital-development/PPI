@@ -11,39 +11,9 @@ import {
 import { getStripe } from '@/lib/stripe-client'
 import { Card, CardContent, Button, Badge } from '@/components/ui'
 import { Header } from '@/components/dashboard'
-import { Loader2, CheckCircle, FileText } from 'lucide-react'
+import { Loader2, CheckCircle, FileText, Download, Wrench } from 'lucide-react'
 import { formatCurrency, formatDate } from '@/lib/utils'
-
-interface InvoiceItem {
-  description: string
-  quantity: number
-  total_price: number
-}
-interface InvoiceOrder {
-  id: string
-  order_number: string
-  created_at: string
-  property_address: string
-  property_city: string
-  property_state: string
-  property_zip: string
-  total: number
-  placed_for_agent_name: string | null
-  items: InvoiceItem[]
-}
-interface InvoiceDetail {
-  id: string
-  invoice_number: string
-  status: 'sent' | 'paid' | 'void'
-  range_start: string
-  range_end: string
-  subtotal: number
-  total: number
-  sent_at: string | null
-  paid_at: string | null
-  customer: { id: string; name: string; email: string; company: string | null }
-  orders: InvoiceOrder[]
-}
+import { exportInvoicePdf, type InvoiceDetail } from '@/lib/invoices/invoice-pdf'
 
 function PayForm({ invoiceNumber, total, onPaid }: { invoiceNumber: string; total: number; onPaid: () => void }) {
   const stripe = useStripe()
@@ -183,7 +153,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
                 <div>
                   <h1 className="text-xl font-bold text-gray-900">Invoice {invoice.invoice_number}</h1>
                   <p className="text-sm text-gray-500">
-                    Orders placed {invoice.range_start.slice(0, 10)} → {invoice.range_end.slice(0, 10)}
+                    Billing period {invoice.range_start.slice(0, 10)} → {invoice.range_end.slice(0, 10)}
                   </p>
                   {invoice.customer.company && (
                     <p className="text-sm text-gray-500 mt-1">{invoice.customer.company}</p>
@@ -193,7 +163,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
               <div className="text-right">
                 <p className="text-xs text-gray-500 uppercase tracking-wider">Total Due</p>
                 <p className="text-3xl font-bold text-pink-600">{formatCurrency(invoice.total)}</p>
-                <div className="mt-2">
+                <div className="mt-2 flex items-center justify-end gap-2">
                   {isPaid ? (
                     <Badge variant="success">Paid</Badge>
                   ) : invoice.status === 'void' ? (
@@ -201,6 +171,14 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
                   ) : (
                     <Badge variant="info">Outstanding</Badge>
                   )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => exportInvoicePdf(invoice)}
+                  >
+                    <Download className="w-4 h-4 mr-1" />
+                    PDF
+                  </Button>
                 </div>
               </div>
             </div>
@@ -213,7 +191,12 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
             <CardContent className="p-6">
               <h2 className="text-base font-semibold text-gray-900 mb-1">Pay this invoice</h2>
               <p className="text-sm text-gray-500 mb-4">
-                A single charge for {formatCurrency(invoice.total)} settles all {invoice.orders.length} bundled order{invoice.orders.length === 1 ? '' : 's'}.
+                A single charge for {formatCurrency(invoice.total)} settles {(() => {
+                  const parts: string[] = []
+                  if (invoice.orders.length) parts.push(`${invoice.orders.length} bundled order${invoice.orders.length === 1 ? '' : 's'}`)
+                  if (invoice.service_requests.length) parts.push(`${invoice.service_requests.length} service trip${invoice.service_requests.length === 1 ? '' : 's'}`)
+                  return parts.join(' + ') || 'this invoice'
+                })()}.
               </p>
               {!clientSecret ? (
                 <>
@@ -273,37 +256,94 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
         )}
 
         {/* Bundled orders */}
+        {invoice.orders.length > 0 && (
+          <Card className="mb-6">
+            <CardContent className="p-6">
+              <h2 className="text-base font-semibold text-gray-900 mb-3">Bundled orders</h2>
+              <div className="space-y-3">
+                {invoice.orders.map((o) => (
+                  <div key={o.id} className="border border-gray-200 rounded-lg p-4">
+                    <div className="flex items-start justify-between gap-3 mb-2">
+                      <div>
+                        <Link href={`/dashboard/orders/${o.id}`} className="font-medium text-pink-600 hover:text-pink-700">
+                          {o.order_number}
+                        </Link>
+                        <p className="text-xs text-gray-500">{formatDate(o.created_at)}</p>
+                      </div>
+                      <p className="font-semibold text-gray-900">{formatCurrency(o.total)}</p>
+                    </div>
+                    <p className="text-sm text-gray-700">
+                      {o.property_address}, {o.property_city}, {o.property_state} {o.property_zip}
+                    </p>
+                    {o.placed_for_agent_name && (
+                      <p className="text-xs text-pink-600 mt-1">Agent: {o.placed_for_agent_name}</p>
+                    )}
+                    <ul className="mt-2 text-xs text-gray-600 space-y-0.5">
+                      {o.items.map((it, idx) => (
+                        <li key={idx}>
+                          • {it.description}
+                          {it.quantity > 1 ? ` ×${it.quantity}` : ''}
+                          {it.quantity > 1 && ` — ${formatCurrency(it.unit_price)} ea`}
+                          {' — '}{formatCurrency(it.total_price)}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Bundled service trips */}
+        {invoice.service_requests.length > 0 && (
+          <Card className="mb-6">
+            <CardContent className="p-6">
+              <h2 className="text-base font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                <Wrench className="w-4 h-4 text-pink-500" /> Bundled service trips
+              </h2>
+              <div className="space-y-3">
+                {invoice.service_requests.map((sr) => {
+                  const label = sr.type === 'service' ? 'Service trip'
+                    : sr.type === 'removal' ? 'Removal'
+                    : sr.type === 'repair' ? 'Repair'
+                    : sr.type === 'replacement' ? 'Replacement'
+                    : sr.type
+                  return (
+                    <div key={sr.id} className="border border-gray-200 rounded-lg p-4">
+                      <div className="flex items-start justify-between gap-3 mb-2">
+                        <div>
+                          <p className="font-medium text-gray-900">{label}</p>
+                          <p className="text-xs text-gray-500">
+                            {sr.completed_at ? `Completed ${formatDate(sr.completed_at)}` : `Requested ${formatDate(sr.created_at)}`}
+                          </p>
+                        </div>
+                        <p className="font-semibold text-gray-900">{formatCurrency(sr.amount)}</p>
+                      </div>
+                      {sr.property_address && (
+                        <p className="text-sm text-gray-700">
+                          {sr.property_address}
+                          {sr.property_city ? `, ${sr.property_city}` : ''}
+                          {sr.property_state ? `, ${sr.property_state}` : ''}
+                          {sr.property_zip ? ` ${sr.property_zip}` : ''}
+                        </p>
+                      )}
+                      {sr.description && (
+                        <p className="text-xs text-gray-600 mt-1">{sr.description}</p>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Grand total */}
         <Card>
           <CardContent className="p-6">
-            <h2 className="text-base font-semibold text-gray-900 mb-3">Bundled orders</h2>
-            <div className="space-y-3">
-              {invoice.orders.map((o) => (
-                <div key={o.id} className="border border-gray-200 rounded-lg p-4">
-                  <div className="flex items-start justify-between gap-3 mb-2">
-                    <div>
-                      <Link href={`/dashboard/orders/${o.id}`} className="font-medium text-pink-600 hover:text-pink-700">
-                        {o.order_number}
-                      </Link>
-                      <p className="text-xs text-gray-500">{formatDate(o.created_at)}</p>
-                    </div>
-                    <p className="font-semibold text-gray-900">{formatCurrency(o.total)}</p>
-                  </div>
-                  <p className="text-sm text-gray-700">
-                    {o.property_address}, {o.property_city}, {o.property_state} {o.property_zip}
-                  </p>
-                  {o.placed_for_agent_name && (
-                    <p className="text-xs text-pink-600 mt-1">Agent: {o.placed_for_agent_name}</p>
-                  )}
-                  <ul className="mt-2 text-xs text-gray-600 space-y-0.5">
-                    {o.items.map((it, idx) => (
-                      <li key={idx}>• {it.description}{it.quantity > 1 ? ` ×${it.quantity}` : ''} — {formatCurrency(it.total_price)}</li>
-                    ))}
-                  </ul>
-                </div>
-              ))}
-            </div>
-            <div className="mt-4 pt-4 border-t border-gray-200 flex items-center justify-between">
-              <span className="text-sm text-gray-500">Total</span>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-500">Total due</span>
               <span className="text-lg font-bold text-pink-600">{formatCurrency(invoice.total)}</span>
             </div>
           </CardContent>

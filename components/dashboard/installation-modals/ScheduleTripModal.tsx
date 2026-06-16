@@ -51,13 +51,29 @@ export function ScheduleTripModal({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
+  // Admin-set on the user — when true, swap the trip-fee notice for an
+  // invoice-billing message ("added to your next invoice, no payment now").
+  const [invoiceBilling, setInvoiceBilling] = useState(false)
 
-  // Fetch user's installations
+  // Fetch user's installations + invoice-billing flag from profile
   useEffect(() => {
     if (isOpen) {
       fetchInstallations()
+      fetchProfile()
     }
   }, [isOpen])
+
+  async function fetchProfile() {
+    try {
+      const res = await fetch('/api/profile', { cache: 'no-store' })
+      if (res.ok) {
+        const data = await res.json()
+        setInvoiceBilling(!!data.user?.invoice_billing)
+      }
+    } catch {
+      // Default (false) preserves today's trip-fee notice on any failure.
+    }
+  }
 
   async function fetchInstallations() {
     setLoadingInstallations(true)
@@ -213,17 +229,30 @@ export function ScheduleTripModal({
       ) : (
         <form onSubmit={handleSubmit}>
           <div className="space-y-4">
-            {/* Trip Fee Notice */}
-            <div className="p-4 bg-pink-50 rounded-lg border border-pink-200">
-              <div className="flex items-center gap-2">
-                <DollarSign className="w-5 h-5 text-pink-600" />
-                <span className="font-semibold text-pink-900">Trip Fee: ${PRICING.serviceTrip}</span>
+            {/* Trip Fee / Invoice-Billing Notice */}
+            {invoiceBilling ? (
+              <div className="p-4 bg-pink-50 rounded-lg border border-pink-200">
+                <div className="flex items-center gap-2">
+                  <DollarSign className="w-5 h-5 text-pink-600" />
+                  <span className="font-semibold text-pink-900">Bills on your next invoice</span>
+                </div>
+                <p className="text-sm text-pink-700 mt-1">
+                  Your account is set up to pay by invoice. This service trip and any items will be added
+                  to your next bundled invoice — no payment is required now.
+                </p>
               </div>
-              <p className="text-sm text-pink-700 mt-1">
-                A trip fee applies for any service visit — pickups, accessory adds, or general visits.
-                If you&apos;re adding items, the cost of those items is billed separately.
-              </p>
-            </div>
+            ) : (
+              <div className="p-4 bg-pink-50 rounded-lg border border-pink-200">
+                <div className="flex items-center gap-2">
+                  <DollarSign className="w-5 h-5 text-pink-600" />
+                  <span className="font-semibold text-pink-900">Trip Fee: ${PRICING.serviceTrip}</span>
+                </div>
+                <p className="text-sm text-pink-700 mt-1">
+                  A trip fee applies for any service visit — pickups, accessory adds, or general visits.
+                  If you&apos;re adding items, the cost of those items is billed separately.
+                </p>
+              </div>
+            )}
 
             {/* Address Selection */}
             <div>

@@ -32,7 +32,7 @@ export async function POST(
       where: { id },
       include: {
         user: {
-          select: { id: true, email: true, fullName: true, name: true, stripeCustomerId: true },
+          select: { id: true, email: true, fullName: true, name: true, stripeCustomerId: true, invoiceBilling: true },
         },
       },
     })
@@ -46,6 +46,40 @@ export async function POST(
         { status: 400 }
       )
     }
+    if (serviceRequest.invoiceId) {
+      return NextResponse.json(
+        { error: 'This request is already bundled on an invoice. Edit the invoice instead.' },
+        { status: 400 }
+      )
+    }
+
+    // Invoice-billing branch — defer instead of charging immediately. The SR
+    // gets `invoiceStatus='pending_invoice'` and waits to be bundled onto an
+    // Invoice via /admin/invoices, mirroring how invoice-billing orders flow.
+    // No Stripe customer or saved card needed — collection happens later when
+    // the customer pays the bundled invoice.
+    if (serviceRequest.user.invoiceBilling) {
+      const updated = await prisma.serviceRequest.update({
+        where: { id },
+        data: {
+          invoiceAmount: amount,
+          invoiceStatus: 'pending_invoice',
+        },
+      })
+      try {
+        await createNotification({
+          userId: serviceRequest.userId,
+          type: 'service_request_acknowledged',
+          title: 'Service trip added to your next invoice',
+          message: `A $${amount.toFixed(2)} service charge has been added to your next bundled invoice. No payment has been collected yet.`,
+          link: '/dashboard/service-requests',
+        })
+      } catch (notifErr) {
+        console.error('Invoice-billing SR notification failed:', notifErr)
+      }
+      return NextResponse.json({ serviceRequest: updated, deferred: true })
+    }
+
     if (!serviceRequest.user.stripeCustomerId) {
       return NextResponse.json(
         { error: 'This customer has no payment profile on file, so their card cannot be charged.' },

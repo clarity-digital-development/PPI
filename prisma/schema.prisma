@@ -520,8 +520,9 @@ model Invoice {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  orders Order[]
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders          Order[]
+  serviceRequests ServiceRequest[]
 
   @@index([userId])
   @@index([status])
@@ -678,9 +679,12 @@ model ServiceRequest {
   // Invoicing — service trips aren't always a flat $40, so admin can bill a
   // variable amount and charge the customer's saved default card.
   invoiceAmount          Decimal?             @map("invoice_amount") @db.Decimal(10, 2)
-  invoiceStatus          String?              @map("invoice_status") // 'paid' | 'failed'
+  invoiceStatus          String?              @map("invoice_status") // 'paid' | 'failed' | 'pending_invoice'
   invoicePaymentIntentId String?              @map("invoice_payment_intent_id")
   invoicePaidAt          DateTime?            @map("invoice_paid_at")
+  // Bundled-invoice FK — populated when an admin rolls a completed SR onto
+  // a multi-item Invoice for invoice-billing customers (mirrors Order.invoiceId).
+  invoiceId              String?              @map("invoice_id")
   // Unlisted-address fields — populated when a service trip is requested for
   // an address Pink Posts hasn't installed at (no Installation row exists).
   unlistedAddress        String?              @map("unlisted_address")
@@ -692,7 +696,9 @@ model ServiceRequest {
 
   installation Installation? @relation(fields: [installationId], references: [id], onDelete: Cascade)
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  invoice      Invoice?      @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
 
+  @@index([invoiceId])
   @@map("service_requests")
 }
 
