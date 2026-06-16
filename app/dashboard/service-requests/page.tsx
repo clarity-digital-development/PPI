@@ -32,6 +32,11 @@ interface ServiceRequest {
   completedAt: string | null
   createdAt: string
   updatedAt: string
+  // Invoice billing state — surfaced as a status badge so the customer can
+  // see whether a trip charge is queued ('pending_invoice'), already paid
+  // ('paid'), or failed to charge ('failed' — rare, charge will retry).
+  invoiceStatus: 'paid' | 'pending_invoice' | 'failed' | null
+  invoiceAmount: number | string | null
   // team view: which member the request belongs to
   userId?: string
   userName?: string | null
@@ -264,6 +269,20 @@ export default function ServiceRequestsPage() {
                   <StatusIcon className="w-3 h-3 mr-1" />
                   {statusCfg.label}
                 </Badge>
+                {/* Invoice status — visible to the customer so they know what
+                    their next invoice will include. 'failed' is intentionally
+                    not surfaced to the customer (admin will reach out
+                    out-of-band). */}
+                {request.invoiceStatus === 'pending_invoice' && (
+                  <Badge variant="info">
+                    Pending invoice ${Number(request.invoiceAmount ?? 0).toFixed(2)}
+                  </Badge>
+                )}
+                {request.invoiceStatus === 'paid' && (
+                  <Badge variant="success">
+                    Paid ${Number(request.invoiceAmount ?? 0).toFixed(2)}
+                  </Badge>
+                )}
               </div>
 
               {/* Team view: whose request this is */}

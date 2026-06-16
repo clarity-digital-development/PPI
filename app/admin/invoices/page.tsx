@@ -22,11 +22,23 @@ interface PreviewOrder {
   placed_for_agent_name: string | null
 }
 
+interface PreviewServiceRequest {
+  id: string
+  type: string
+  description: string | null
+  completed_at: string | null
+  property: string
+  amount: number
+}
+
 interface PreviewResponse {
   orders: PreviewOrder[]
+  service_requests: PreviewServiceRequest[]
   subtotal: number
   total: number
   count: number
+  order_count: number
+  service_request_count: number
 }
 
 interface InvoiceListRow {
@@ -44,6 +56,10 @@ interface InvoiceListRow {
   sent_at: string | null
   paid_at: string | null
   order_count: number
+  // service_request_count is now also returned by the bundler list endpoint
+  // (Invoice._count.serviceRequests). Optional for back-compat with cached
+  // responses that don't include it yet.
+  service_request_count?: number
   created_at: string
 }
 
@@ -179,7 +195,15 @@ export default function AdminInvoicesPage() {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Send failed')
-      setSuccess(`Invoice ${data.invoice.invoice_number} sent — ${data.invoice.order_count} order${data.invoice.order_count === 1 ? '' : 's'}, ${formatCurrency(data.invoice.total)}.`)
+      {
+        const oc = data.invoice.order_count ?? 0
+        const sc = data.invoice.service_request_count ?? 0
+        const parts: string[] = []
+        if (oc > 0) parts.push(`${oc} order${oc === 1 ? '' : 's'}`)
+        if (sc > 0) parts.push(`${sc} service trip${sc === 1 ? '' : 's'}`)
+        const bundleLine = parts.join(' + ') || 'this invoice'
+        setSuccess(`Invoice ${data.invoice.invoice_number} sent — ${bundleLine}, ${formatCurrency(data.invoice.total)}.`)
+      }
       setPreview(null)
       refreshInvoices()
     } catch (err) {
@@ -277,36 +301,73 @@ export default function AdminInvoicesPage() {
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-semibold text-gray-700">Preview</h2>
               <div className="text-right">
-                <p className="text-xs text-gray-500">{preview.count} order{preview.count === 1 ? '' : 's'}</p>
+                <p className="text-xs text-gray-500">
+                  {preview.order_count ?? preview.orders.length} order{(preview.order_count ?? preview.orders.length) === 1 ? '' : 's'}
+                  {(preview.service_request_count ?? preview.service_requests?.length ?? 0) > 0 && (
+                    <>{' + '}{preview.service_request_count ?? preview.service_requests?.length ?? 0} service trip{(preview.service_request_count ?? preview.service_requests?.length ?? 0) === 1 ? '' : 's'}</>
+                  )}
+                </p>
                 <p className="text-lg font-bold text-pink-600">{formatCurrency(preview.total)}</p>
               </div>
             </div>
-            {preview.orders.length === 0 ? (
-              <p className="text-sm text-gray-500 py-4 text-center">No pending-invoice orders in this range.</p>
+            {preview.orders.length === 0 && (preview.service_requests?.length ?? 0) === 0 ? (
+              <p className="text-sm text-gray-500 py-4 text-center">No pending-invoice orders or service trips in this range.</p>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 text-xs uppercase text-gray-500">
-                    <tr>
-                      <th className="px-3 py-2 text-left">Order #</th>
-                      <th className="px-3 py-2 text-left">Date</th>
-                      <th className="px-3 py-2 text-left">Property</th>
-                      <th className="px-3 py-2 text-left">Agent</th>
-                      <th className="px-3 py-2 text-right">Total</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {preview.orders.map((o) => (
-                      <tr key={o.id}>
-                        <td className="px-3 py-2 font-medium text-gray-900">{o.order_number}</td>
-                        <td className="px-3 py-2 text-gray-600">{formatDate(o.created_at)}</td>
-                        <td className="px-3 py-2 text-gray-600">{o.property}</td>
-                        <td className="px-3 py-2 text-gray-600">{o.placed_for_agent_name || '—'}</td>
-                        <td className="px-3 py-2 text-right font-medium">{formatCurrency(o.total)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="space-y-4">
+                {preview.orders.length > 0 && (
+                  <div className="overflow-x-auto">
+                    <p className="text-xs font-semibold text-gray-500 uppercase mb-1">Orders</p>
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+                        <tr>
+                          <th className="px-3 py-2 text-left">Order #</th>
+                          <th className="px-3 py-2 text-left">Date</th>
+                          <th className="px-3 py-2 text-left">Property</th>
+                          <th className="px-3 py-2 text-left">Agent</th>
+                          <th className="px-3 py-2 text-right">Total</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {preview.orders.map((o) => (
+                          <tr key={o.id}>
+                            <td className="px-3 py-2 font-medium text-gray-900">{o.order_number}</td>
+                            <td className="px-3 py-2 text-gray-600">{formatDate(o.created_at)}</td>
+                            <td className="px-3 py-2 text-gray-600">{o.property}</td>
+                            <td className="px-3 py-2 text-gray-600">{o.placed_for_agent_name || '—'}</td>
+                            <td className="px-3 py-2 text-right font-medium">{formatCurrency(o.total)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {(preview.service_requests?.length ?? 0) > 0 && (
+                  <div className="overflow-x-auto">
+                    <p className="text-xs font-semibold text-gray-500 uppercase mb-1">Service trips</p>
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+                        <tr>
+                          <th className="px-3 py-2 text-left">SR #</th>
+                          <th className="px-3 py-2 text-left">Type</th>
+                          <th className="px-3 py-2 text-left">Completed</th>
+                          <th className="px-3 py-2 text-left">Property</th>
+                          <th className="px-3 py-2 text-right">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {preview.service_requests.map((sr) => (
+                          <tr key={sr.id}>
+                            <td className="px-3 py-2 font-mono text-xs text-gray-600">SR {sr.id.slice(-6).toUpperCase()}</td>
+                            <td className="px-3 py-2 text-gray-700 capitalize">{sr.type}{sr.description ? `: ${sr.description}` : ''}</td>
+                            <td className="px-3 py-2 text-gray-600">{sr.completed_at ? formatDate(sr.completed_at) : '—'}</td>
+                            <td className="px-3 py-2 text-gray-600">{sr.property}</td>
+                            <td className="px-3 py-2 text-right font-medium">{formatCurrency(sr.amount)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             )}
           </CardContent>
@@ -346,7 +407,7 @@ export default function AdminInvoicesPage() {
                     <th className="px-3 py-2 text-left">Invoice #</th>
                     <th className="px-3 py-2 text-left">Customer</th>
                     <th className="px-3 py-2 text-left">Range</th>
-                    <th className="px-3 py-2 text-center">Orders</th>
+                    <th className="px-3 py-2 text-center">Items</th>
                     <th className="px-3 py-2 text-right">Total</th>
                     <th className="px-3 py-2 text-center">Status</th>
                     <th className="px-3 py-2 text-left">Sent</th>
@@ -379,7 +440,17 @@ export default function AdminInvoicesPage() {
                         <td className="px-3 py-2 text-gray-600 whitespace-nowrap">
                           {inv.range_start.slice(0, 10)} → {inv.range_end.slice(0, 10)}
                         </td>
-                        <td className="px-3 py-2 text-center">{inv.order_count}</td>
+                        <td className="px-3 py-2 text-center">
+                          <span className="text-gray-900">{inv.order_count}</span>
+                          <span className="text-xs text-gray-500"> orders</span>
+                          {(inv.service_request_count ?? 0) > 0 && (
+                            <>
+                              {' + '}
+                              <span className="text-gray-900">{inv.service_request_count}</span>
+                              <span className="text-xs text-gray-500"> SR{(inv.service_request_count ?? 0) === 1 ? '' : 's'}</span>
+                            </>
+                          )}
+                        </td>
                         <td className="px-3 py-2 text-right font-medium">{formatCurrency(inv.total)}</td>
                         <td className="px-3 py-2 text-center"><Badge variant={cfg.variant}>{cfg.label}</Badge></td>
                         <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{inv.sent_at ? formatDate(inv.sent_at) : '—'}</td>

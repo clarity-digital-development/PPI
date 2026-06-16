@@ -1271,7 +1271,7 @@ export default function CustomerDetailPage() {
               <span className="text-sm">
                 <span className="font-medium text-gray-700">Pay on invoice (no charge at checkout)</span>
                 <span className="block text-xs text-gray-500">
-                  This customer&apos;s orders are placed without a Stripe charge and accumulate as <em>Pending invoice</em>. Bundle and send invoices from <strong>/admin/invoices</strong>.
+                  This customer&apos;s orders <strong>and service-trip charges</strong> are placed without a Stripe charge and accumulate as <em>Pending invoice</em>. The Invoice action on each service request will say &quot;Add to invoice&quot; instead of &quot;Charge card.&quot; Bundle and send invoices from <strong>/admin/invoices</strong> (or the broker can self-serve from <strong>/dashboard/order-history</strong>).
                 </span>
               </span>
             </label>

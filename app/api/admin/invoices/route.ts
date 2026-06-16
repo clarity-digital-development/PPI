@@ -143,7 +143,9 @@ export async function GET(request: NextRequest) {
     },
     include: {
       user: { select: { id: true, fullName: true, email: true, company: true } },
-      _count: { select: { orders: true } },
+      // serviceRequests count needed so the admin list shows "N orders + M
+      // service trips" alongside paid/sent dates instead of just orders.
+      _count: { select: { orders: true, serviceRequests: true } },
     },
     orderBy: { createdAt: 'desc' },
     take: 100,
@@ -164,6 +166,7 @@ export async function GET(request: NextRequest) {
       sent_at: i.sentAt?.toISOString() ?? null,
       paid_at: i.paidAt?.toISOString() ?? null,
       order_count: i._count.orders,
+      service_request_count: i._count.serviceRequests,
       created_at: i.createdAt.toISOString(),
     })),
   })

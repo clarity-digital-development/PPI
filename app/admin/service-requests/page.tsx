@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import Link from 'next/link'
 import {
   Card,
   CardContent,
@@ -36,7 +37,7 @@ interface ServiceRequest {
   completedAt: string | null
   createdAt: string
   invoiceAmount: number | string | null
-  invoiceStatus: string | null
+  invoiceStatus: 'paid' | 'pending_invoice' | 'failed' | null
   invoicePaidAt: string | null
   user: {
     id: string
@@ -44,6 +45,9 @@ interface ServiceRequest {
     fullName: string | null
     phone: string | null
     company: string | null
+    // Pay-on-invoice flag — when true the Invoice action defers to the
+    // next bundled invoice instead of charging the card on file.
+    invoiceBilling: boolean
   }
   installation: {
     id: string
@@ -333,10 +337,26 @@ export default function ServiceRequestsPage() {
               <CardContent className="p-4">
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                   <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-2">
+                    <div className="flex items-center gap-3 mb-2 flex-wrap">
                       <Badge variant={statusConfig[request.status]?.variant || 'neutral'}>
                         {statusConfig[request.status]?.label || request.status}
                       </Badge>
+                      {/* Invoice-status badge — surfaces 'pending_invoice' so
+                          admin can scan the list for what's queued for the
+                          next bundle without opening each modal. */}
+                      {request.invoiceStatus === 'pending_invoice' && (
+                        <Badge variant="info">
+                          Pending invoice ${Number(request.invoiceAmount ?? 0).toFixed(2)}
+                        </Badge>
+                      )}
+                      {request.invoiceStatus === 'paid' && (
+                        <Badge variant="success">
+                          Paid ${Number(request.invoiceAmount ?? 0).toFixed(2)}
+                        </Badge>
+                      )}
+                      {request.invoiceStatus === 'failed' && (
+                        <Badge variant="warning">Charge failed</Badge>
+                      )}
                       <span className="text-sm font-medium text-gray-900 capitalize">
                         {typeConfig[request.type]?.label || request.type}
                       </span>
@@ -396,10 +416,23 @@ export default function ServiceRequestsPage() {
         {selectedRequest && (
           <div className="space-y-6">
             {/* Status & Type */}
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               <Badge variant={statusConfig[selectedRequest.status]?.variant || 'neutral'}>
                 {statusConfig[selectedRequest.status]?.label || selectedRequest.status}
               </Badge>
+              {selectedRequest.invoiceStatus === 'pending_invoice' && (
+                <Badge variant="info">
+                  Pending invoice ${Number(selectedRequest.invoiceAmount ?? 0).toFixed(2)}
+                </Badge>
+              )}
+              {selectedRequest.invoiceStatus === 'paid' && (
+                <Badge variant="success">
+                  Paid ${Number(selectedRequest.invoiceAmount ?? 0).toFixed(2)}
+                </Badge>
+              )}
+              {selectedRequest.invoiceStatus === 'failed' && (
+                <Badge variant="warning">Charge failed</Badge>
+              )}
               <span className="font-medium capitalize">
                 {typeConfig[selectedRequest.type]?.label || selectedRequest.type}
               </span>
@@ -504,22 +537,67 @@ export default function ServiceRequestsPage() {
               </div>
             </div>
 
-            {/* Invoice — charge the customer's card on file for a variable
-                service-trip amount (not always a flat $40) */}
+            {/* Invoice — billing flow branches on the customer's
+                invoiceBilling flag. Pay-on-invoice customers get the amount
+                added to their next bundled invoice (no card touched);
+                everyone else gets charged off-session against their default
+                card. Backend already does this routing — the UI just has to
+                read selectedRequest.user.invoiceBilling and adapt copy. */}
+            {(() => {
+              const isInvoiceBilling = !!selectedRequest.user.invoiceBilling
+              const amt = Number(selectedRequest.invoiceAmount ?? 0)
+              return (
             <div className="border-t pt-4">
               <h4 className="font-medium text-gray-900 mb-2 flex items-center gap-2">
                 <DollarSign className="w-4 h-4 text-gray-500" />
                 Invoice
+                {isInvoiceBilling && (
+                  <span className="ml-1 text-xs font-normal text-pink-600 bg-pink-50 border border-pink-200 rounded px-1.5 py-0.5">
+                    Pay-on-invoice
+                  </span>
+                )}
               </h4>
               {selectedRequest.invoiceStatus === 'paid' ? (
                 <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-800">
-                  Charged ${Number(selectedRequest.invoiceAmount ?? 0).toFixed(2)} to the customer&apos;s card on file
+                  Charged ${amt.toFixed(2)} to the customer&apos;s card on file
                   {selectedRequest.invoicePaidAt ? ` on ${formatDate(selectedRequest.invoicePaidAt)}` : ''}.
+                </div>
+              ) : selectedRequest.invoiceStatus === 'pending_invoice' ? (
+                <div className="space-y-2">
+                  <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800">
+                    Added <strong>${amt.toFixed(2)}</strong> to this customer&apos;s next bundled invoice. No card has been charged.
+                    {' '}<Link href="/admin/invoices" className="underline font-medium">Bundle &amp; send invoices →</Link>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    Need to update the amount before bundling? Re-enter below and click again — the SR will stay in the pending pile.
+                  </p>
+                  <div className="flex items-end gap-2">
+                    <div className="flex-1">
+                      <Input
+                        type="number"
+                        label="Update amount (USD)"
+                        value={invoiceAmount}
+                        onChange={(e) => setInvoiceAmount(e.target.value)}
+                        placeholder="0.00"
+                        icon={<DollarSign className="w-5 h-5" />}
+                      />
+                    </div>
+                    <Button onClick={handleSendInvoice} disabled={invoicing || !invoiceAmount || Number(invoiceAmount) <= 0}>
+                      {invoicing ? (
+                        <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Updating…</>
+                      ) : (
+                        'Update amount'
+                      )}
+                    </Button>
+                  </div>
+                  {invoiceError && <p className="text-sm text-red-600">{invoiceError}</p>}
                 </div>
               ) : (
                 <div className="space-y-2">
                   <p className="text-xs text-gray-500">
-                    Enter the amount to charge the customer&apos;s saved default card. They&apos;ll be charged immediately.
+                    {isInvoiceBilling
+                      ? 'This customer pays by invoice. The amount will be added to their next bundled invoice — no card will be charged now.'
+                      : 'Enter the amount to charge the customer’s saved default card. They’ll be charged immediately.'}
                   </p>
                   <div className="flex items-end gap-2">
                     <div className="flex-1">
@@ -532,12 +610,16 @@ export default function ServiceRequestsPage() {
                         icon={<DollarSign className="w-5 h-5" />}
                       />
                     </div>
-                    <Button onClick={handleSendInvoice} disabled={invoicing || !invoiceAmount}>
+                    <Button onClick={handleSendInvoice} disabled={invoicing || !invoiceAmount || Number(invoiceAmount) <= 0}>
                       {invoicing ? (
                         <>
                           <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                          Charging…
+                          {isInvoiceBilling ? 'Adding…' : 'Charging…'}
                         </>
+                      ) : isInvoiceBilling ? (
+                        invoiceAmount && Number(invoiceAmount) > 0
+                          ? `Add $${Number(invoiceAmount).toFixed(2)} to invoice`
+                          : 'Add to invoice'
                       ) : (
                         'Charge card on file'
                       )}
@@ -552,6 +634,8 @@ export default function ServiceRequestsPage() {
                 </div>
               )}
             </div>
+              )
+            })()}
 
             {/* Action Buttons */}
             <div className="flex flex-wrap gap-2 pt-4 border-t">

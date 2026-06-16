@@ -38,6 +38,9 @@ export async function GET(request: NextRequest) {
               fullName: true,
               phone: true,
               company: true,
+              // Drives the admin SR detail modal — when true, the invoice
+              // action shows "Add $X to invoice" instead of "Charge card".
+              invoiceBilling: true,
             },
           },
           installation: {
