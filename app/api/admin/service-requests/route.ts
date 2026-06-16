@@ -17,18 +17,23 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const status = searchParams.get('status')
     const type = searchParams.get('type')
+    const invoiceStatus = searchParams.get('invoiceStatus')
     const limit = parseInt(searchParams.get('limit') || '50')
     const offset = parseInt(searchParams.get('offset') || '0')
 
     // Try to fetch service requests - table may not exist if migration hasn't run
     let serviceRequests: any[] = []
     let statusCounts: Record<string, number> = {}
+    let pendingInvoiceCount = 0
 
     try {
       serviceRequests = await prisma.serviceRequest.findMany({
         where: {
           ...(status ? { status: status as any } : {}),
           ...(type ? { type: type as any } : {}),
+          // Lets admin click the "Pending invoice" tile to narrow the list
+          // to only SRs queued for the next bundled invoice.
+          ...(invoiceStatus ? { invoiceStatus } : {}),
         },
         include: {
           user: {
@@ -79,10 +84,18 @@ export async function GET(request: NextRequest) {
         acc[item.status] = item._count
         return acc
       }, {} as Record<string, number>)
+
+      // Separate count for SRs with an amount set + queued for next bundle.
+      // Independent of workflow status because admin can mark an SR
+      // pending_invoice both before and after marking it completed.
+      pendingInvoiceCount = await prisma.serviceRequest.count({
+        where: { invoiceStatus: 'pending_invoice' },
+      })
     } catch {
       // Table may not exist yet if migration hasn't run
       serviceRequests = []
       statusCounts = {}
+      pendingInvoiceCount = 0
     }
 
     return NextResponse.json({
@@ -94,6 +107,7 @@ export async function GET(request: NextRequest) {
         in_progress: statusCounts.in_progress || 0,
         completed: statusCounts.completed || 0,
         cancelled: statusCounts.cancelled || 0,
+        pending_invoice: pendingInvoiceCount,
         total: serviceRequests.length,
       },
     })

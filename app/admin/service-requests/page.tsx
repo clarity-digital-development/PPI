@@ -75,6 +75,9 @@ interface Counts {
   in_progress: number
   completed: number
   cancelled: number
+  // Count of SRs with invoiceStatus='pending_invoice' — orthogonal to
+  // workflow status (an SR can be 'completed' AND 'pending_invoice').
+  pending_invoice: number
   total: number
 }
 
@@ -108,6 +111,10 @@ export default function ServiceRequestsPage() {
   const [loading, setLoading] = useState(true)
   const [filterStatus, setFilterStatus] = useState<string>('')
   const [filterType, setFilterType] = useState<string>('')
+  // Separate filter for invoiceStatus — orthogonal to workflow status.
+  // Drives the "Pending invoice" tile so admin can click it to scope the
+  // list to just the SRs queued for the next bundled invoice.
+  const [filterInvoiceStatus, setFilterInvoiceStatus] = useState<string>('')
   const [selectedRequest, setSelectedRequest] = useState<ServiceRequest | null>(null)
   const [showModal, setShowModal] = useState(false)
   const [updating, setUpdating] = useState(false)
@@ -119,7 +126,7 @@ export default function ServiceRequestsPage() {
 
   useEffect(() => {
     fetchRequests()
-  }, [filterStatus, filterType])
+  }, [filterStatus, filterType, filterInvoiceStatus])
 
   const fetchRequests = async () => {
     setLoading(true)
@@ -127,6 +134,7 @@ export default function ServiceRequestsPage() {
       const params = new URLSearchParams()
       if (filterStatus) params.set('status', filterStatus)
       if (filterType) params.set('type', filterType)
+      if (filterInvoiceStatus) params.set('invoiceStatus', filterInvoiceStatus)
 
       const res = await fetch(`/api/admin/service-requests?${params.toString()}`)
       if (res.ok) {
@@ -229,12 +237,15 @@ export default function ServiceRequestsPage() {
         <p className="text-gray-600">Manage customer service and removal requests</p>
       </div>
 
-      {/* Status Cards */}
+      {/* Status Cards — workflow status (pending → completed) on top row,
+          Pending invoice tile is orthogonal (an SR can be Completed AND
+          Pending invoice). Clicking a workflow tile clears the invoice
+          filter and vice versa so the two filter dimensions don't fight. */}
       {counts && (
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4 mb-6">
           <Card
-            className={`cursor-pointer transition-all ${filterStatus === 'pending' ? 'ring-2 ring-pink-500' : ''}`}
-            onClick={() => setFilterStatus(filterStatus === 'pending' ? '' : 'pending')}
+            className={`cursor-pointer transition-all ${filterStatus === 'pending' && !filterInvoiceStatus ? 'ring-2 ring-pink-500' : ''}`}
+            onClick={() => { setFilterInvoiceStatus(''); setFilterStatus(filterStatus === 'pending' ? '' : 'pending') }}
           >
             <CardContent className="p-4 text-center">
               <p className="text-2xl font-bold text-amber-600">{counts.pending}</p>
@@ -242,8 +253,8 @@ export default function ServiceRequestsPage() {
             </CardContent>
           </Card>
           <Card
-            className={`cursor-pointer transition-all ${filterStatus === 'acknowledged' ? 'ring-2 ring-pink-500' : ''}`}
-            onClick={() => setFilterStatus(filterStatus === 'acknowledged' ? '' : 'acknowledged')}
+            className={`cursor-pointer transition-all ${filterStatus === 'acknowledged' && !filterInvoiceStatus ? 'ring-2 ring-pink-500' : ''}`}
+            onClick={() => { setFilterInvoiceStatus(''); setFilterStatus(filterStatus === 'acknowledged' ? '' : 'acknowledged') }}
           >
             <CardContent className="p-4 text-center">
               <p className="text-2xl font-bold text-blue-600">{counts.acknowledged}</p>
@@ -251,8 +262,8 @@ export default function ServiceRequestsPage() {
             </CardContent>
           </Card>
           <Card
-            className={`cursor-pointer transition-all ${filterStatus === 'scheduled' ? 'ring-2 ring-pink-500' : ''}`}
-            onClick={() => setFilterStatus(filterStatus === 'scheduled' ? '' : 'scheduled')}
+            className={`cursor-pointer transition-all ${filterStatus === 'scheduled' && !filterInvoiceStatus ? 'ring-2 ring-pink-500' : ''}`}
+            onClick={() => { setFilterInvoiceStatus(''); setFilterStatus(filterStatus === 'scheduled' ? '' : 'scheduled') }}
           >
             <CardContent className="p-4 text-center">
               <p className="text-2xl font-bold text-indigo-600">{counts.scheduled}</p>
@@ -260,8 +271,8 @@ export default function ServiceRequestsPage() {
             </CardContent>
           </Card>
           <Card
-            className={`cursor-pointer transition-all ${filterStatus === 'in_progress' ? 'ring-2 ring-pink-500' : ''}`}
-            onClick={() => setFilterStatus(filterStatus === 'in_progress' ? '' : 'in_progress')}
+            className={`cursor-pointer transition-all ${filterStatus === 'in_progress' && !filterInvoiceStatus ? 'ring-2 ring-pink-500' : ''}`}
+            onClick={() => { setFilterInvoiceStatus(''); setFilterStatus(filterStatus === 'in_progress' ? '' : 'in_progress') }}
           >
             <CardContent className="p-4 text-center">
               <p className="text-2xl font-bold text-purple-600">{counts.in_progress}</p>
@@ -269,17 +280,30 @@ export default function ServiceRequestsPage() {
             </CardContent>
           </Card>
           <Card
-            className={`cursor-pointer transition-all ${filterStatus === 'completed' ? 'ring-2 ring-pink-500' : ''}`}
-            onClick={() => setFilterStatus(filterStatus === 'completed' ? '' : 'completed')}
+            className={`cursor-pointer transition-all ${filterStatus === 'completed' && !filterInvoiceStatus ? 'ring-2 ring-pink-500' : ''}`}
+            onClick={() => { setFilterInvoiceStatus(''); setFilterStatus(filterStatus === 'completed' ? '' : 'completed') }}
           >
             <CardContent className="p-4 text-center">
               <p className="text-2xl font-bold text-green-600">{counts.completed}</p>
               <p className="text-sm text-gray-600">Completed</p>
             </CardContent>
           </Card>
+          {/* Pending invoice — queue of SRs with an amount set and waiting
+              for the next bundled invoice. Pink-highlighted because it's
+              the action queue Ryan needs to watch. */}
           <Card
-            className={`cursor-pointer transition-all ${filterStatus === '' ? 'ring-2 ring-pink-500' : ''}`}
-            onClick={() => setFilterStatus('')}
+            className={`cursor-pointer transition-all ${filterInvoiceStatus === 'pending_invoice' ? 'ring-2 ring-pink-500' : ''}`}
+            onClick={() => { setFilterStatus(''); setFilterInvoiceStatus(filterInvoiceStatus === 'pending_invoice' ? '' : 'pending_invoice') }}
+            title="SRs queued for the next bundled invoice"
+          >
+            <CardContent className="p-4 text-center">
+              <p className="text-2xl font-bold text-pink-600">{counts.pending_invoice ?? 0}</p>
+              <p className="text-sm text-gray-600">Pending invoice</p>
+            </CardContent>
+          </Card>
+          <Card
+            className={`cursor-pointer transition-all ${filterStatus === '' && !filterInvoiceStatus ? 'ring-2 ring-pink-500' : ''}`}
+            onClick={() => { setFilterStatus(''); setFilterInvoiceStatus('') }}
           >
             <CardContent className="p-4 text-center">
               <p className="text-2xl font-bold text-gray-900">{counts.pending + counts.acknowledged + counts.scheduled + counts.in_progress}</p>
