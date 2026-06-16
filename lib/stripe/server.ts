@@ -351,21 +351,26 @@ export async function createInvoiceCheckoutSession(opts: {
   cancelUrl: string // accepted for API compatibility, unused for Payment Links
   description?: string
 }) {
-  return getStripe().paymentLinks.create(
+  const stripe = getStripe()
+
+  // Payment Links require a pre-existing Price (the SDK rejects inline
+  // price_data even though the REST API accepts it on Checkout Sessions).
+  // Create a one-off Price tied to a Product, then point the Link at it.
+  // Both calls are idempotent per-invoice so retries don't pile up.
+  const price = await stripe.prices.create(
     {
-      line_items: [
-        {
-          price_data: {
-            currency: 'usd',
-            product_data: {
-              name: `Pink Posts Invoice ${opts.invoiceNumber}`,
-              description: opts.description ?? `Bundled invoice payment`,
-            },
-            unit_amount: opts.amountInCents,
-          },
-          quantity: 1,
-        },
-      ],
+      currency: 'usd',
+      unit_amount: opts.amountInCents,
+      product_data: {
+        name: `Pink Posts Invoice ${opts.invoiceNumber}`,
+      },
+    },
+    { idempotencyKey: `invoice-price:${opts.invoiceId}` },
+  )
+
+  return stripe.paymentLinks.create(
+    {
+      line_items: [{ price: price.id, quantity: 1 }],
       // Auto-deactivate after one successful payment so the link can't be
       // used to double-charge if the customer (or anyone they forward to)
       // clicks it again.
@@ -390,8 +395,6 @@ export async function createInvoiceCheckoutSession(opts: {
       metadata: { invoiceId: opts.invoiceId, invoiceNumber: opts.invoiceNumber, kind: 'invoice' },
     },
     {
-      // Stable key per invoice so a replay/retry returns the same Link
-      // instead of creating duplicates.
       idempotencyKey: `invoice-payment-link:${opts.invoiceId}`,
     },
   )
