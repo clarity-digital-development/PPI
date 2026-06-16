@@ -72,6 +72,11 @@ export async function GET(request: NextRequest) {
       include: {
         orderItems: true,
         postType: { select: { name: true } },
+        // Surface the bundled-invoice number so the order list can show an
+        // "Invoiced: PPI-INV-…" badge for orders already attached to a
+        // bundled invoice (otherwise brokers see paymentStatus='succeeded'
+        // and have no idea which invoice it landed on).
+        invoice: { select: { id: true, invoiceNumber: true, status: true } },
       },
       orderBy: { createdAt: 'desc' },
       take: limit,

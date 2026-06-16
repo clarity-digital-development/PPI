@@ -36,6 +36,11 @@ interface OrderData {
   postType?: { name: string } | null
   // team view: which agent this order was placed for (free-text attribution)
   placedForAgentName?: string | null
+  // Bundled-invoice indicator — when set, the order is already attached to
+  // an Invoice and can't be re-bundled by the Generate Invoice flow. The
+  // table surfaces this so brokers don't waste time trying to invoice
+  // already-invoiced orders.
+  invoice?: { id: string; invoiceNumber: string; status: string } | null
 }
 
 interface OrderHistoryTableProps {
@@ -86,9 +91,14 @@ const OrderHistoryTable = ({ orders }: OrderHistoryTableProps) => {
             >
               <div className="flex items-start justify-between gap-3 mb-3">
                 <div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <p className="font-semibold text-gray-900">#{order.orderNumber}</p>
                     <Badge variant={config.variant}>{config.label}</Badge>
+                    {order.invoice && (
+                      <Badge variant="info" className="font-mono">
+                        On {order.invoice.invoiceNumber}
+                      </Badge>
+                    )}
                   </div>
                   <p className="text-sm text-gray-500 mt-1">{formatDate(order.createdAt)}</p>
                   {order.placedForAgentName && (
@@ -173,7 +183,14 @@ const OrderHistoryTable = ({ orders }: OrderHistoryTableProps) => {
                       <p className="text-sm text-gray-600">{getItemSummary(order.orderItems)}</p>
                     </TableCell>
                     <TableCell>
-                      <Badge variant={config.variant}>{config.label}</Badge>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <Badge variant={config.variant}>{config.label}</Badge>
+                        {order.invoice && (
+                          <Badge variant="info" className="font-mono text-[10px]">
+                            On {order.invoice.invoiceNumber}
+                          </Badge>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell className="text-right font-semibold">
                       {formatCurrency(Number(order.total))}

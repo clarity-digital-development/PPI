@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { Header, OrderHistoryTable } from '@/components/dashboard'
 import type { OrderData } from '@/components/dashboard/order-history-table'
 import { Input, Select, Button, Card, CardContent } from '@/components/ui'
+import { DateInput } from '@/components/ui/DateInput'
 import { Loader2, FileText, Download, Send, ChevronDown, ChevronUp, AlertCircle, CheckCircle } from 'lucide-react'
 
 const ITEMS_PER_PAGE = 20
@@ -429,32 +430,3 @@ export default function OrderHistoryPage() {
   )
 }
 
-/**
- * Native <input type="date"> wrapped to look like the rest of the form.
- * Webkit's default calendar-picker indicator is small + gray; we use the
- * arbitrary-variant selector to brand-tint it pink and normalize the box
- * height so it lines up with sibling Inputs/Selects.
- */
-function DateInput({
-  label, value, onChange, min, max,
-}: {
-  label: string
-  value: string
-  onChange: (v: string) => void
-  min?: string
-  max?: string
-}) {
-  return (
-    <div className="w-full">
-      <label className="block text-sm font-medium text-gray-700 mb-1.5">{label}</label>
-      <input
-        type="date"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        min={min}
-        max={max}
-        className="block w-full rounded-md border border-gray-300 bg-white px-4 py-2.5 text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-pink-500 focus:border-transparent transition-all duration-200 [color-scheme:light] [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
-      />
-    </div>
-  )
-}
