@@ -87,6 +87,10 @@ model User {
   // "Add to invoice". Their orders skip Stripe at placement and accumulate
   // until an admin bundles them into an Invoice for collection.
   invoiceBilling      Boolean  @default(false) @map("invoice_billing")
+  // Optional billing-contact email — when set, bundled-invoice emails go
+  // here instead of the broker's account email. Lets a broker route bills
+  // to their accountant without forwarding. Falls back to `email` when null.
+  billingEmail        String?  @map("billing_email")
 
   // Team membership (for RE teams managed by a team_admin who places orders
   // on behalf of their agents). Both team_admins and agents have a teamId.

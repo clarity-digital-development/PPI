@@ -88,6 +88,7 @@ export default function CustomerDetailPage() {
     role: 'customer' | 'team_admin' | 'admin'
     is_service_area_exempt: boolean
     invoice_billing: boolean
+    billing_email: string
   }>({
     full_name: '',
     email: '',
@@ -96,6 +97,7 @@ export default function CustomerDetailPage() {
     role: 'customer',
     is_service_area_exempt: false,
     invoice_billing: false,
+    billing_email: '',
   })
   const [saving, setSaving] = useState(false)
   // Per-row selection for the agent-grouped bulk-reassign action bar.
@@ -139,6 +141,7 @@ export default function CustomerDetailPage() {
           role: data.customer.role,
           is_service_area_exempt: data.customer.is_service_area_exempt ?? false,
           invoice_billing: data.customer.invoice_billing ?? false,
+          billing_email: data.customer.billing_email || '',
         })
       }
     } catch (error) {
@@ -162,6 +165,7 @@ export default function CustomerDetailPage() {
           role: editData.role,
           is_service_area_exempt: editData.is_service_area_exempt,
           invoice_billing: editData.invoice_billing,
+          billing_email: editData.billing_email,
         }),
       })
       if (res.ok) {
@@ -1272,6 +1276,24 @@ export default function CustomerDetailPage() {
               </span>
             </label>
           </div>
+          {/* Billing-contact email — when set, bundled-invoice emails go here
+              instead of the broker's account email. Lets a broker route bills
+              to their accountant without forwarding. Only relevant when the
+              invoice-billing checkbox above is on. */}
+          {editData.invoice_billing && (
+            <div>
+              <Input
+                label="Billing contact email (optional)"
+                type="email"
+                placeholder="accounting@brokerage.com"
+                value={editData.billing_email}
+                onChange={(e) => setEditData({ ...editData, billing_email: e.target.value })}
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Invoices will be sent here instead of the account email{editData.email ? ` (${editData.email})` : ''}. Leave blank to use the account email.
+              </p>
+            </div>
+          )}
           <div className="flex justify-end gap-3 pt-4">
             <Button variant="outline" onClick={() => setShowEditModal(false)}>
               Cancel

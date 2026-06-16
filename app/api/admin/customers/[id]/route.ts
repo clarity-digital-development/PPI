@@ -181,6 +181,7 @@ export async function GET(
         role: customer.role,
         is_service_area_exempt: customer.isServiceAreaExempt,
         invoice_billing: customer.invoiceBilling,
+        billing_email: customer.billingEmail,
       },
       team,
       inventory: {
@@ -288,6 +289,20 @@ export async function PUT(
         updateData.isServiceAreaExempt = nextExempt
         exemptChangeAudit = { from: cur.isServiceAreaExempt, to: nextExempt }
       }
+    }
+
+    // Billing-contact email — optional override for where bundled invoices
+    // get emailed. Stored separately from User.email (login) so brokers can
+    // route bills to an accountant without changing their own login email.
+    // Empty string from the form means "clear it"; null/missing means "no change".
+    if (body.billing_email !== undefined) {
+      const raw = typeof body.billing_email === 'string' ? body.billing_email.trim() : ''
+      // Minimal shape check — Resend will reject malformed addresses at send
+      // time anyway. We just refuse obvious nonsense to avoid storing junk.
+      if (raw && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) {
+        return NextResponse.json({ error: 'Billing email is not a valid address.' }, { status: 400 })
+      }
+      updateData.billingEmail = raw || null
     }
 
     // Mirror the exempt-flag audit pattern for the invoice-billing toggle.

@@ -256,9 +256,14 @@ export async function POST(request: NextRequest) {
 
   const customer = await prisma.user.findUnique({
     where: { id: customerId },
-    select: { id: true, email: true, fullName: true, name: true, company: true },
+    select: { id: true, email: true, fullName: true, name: true, company: true, billingEmail: true },
   })
   if (!customer) return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
+
+  // Where the bundled-invoice email actually lands. Billing-contact email
+  // (admin-set on /admin/customers/[id]) wins so accountants get the bill
+  // directly; account email is the fallback.
+  const recipientEmail = customer.billingEmail || customer.email
 
   // Find every unpaid invoice-billing order AND every completed pending-invoice
   // service-request in range that isn't already on another invoice. The
@@ -409,7 +414,7 @@ export async function POST(request: NextRequest) {
         invoiceId: result.invoice.id,
         invoiceNumber: result.invoice.invoiceNumber,
         customerName: customer.fullName || customer.name || customer.email,
-        customerEmail: customer.email,
+        customerEmail: recipientEmail,
         companyName: customer.company,
         rangeStart: startDate.toISOString().slice(0, 10),
         rangeEnd: endDate.toISOString().slice(0, 10),
@@ -440,6 +445,10 @@ export async function POST(request: NextRequest) {
     metadata: {
       customerId,
       customerEmail: customer.email,
+      // Where the email actually went — billing contact if set, else account.
+      // Useful for debugging "the accountant says they never got the invoice."
+      sentToEmail: recipientEmail,
+      usedBillingEmailOverride: !!customer.billingEmail,
       orderCount: result.ordersCount,
       orderNumbers: result.orderNumbers,
       serviceRequestCount: result.serviceRequestsCount,

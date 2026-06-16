@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { FileText, Send, Loader2, RefreshCw } from 'lucide-react'
+import { FileText, Send, Loader2, RefreshCw, Link2 } from 'lucide-react'
 import { Card, CardContent, Button, Input, Select, Badge } from '@/components/ui'
 import { formatCurrency, formatDate } from '@/lib/utils'
 
@@ -83,6 +83,11 @@ export default function AdminInvoicesPage() {
 
   const [invoices, setInvoices] = useState<InvoiceListRow[]>([])
   const [invoicesLoading, setInvoicesLoading] = useState(true)
+  // Per-invoice regen-in-flight state so two clicks can't double-fire and the
+  // button shows a spinner per row instead of disabling the whole table.
+  const [regenerating, setRegenerating] = useState<Record<string, boolean>>({})
+  const [regenError, setRegenError] = useState<string | null>(null)
+  const [regenSuccess, setRegenSuccess] = useState<string | null>(null)
 
   useEffect(() => {
     async function loadCustomers() {
@@ -101,6 +106,29 @@ export default function AdminInvoicesPage() {
     loadCustomers()
     refreshInvoices()
   }, [])
+
+  async function regeneratePaymentLink(invoiceId: string) {
+    if (regenerating[invoiceId]) return
+    if (!confirm('Regenerate the Stripe Payment Link for this invoice and re-send the email to the customer?')) return
+    setRegenerating((prev) => ({ ...prev, [invoiceId]: true }))
+    setRegenError(null)
+    setRegenSuccess(null)
+    try {
+      const res = await fetch(`/api/admin/invoices/${invoiceId}/regenerate-payment-link`, { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Regenerate failed')
+      setRegenSuccess(
+        data.email_resent
+          ? `New Payment Link sent to ${data.sent_to_email}.`
+          : `New Payment Link created but the email re-send failed — copy the URL from the Stripe dashboard.`,
+      )
+      refreshInvoices()
+    } catch (err) {
+      setRegenError(err instanceof Error ? err.message : 'Regenerate failed')
+    } finally {
+      setRegenerating((prev) => ({ ...prev, [invoiceId]: false }))
+    }
+  }
 
   async function refreshInvoices() {
     setInvoicesLoading(true)
@@ -298,6 +326,12 @@ export default function AdminInvoicesPage() {
               <RefreshCw className="w-3 h-3" /> Refresh
             </button>
           </div>
+          {regenError && (
+            <div className="mb-3 bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{regenError}</div>
+          )}
+          {regenSuccess && (
+            <div className="mb-3 bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-700">{regenSuccess}</div>
+          )}
           {invoicesLoading ? (
             <div className="flex items-center justify-center py-8">
               <Loader2 className="w-6 h-6 animate-spin text-pink-600" />
@@ -317,11 +351,14 @@ export default function AdminInvoicesPage() {
                     <th className="px-3 py-2 text-center">Status</th>
                     <th className="px-3 py-2 text-left">Sent</th>
                     <th className="px-3 py-2 text-left">Paid</th>
+                    <th className="px-3 py-2 text-center">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {invoices.map((inv) => {
                     const cfg = STATUS_LABEL[inv.status]
+                    const canRegen = inv.status === 'sent'
+                    const isRegen = !!regenerating[inv.id]
                     return (
                       <tr key={inv.id}>
                         <td className="px-3 py-2">
@@ -347,6 +384,22 @@ export default function AdminInvoicesPage() {
                         <td className="px-3 py-2 text-center"><Badge variant={cfg.variant}>{cfg.label}</Badge></td>
                         <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{inv.sent_at ? formatDate(inv.sent_at) : '—'}</td>
                         <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{inv.paid_at ? formatDate(inv.paid_at) : '—'}</td>
+                        <td className="px-3 py-2 text-center">
+                          {canRegen ? (
+                            <button
+                              type="button"
+                              onClick={() => regeneratePaymentLink(inv.id)}
+                              disabled={isRegen}
+                              className="inline-flex items-center gap-1 text-xs text-pink-600 hover:text-pink-700 disabled:text-gray-400 disabled:cursor-not-allowed"
+                              title="Regenerate the Stripe Payment Link and re-send the invoice email"
+                            >
+                              {isRegen ? <Loader2 className="w-3 h-3 animate-spin" /> : <Link2 className="w-3 h-3" />}
+                              {isRegen ? 'Regenerating…' : 'Regenerate Pay link'}
+                            </button>
+                          ) : (
+                            <span className="text-xs text-gray-400">—</span>
+                          )}
+                        </td>
                       </tr>
                     )
                   })}
