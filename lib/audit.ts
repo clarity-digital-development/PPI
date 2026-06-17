@@ -69,6 +69,7 @@ export async function audit(input: AuditWriteInput): Promise<void> {
 export const AuditAction = {
   UserRoleChange: 'user.role_change',
   OrderCancel: 'order.cancel',
+  OrderEdit:   'order.edit',
   OrderRefundCreate: 'order.refund.create',
   OrderRefundFail: 'order.refund.fail',
   OrderRefundWebhook: 'order.refund.webhook',

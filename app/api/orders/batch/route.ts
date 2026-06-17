@@ -504,7 +504,7 @@ export async function POST(request: NextRequest) {
         try {
           const full = await prisma.order.findUnique({
             where: { id: co.id },
-            include: { orderItems: true, user: true },
+            include: { orderItems: true, user: true, postType: { select: { name: true } } },
           })
           if (!full) continue
           const assignedAgent = await resolveAssignedAgent({
@@ -542,6 +542,11 @@ export async function POST(request: NextRequest) {
               })),
               requestedDate: full.scheduledDate?.toISOString(),
               isExpedited: full.isExpedited,
+              // Pass postType so the email shows the real post (e.g. "Black
+              // Vinyl Post") instead of falling through to the "None
+              // (service trip only)" default. Real service trips have
+              // postType=null and correctly land on the default copy.
+              postType: full.postType?.name || undefined,
               installationNotes: full.propertyNotes || undefined,
               installationLocation: full.installationLocation || undefined,
               isGatedCommunity: full.isGatedCommunity,
@@ -704,7 +709,7 @@ export async function POST(request: NextRequest) {
         try {
           const full = await prisma.order.findUnique({
             where: { id: co.id },
-            include: { orderItems: true, user: true },
+            include: { orderItems: true, user: true, postType: { select: { name: true } } },
           })
           if (!full) continue
           const assignedAgent = await resolveAssignedAgent({
@@ -742,6 +747,11 @@ export async function POST(request: NextRequest) {
               })),
               requestedDate: full.scheduledDate?.toISOString(),
               isExpedited: full.isExpedited,
+              // Pass postType so the email shows the real post (e.g. "Black
+              // Vinyl Post") instead of falling through to the "None
+              // (service trip only)" default. Real service trips have
+              // postType=null and correctly land on the default copy.
+              postType: full.postType?.name || undefined,
               installationNotes: full.propertyNotes || undefined,
               installationLocation: full.installationLocation || undefined,
               isGatedCommunity: full.isGatedCommunity,

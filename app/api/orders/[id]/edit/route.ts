@@ -3,6 +3,9 @@ import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { orderItemSchema } from '@/lib/validations'
 import { validateScheduling } from '@/lib/scheduling'
+import { sendAdminOrderNotification } from '@/lib/email'
+import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
+import { audit, AuditAction } from '@/lib/audit'
 import { z } from 'zod'
 
 // Full edit payload. The order is rebuilt from this (mirrors order creation),
@@ -255,6 +258,110 @@ export async function PATCH(
     console.log(
       `Edited order ${updatedOrder.orderNumber}: restored ${idsToRestore.signs.length} signs, ${idsToRestore.riders.length} riders, ${idsToRestore.lockboxes.length} lockboxes, ${idsToRestore.brochureBoxes.length} brochures; locked ${newSignIds.size} signs, ${newRiderIds.size} riders, ${newLockboxIds.size} lockboxes, ${newBrochureIds.size} brochures; new total $${total.toFixed(2)}`
     )
+
+    // Capture before/after deltas so admin can read the audit log and see
+    // exactly what changed. Items array is the most common edit (add/remove
+    // line items) so we serialize both sides at low fidelity.
+    const beforeSnapshot = {
+      total: Number(existingOrder.total),
+      subtotal: Number(existingOrder.subtotal),
+      propertyNotes: existingOrder.propertyNotes,
+      postTypeId: existingOrder.postTypeId,
+      items: existingOrder.orderItems.map((it) => ({
+        description: it.description,
+        quantity: it.quantity,
+        unitPrice: Number(it.unitPrice),
+      })),
+    }
+    const afterSnapshot = {
+      total: Number(updatedOrder.total),
+      subtotal: Number(updatedOrder.subtotal),
+      propertyNotes: updatedOrder.propertyNotes,
+      postTypeId: updatedOrder.postTypeId,
+      items: updatedOrder.orderItems.map((it) => ({
+        description: it.description,
+        quantity: it.quantity,
+        unitPrice: Number(it.unitPrice),
+      })),
+    }
+
+    try {
+      await audit({
+        actor: { id: user.id, email: user.email, role: user.role },
+        action: AuditAction.OrderEdit,
+        targetType: 'order',
+        targetId: updatedOrder.id,
+        metadata: {
+          orderNumber: updatedOrder.orderNumber,
+          before: beforeSnapshot,
+          after: afterSnapshot,
+        },
+        request,
+      })
+    } catch (auditErr) {
+      // Audit failure is non-fatal — don't block the edit response.
+      console.error('Edit audit log failed:', auditErr)
+    }
+
+    // Re-send the admin notification with the UPDATED order snapshot so
+    // install crews don't work off the stale original email. Subject is
+    // prefixed "[EDITED]" so admin spots the re-send in their inbox.
+    // The original email is NOT recalled — Resend doesn't support that —
+    // it just gets superseded by this one. Customer is not re-notified.
+    try {
+      const fullOrder = await prisma.order.findUnique({
+        where: { id: updatedOrder.id },
+        include: {
+          orderItems: true,
+          user: true,
+          postType: { select: { name: true } },
+        },
+      })
+      if (fullOrder) {
+        const assignedAgent = await resolveAssignedAgent({
+          placedForAgentName: fullOrder.placedForAgentName,
+          teamId: fullOrder.user.teamId,
+        })
+        await sendAdminOrderNotification({
+          orderNumber: fullOrder.orderNumber,
+          customerName: fullOrder.user.fullName || fullOrder.user.name || '',
+          customerEmail: fullOrder.user.email,
+          customerPhone: fullOrder.user.phone || '',
+          propertyAddress: `${fullOrder.propertyAddress}, ${fullOrder.propertyCity}, ${fullOrder.propertyState} ${fullOrder.propertyZip}`,
+          total: Number(fullOrder.total),
+          items: fullOrder.orderItems.map((it) => ({
+            description: it.description,
+            quantity: it.quantity,
+            total_price: Number(it.totalPrice),
+          })),
+          requestedDate: fullOrder.scheduledDate?.toISOString(),
+          isExpedited: fullOrder.isExpedited,
+          propertyType: fullOrder.propertyType ?? undefined,
+          postType: fullOrder.postType?.name || undefined,
+          installationNotes: fullOrder.propertyNotes || undefined,
+          installationLocation: fullOrder.installationLocation || undefined,
+          isGatedCommunity: fullOrder.isGatedCommunity,
+          gateCode: fullOrder.gateCode || undefined,
+          hasMarkerPlaced: fullOrder.hasMarkerPlaced,
+          signOrientation: fullOrder.signOrientation || undefined,
+          signOrientationOther: fullOrder.signOrientationOther || undefined,
+          subtotal: Number(fullOrder.subtotal),
+          discount: Number(fullOrder.discount),
+          fuelSurcharge: Number(fullOrder.fuelSurcharge),
+          noPostSurcharge: Number(fullOrder.noPostSurcharge),
+          expediteFee: Number(fullOrder.expediteFee),
+          tax: Number(fullOrder.tax),
+          assignedAgentName: assignedAgent?.name ?? null,
+          assignedAgentPhone: assignedAgent?.phone ?? null,
+          isInvoiceBilling: fullOrder.paymentStatus === 'pending_invoice',
+          isEdited: true,
+        })
+      }
+    } catch (emailErr) {
+      // Email failure is non-fatal — the edit already committed; admin
+      // can still see the updated order in /admin/orders/[id].
+      console.error('Edit admin notification failed:', emailErr)
+    }
 
     return NextResponse.json({ order: updatedOrder })
   } catch (error) {

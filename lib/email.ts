@@ -168,6 +168,12 @@ interface AdminNotificationEmailProps {
   // collected at checkout). Surfaces a banner in the admin email so Ryan
   // doesn't expect a payment record.
   isInvoiceBilling?: boolean
+  // True when this notification is being re-sent because the order was
+  // edited after its original placement. Adds "[EDITED]" to the subject and
+  // a banner so admin knows to use this snapshot instead of the earlier
+  // email (without it, install crews work from stale data — items, notes,
+  // post type can all change post-placement via /api/orders/[id]/edit).
+  isEdited?: boolean
 }
 
 export async function sendAdminOrderNotification({
@@ -199,6 +205,7 @@ export async function sendAdminOrderNotification({
   assignedAgentName,
   assignedAgentPhone,
   isInvoiceBilling,
+  isEdited,
 }: AdminNotificationEmailProps) {
   const adminEmail = process.env.ADMIN_EMAIL
   if (!adminEmail) {
@@ -264,7 +271,7 @@ export async function sendAdminOrderNotification({
     : ''
 
   const text = `
-New Order Received!
+${isEdited ? '✏️ ORDER EDITED — use this snapshot, NOT the original email. Items, notes, or post type may have changed since placement.\n\n' : ''}${isEdited ? 'Updated Order Details' : 'New Order Received!'}
 
 Order Number: ${orderNumber}
 ${isExpedited ? '⚡ EXPEDITED ORDER' : ''}${isInvoiceBilling ? '\n📄 INVOICE BILLING — no payment collected at checkout. Bundle from /admin/invoices.' : ''}
@@ -292,7 +299,9 @@ View order details in the admin dashboard.
     const result = await getResend().emails.send({
       from: 'Pink Posts Installations <orders@pinkposts.com>',
       to: adminEmail,
-      subject: `${isExpedited ? '⚡ EXPEDITED ' : ''}${isInvoiceBilling ? '📄 INVOICE ' : ''}New Order: ${orderNumber}`,
+      // Edited orders get a clear "[EDITED]" prefix so admin can spot the
+      // re-send in their inbox vs the original placement email.
+      subject: `${isEdited ? '✏️ [EDITED] ' : ''}${isExpedited ? '⚡ EXPEDITED ' : ''}${isInvoiceBilling ? '📄 INVOICE ' : ''}${isEdited ? 'Updated Order' : 'New Order'}: ${orderNumber}`,
       text,
     })
     console.log(`Admin notification sent successfully for order ${orderNumber}:`, result)
