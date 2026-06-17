@@ -22,6 +22,9 @@ interface CustomerData {
     id: string
     name: string
     members: Array<{ id: string; name: string; email: string | null; phone: string | null; hasLogin: boolean }>
+    // Includes soft-removed members so historical assignments can still resolve
+    // to a human name on the Currently Deployed pill.
+    memberNames: Array<{ id: string; name: string }>
   } | null
   inventory: {
     signs: Array<{ id: string; description: string; size: string | null; quantity: number }>
@@ -37,10 +40,10 @@ interface CustomerData {
       otherItems: Array<{ id: string; description: string; assignedToMemberId: string | null }>
     }
     deployed?: {
-      signs: Array<{ id: string; description: string }>
-      riders: Array<{ id: string; rider_type: string }>
-      lockboxes: Array<{ id: string; lockbox_type: string; lockbox_code: string | null }>
-      brochureBoxes: Array<{ id: string; description: string | null }>
+      signs: Array<{ id: string; description: string; assignedToMemberId: string | null }>
+      riders: Array<{ id: string; rider_type: string; assignedToMemberId: string | null }>
+      lockboxes: Array<{ id: string; lockbox_type: string; lockbox_code: string | null; assignedToMemberId: string | null }>
+      brochureBoxes: Array<{ id: string; description: string | null; assignedToMemberId: string | null }>
     }
   }
   orders: Array<{
@@ -58,6 +61,27 @@ interface CustomerData {
     status: string
     installation_date: string
   }>
+}
+
+// Small pill that labels a deployed inventory row with the agent it was
+// originally assigned to. When unassigned (pool inventory or pre-tagging
+// rows), shows "Team pool". When the assigned agent has since been removed
+// from the team, shows "Unknown agent" rather than crashing on the lookup.
+function AgentPill({
+  memberId,
+  memberNameById,
+}: {
+  memberId: string | null
+  memberNameById: Map<string, string>
+}) {
+  const label = memberId
+    ? memberNameById.get(memberId) ?? 'Unknown agent'
+    : 'Team pool'
+  return (
+    <span className="ml-2 inline-flex items-center text-xs font-medium text-gray-600 bg-gray-100 border border-gray-200 rounded-full px-2 py-0.5">
+      {label}
+    </span>
+  )
 }
 
 export default function CustomerDetailPage() {
@@ -447,6 +471,18 @@ export default function CustomerDetailPage() {
   // Per-agent grouping only makes sense when the customer's team has agents to assign to.
   const useGroupedView = !!(data?.team && data.team.members.length > 0)
 
+  // Member id → display name lookup. Used by the Currently Deployed pill so admins
+  // can tell two same-description rows (e.g. two "For Sale Sign"s) apart by agent
+  // when figuring out which inventory to return. Built from `memberNames`, which
+  // INCLUDES soft-removed agents — admins most need the name when the agent has
+  // left the team and a deployed sign is still sitting on a property.
+  const memberNameById = useMemo(() => {
+    const m = new Map<string, string>()
+    const source = data?.team?.memberNames ?? data?.team?.members ?? []
+    for (const member of source) m.set(member.id, member.name)
+    return m
+  }, [data?.team?.memberNames, data?.team?.members])
+
   if (loading) {
     return (
       <div className="p-6">
@@ -660,9 +696,135 @@ export default function CustomerDetailPage() {
                 fetch(`/api/admin/customers/${id}/inventory?type=${type}&item_id=${bid}`, { method: 'DELETE' }),
               ),
             )
+            // Prune deleted ids out of the bulk-reassign selection so the next
+            // Apply doesn't ship a phantom id at a 404-bound row.
+            setSelectedItems((prev) => {
+              let changed = false
+              const next = new Map(prev)
+              for (const bid of bundle.ids) {
+                const k = `${type}:${bid}`
+                if (next.delete(k)) changed = true
+              }
+              return changed ? next : prev
+            })
             fetchCustomer()
           } catch (error) {
             console.error('Error bundle-deleting items:', error)
+          }
+        }
+
+        // Bundle decrement — removes ONE item from a bundle (the most recent
+        // record), no confirm dialog so the - button feels snappy. When the
+        // bundle is a singleton, falls through to handleBundleDelete which
+        // does prompt — avoids a silent "minus made the row vanish" surprise.
+        const handleBundleDecrement = async (
+          type: 'sign' | 'rider' | 'lockbox' | 'brochure_box' | 'other',
+          bundle: AdminBundle,
+        ) => {
+          if (bundle.ids.length === 0) return
+          if (bundle.ids.length === 1) {
+            handleBundleDelete(type, bundle)
+            return
+          }
+          // bundle.ids preserves API order. The GET handler orders every
+          // inventory type by createdAt desc, so the LAST id in the bundle
+          // is the OLDEST record — a reasonable "-1" target since we want
+          // to drain the bundle without disturbing the newest assignment.
+          // Every record in the bundle is fungible for the user, so any
+          // pick would be correct; we just prefer oldest-first for stability.
+          const targetId = bundle.ids[bundle.ids.length - 1]
+          const key = `${type}:${targetId}`
+          setRowReassigning((prev) => ({ ...prev, [key]: true }))
+          try {
+            const res = await fetch(
+              `/api/admin/customers/${id}/inventory?type=${type}&item_id=${targetId}`,
+              { method: 'DELETE' },
+            )
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({}))
+              alert(err.error || 'Failed to remove item')
+              return
+            }
+            // Prune the deleted id from the bulk-reassign selection.
+            setSelectedItems((prev) => {
+              if (!prev.has(key)) return prev
+              const next = new Map(prev)
+              next.delete(key)
+              return next
+            })
+            await fetchCustomer()
+          } catch (error) {
+            console.error('Error decrementing bundle:', error)
+            alert('Failed to remove item')
+          } finally {
+            setRowReassigning((prev) => {
+              const next = { ...prev }
+              delete next[key]
+              return next
+            })
+          }
+        }
+
+        // Bundle increment — adds ONE item to a bundle with the same
+        // label + assignedToMemberId, so on refetch groupAdminItems re-buckets
+        // it into the same bundle (no flicker, no row split). The POST handler
+        // looks up riders by name when rider_id is missing, so passing
+        // rider_type: bundle.label is sufficient.
+        const handleBundleIncrement = async (
+          type: 'sign' | 'rider' | 'lockbox' | 'brochure_box' | 'other',
+          bundle: AdminBundle,
+        ) => {
+          const guardKey = `bundle-inc:${bundle.key}`
+          if (rowReassigning[guardKey]) return
+          // Snapshot: was every id in this bundle in the bulk-reassign
+          // selection at click time? If so, the new id should join the
+          // selection so the user's "bundle is selected" mental model
+          // survives the +1 (without this, the row visually de-selects
+          // because allChecked flips to false on the next render).
+          const wasFullySelected = bundle.ids.length > 0 && bundle.ids.every((bid) => selectedItems.has(`${type}:${bid}`))
+          setRowReassigning((prev) => ({ ...prev, [guardKey]: true }))
+          try {
+            const body: Record<string, unknown> = {
+              type,
+              quantity: 1,
+              assigned_to_member_id: bundle.assignedToMemberId ?? '',
+            }
+            if (type === 'sign' || type === 'brochure_box' || type === 'other') {
+              body.description = bundle.label
+            } else if (type === 'rider') {
+              body.rider_type = bundle.label
+            }
+            const res = await fetch(`/api/admin/customers/${id}/inventory`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body),
+            })
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({}))
+              alert(err.error || 'Failed to add item')
+              return
+            }
+            // POST returns { item: { id }, quantity } when quantity === 1.
+            // Capture the new id so we can re-select it below.
+            const payload = await res.json().catch(() => null) as { item?: { id?: string } } | null
+            const newId = payload?.item?.id
+            if (wasFullySelected && newId) {
+              setSelectedItems((prev) => {
+                const next = new Map(prev)
+                next.set(`${type}:${newId}`, { type, id: newId })
+                return next
+              })
+            }
+            await fetchCustomer()
+          } catch (error) {
+            console.error('Error incrementing bundle:', error)
+            alert('Failed to add item')
+          } finally {
+            setRowReassigning((prev) => {
+              const next = { ...prev }
+              delete next[guardKey]
+              return next
+            })
           }
         }
 
@@ -674,8 +836,14 @@ export default function CustomerDetailPage() {
           bundle: AdminBundle,
         ) => {
           const keys = bundle.ids.map((bid) => `${type}:${bid}`)
-          // The whole bundle is "saving" when ANY of its ids is in flight.
-          const saving = keys.some((k) => !!rowReassigning[k])
+          // The whole bundle is "saving" when ANY of its ids is in flight OR
+          // an increment is in flight (whose guard key is bundle-scoped, not
+          // id-scoped, so it wouldn't show up via the keys.some check below).
+          // Without the increment leg, a user clicking + then immediately
+          // reassigning the dropdown could split the bundle (the in-flight
+          // POST creates a row with the OLD agent while the bulk-reassign
+          // moves the existing ids to the NEW agent — two rows on refetch).
+          const saving = !!rowReassigning[`bundle-inc:${bundle.key}`] || keys.some((k) => !!rowReassigning[k])
           // The whole bundle is "checked" only when EVERY id is in the
           // selected set; partial selections render unchecked (clicking
           // selects all).
@@ -710,11 +878,6 @@ export default function CustomerDetailPage() {
                   />
                   <Package className="w-4 h-4 text-gray-400 flex-shrink-0" />
                   <span className="text-sm text-gray-700 truncate">{bundle.label}</span>
-                  {count > 1 && (
-                    <span className="text-xs font-semibold text-pink-600 bg-pink-50 border border-pink-200 rounded px-1.5 py-0.5 flex-shrink-0">
-                      ×{count}
-                    </span>
-                  )}
                   {bundle.code && (
                     <span className="text-xs font-mono bg-gray-200 px-2 py-1 rounded flex-shrink-0">
                       {bundle.code}
@@ -735,6 +898,44 @@ export default function CustomerDetailPage() {
                     searchPlaceholder="Search agents..."
                     aria-label={`Assign ${bundle.label}${count > 1 ? ` (${count} items)` : ''}`}
                   />
+                  {/* Per-bundle quantity stepper. Hidden for lockboxes because
+                      each lockbox carries a unique code in its bundle key, so
+                      a +1 would either collide or silently create a duplicate
+                      code; admins keep using the per-card "+ Add" modal that
+                      prompts for a new code. */}
+                  {type !== 'lockbox' && (
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          handleBundleDecrement(type, bundle)
+                        }}
+                        disabled={saving}
+                        className="w-7 h-7 flex items-center justify-center rounded bg-gray-200 hover:bg-gray-300 text-gray-700 disabled:opacity-50"
+                        title={count === 1 ? `Remove last ${bundle.label}` : 'Remove one'}
+                        aria-label={`Remove one ${bundle.label}`}
+                      >
+                        <Minus className="w-3.5 h-3.5" />
+                      </button>
+                      <span className="w-8 text-center font-medium text-gray-900 text-sm">{count}</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          handleBundleIncrement(type, bundle)
+                        }}
+                        disabled={saving}
+                        className="w-7 h-7 flex items-center justify-center rounded bg-gray-200 hover:bg-gray-300 text-gray-700 disabled:opacity-50"
+                        title="Add one"
+                        aria-label={`Add one ${bundle.label}`}
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
                   <button
                     type="button"
                     onClick={(e) => {
@@ -742,7 +943,8 @@ export default function CustomerDetailPage() {
                       e.stopPropagation()
                       handleBundleDelete(type, bundle)
                     }}
-                    className="text-gray-400 hover:text-red-500 flex-shrink-0"
+                    disabled={saving}
+                    className="text-gray-400 hover:text-red-500 flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
                     title={count > 1 ? `Delete all ${count}` : 'Delete'}
                   >
                     <Trash2 className="w-4 h-4" />
@@ -1272,9 +1474,10 @@ export default function CustomerDetailPage() {
             <div className={deployedCount > 5 ? 'space-y-2 max-h-[280px] overflow-y-auto pr-1 -mr-1' : 'space-y-2'}>
               {data.inventory.deployed.signs.map(item => (
                 <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-lg border border-amber-200">
-                  <div className="text-sm">
+                  <div className="text-sm flex items-center flex-wrap gap-y-1">
                     <span className="text-xs text-amber-700 font-medium uppercase mr-2">Sign</span>
                     <span className="text-gray-900">{item.description}</span>
+                    {useGroupedView && <AgentPill memberId={item.assignedToMemberId} memberNameById={memberNameById} />}
                   </div>
                   <Button size="sm" variant="outline" onClick={() => handleReturnToStorage('sign', item.id)}>
                     Return to inventory
@@ -1283,9 +1486,10 @@ export default function CustomerDetailPage() {
               ))}
               {data.inventory.deployed.riders.map(item => (
                 <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-lg border border-amber-200">
-                  <div className="text-sm">
+                  <div className="text-sm flex items-center flex-wrap gap-y-1">
                     <span className="text-xs text-amber-700 font-medium uppercase mr-2">Rider</span>
                     <span className="text-gray-900">{item.rider_type}</span>
+                    {useGroupedView && <AgentPill memberId={item.assignedToMemberId} memberNameById={memberNameById} />}
                   </div>
                   <Button size="sm" variant="outline" onClick={() => handleReturnToStorage('rider', item.id)}>
                     Return to inventory
@@ -1294,11 +1498,12 @@ export default function CustomerDetailPage() {
               ))}
               {data.inventory.deployed.lockboxes.map(item => (
                 <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-lg border border-amber-200">
-                  <div className="text-sm">
+                  <div className="text-sm flex items-center flex-wrap gap-y-1">
                     <span className="text-xs text-amber-700 font-medium uppercase mr-2">Lockbox</span>
                     <span className="text-gray-900">
                       {item.lockbox_type}{item.lockbox_code ? ` — code ${item.lockbox_code}` : ''}
                     </span>
+                    {useGroupedView && <AgentPill memberId={item.assignedToMemberId} memberNameById={memberNameById} />}
                   </div>
                   <Button size="sm" variant="outline" onClick={() => handleReturnToStorage('lockbox', item.id)}>
                     Return to inventory
@@ -1307,9 +1512,10 @@ export default function CustomerDetailPage() {
               ))}
               {data.inventory.deployed.brochureBoxes.map(item => (
                 <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-lg border border-amber-200">
-                  <div className="text-sm">
+                  <div className="text-sm flex items-center flex-wrap gap-y-1">
                     <span className="text-xs text-amber-700 font-medium uppercase mr-2">Brochure Box</span>
                     <span className="text-gray-900">{item.description || 'Brochure box'}</span>
+                    {useGroupedView && <AgentPill memberId={item.assignedToMemberId} memberNameById={memberNameById} />}
                   </div>
                   <Button size="sm" variant="outline" onClick={() => handleReturnToStorage('brochure_box', item.id)}>
                     Return to inventory

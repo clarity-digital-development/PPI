@@ -46,13 +46,19 @@ export async function GET(
         prisma.customerRider.findMany({
           where: { userId: id },
           include: { rider: true },
+          // Stable desc-by-createdAt ordering — matches signs/otherItems and
+          // lets the admin UI's bundle decrement consistently pop the oldest
+          // record without depending on Postgres heap-scan luck.
+          orderBy: { createdAt: 'desc' },
         }),
         prisma.customerLockbox.findMany({
           where: { userId: id },
           include: { lockboxType: true },
+          orderBy: { createdAt: 'desc' },
         }),
         prisma.customerBrochureBox.findMany({
           where: { userId: id },
+          orderBy: { createdAt: 'desc' },
         }),
         prisma.customerOtherItem.findMany({
           where: { userId: id },
@@ -126,12 +132,16 @@ export async function GET(
       ? { id: brochureBoxesRaw[0].id, quantity: brochureBoxesRaw.length }
       : null
 
-    // Build deployed list — flat per-item so admin can mark each one back to storage
+    // Build deployed list — flat per-item so admin can mark each one back to storage.
+    // assignedToMemberId is preserved through the inStorage:true→false flip (only
+    // inStorage/heldByHoldId/heldUntil mutate on deployment), so the agent who
+    // originally owned the inventory survives. The UI uses it to render an agent
+    // pill so two "For Sale Sign" rows from different agents are distinguishable.
     const deployed = {
-      signs: signsOutOfStorage.map(s => ({ id: s.id, description: s.description })),
-      riders: ridersOutOfStorage.map(r => ({ id: r.id, rider_type: r.rider.name })),
-      lockboxes: lockboxesOutOfStorage.map(lb => ({ id: lb.id, lockbox_type: lb.lockboxType.name, lockbox_code: lb.code })),
-      brochureBoxes: brochureBoxesOutOfStorage.map(b => ({ id: b.id, description: b.description })),
+      signs: signsOutOfStorage.map(s => ({ id: s.id, description: s.description, assignedToMemberId: s.assignedToMemberId ?? null })),
+      riders: ridersOutOfStorage.map(r => ({ id: r.id, rider_type: r.rider.name, assignedToMemberId: r.assignedToMemberId ?? null })),
+      lockboxes: lockboxesOutOfStorage.map(lb => ({ id: lb.id, lockbox_type: lb.lockboxType.name, lockbox_code: lb.code, assignedToMemberId: lb.assignedToMemberId ?? null })),
+      brochureBoxes: brochureBoxesOutOfStorage.map(b => ({ id: b.id, description: b.description, assignedToMemberId: b.assignedToMemberId ?? null })),
     }
 
     // Transform orders to match frontend expectations
@@ -155,17 +165,29 @@ export async function GET(
 
     // Include the team roster for any team-member customer (admin OR agent)
     // so the per-agent inventory grouping works regardless of role.
-    let team: { id: string; name: string; members: Array<{ id: string; name: string; email: string | null; phone: string | null; hasLogin: boolean }> } | null = null
+    // `members` is the ACTIVE roster (drives assign dropdowns); `memberNames`
+    // covers ALL members past and present, so historical assignments to
+    // soft-removed agents still resolve to a human name on the Currently
+    // Deployed pill rather than rendering as "Unknown agent" (the case
+    // where admins MOST need the name — to call them and recover the sign).
+    let team: {
+      id: string
+      name: string
+      members: Array<{ id: string; name: string; email: string | null; phone: string | null; hasLogin: boolean }>
+      memberNames: Array<{ id: string; name: string }>
+    } | null = null
     if (customer.teamId) {
       const t = await prisma.team.findUnique({
         where: { id: customer.teamId },
-        include: { teamMembers: { where: { removedAt: null }, orderBy: { createdAt: 'asc' } } },
+        include: { teamMembers: { orderBy: { createdAt: 'asc' } } },
       })
       if (t) {
+        const activeMembers = t.teamMembers.filter((m) => m.removedAt === null)
         team = {
           id: t.id,
           name: t.name,
-          members: t.teamMembers.map((m) => ({ id: m.id, name: m.name, email: m.email, phone: m.phone, hasLogin: !!m.userId })),
+          members: activeMembers.map((m) => ({ id: m.id, name: m.name, email: m.email, phone: m.phone, hasLogin: !!m.userId })),
+          memberNames: t.teamMembers.map((m) => ({ id: m.id, name: m.name })),
         }
       }
     }
