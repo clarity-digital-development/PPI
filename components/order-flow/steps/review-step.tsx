@@ -22,6 +22,7 @@ export function ReviewStep({
   isSubmitting,
   setIsSubmitting,
   onBehalfOf,
+  placedForMemberId,
   currentUserRole,
   mode = 'create',
   orderId,
@@ -631,7 +632,14 @@ export function ReviewStep({
         // cart_item_id matches.
         const newItem = {
           id: cartItemId,
-          agentId: onBehalfOf || '',
+          // Cart row's agentId is the TeamMember.id when we're in the
+          // team_admin gate path (so on edit, /api/inventory?member_id=
+          // returns the agent's scoped inventory). Falls back to the
+          // legacy onBehalfOf (User.id) for the admin on_behalf_of flow.
+          // Without this fix the gate path wrote an empty agentId and
+          // edit fetched the team_admin's entire pool — Ryan's "showed
+          // every rider in inventory for everyone" bug.
+          agentId: placedForMemberId || onBehalfOf || '',
           agentName: agentName || 'Unassigned',
           agentEmail,
           formData,

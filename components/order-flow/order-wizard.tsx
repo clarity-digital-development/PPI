@@ -98,6 +98,12 @@ interface OrderWizardProps {
   // Threaded through to the order POST so the order is owned by the agent
   // but charged to the actor (admin/team_admin).
   onBehalfOf?: string
+  // TeamMember.id (NOT a User id) the order is being placed for in the
+  // team_admin gate path. Persisted as `agentId` on the cart row so that on
+  // edit, /api/inventory?member_id=<this> returns the agent's scoped
+  // inventory instead of the team_admin's full pool. Separate from
+  // onBehalfOf because TeamMembers aren't always Users.
+  placedForMemberId?: string
   // The current user's role — used to enable team-admin specific UX
   // (cart by default, agent-name input on review step).
   currentUserRole?: string | null
@@ -119,12 +125,14 @@ interface OrderWizardProps {
   editingCartItemId?: string
 }
 
-export function OrderWizard({ inventory, paymentMethods, onBehalfOf, currentUserRole, mode = 'create', orderId, initialFormData, editMeta, lockboxInstallFee, editingCartItemId }: OrderWizardProps) {
+export function OrderWizard({ inventory, paymentMethods, onBehalfOf, placedForMemberId, currentUserRole, mode = 'create', orderId, initialFormData, editMeta, lockboxInstallFee, editingCartItemId }: OrderWizardProps) {
   const isEdit = mode === 'edit'
   const [currentStep, setCurrentStep] = useState(0)
-  // In edit mode every step has effectively been "visited" so the customer can
-  // jump straight to any page to make a correction.
-  const [highestStep, setHighestStep] = useState(isEdit ? steps.length - 1 : 0)
+  // In edit mode (or cart-edit re-entry) every step has effectively been
+  // "visited" so the user can jump straight to any page. Without this, cart
+  // edit dumps the user on step 1 and forces them to Continue through each
+  // step just to fix a single field.
+  const [highestStep, setHighestStep] = useState(isEdit || editingCartItemId ? steps.length - 1 : 0)
   // Merge any provided initial data over the defaults. Edit mode passes a full
   // OrderFormData (merge is a no-op over it); create mode may pass a partial
   // preset (e.g. a team_admin's selected agent name).
@@ -320,6 +328,7 @@ export function OrderWizard({ inventory, paymentMethods, onBehalfOf, currentUser
               isSubmitting={isSubmitting}
               setIsSubmitting={setIsSubmitting}
               onBehalfOf={onBehalfOf}
+              placedForMemberId={placedForMemberId}
               currentUserRole={currentUserRole}
               mode={mode}
               orderId={orderId}

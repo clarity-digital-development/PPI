@@ -19,6 +19,7 @@ import {
   RotateCcw,
   Clock,
   ExternalLink,
+  Pencil,
 } from 'lucide-react'
 import { Button, Badge, Card, CardContent, Modal } from '@/components/ui'
 
@@ -410,6 +411,19 @@ export default function AdminOrderDetailPage() {
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Edit Order — admin can fix items/notes/dates on the customer's
+              behalf without emailing the agent. Matches the server-side
+              gate in PATCH /api/orders/[id]/edit which blocks completed +
+              cancelled orders. Opens the same wizard the customer would. */}
+          {order.status !== 'completed' && order.status !== 'cancelled' && (
+            <Link href={`/admin/orders/${orderId}/edit`}>
+              <Button variant="outline" size="sm">
+                <Pencil className="w-4 h-4 mr-1" />
+                Edit Order
+              </Button>
+            </Link>
+          )}
+
           {/* Cancel button — only for unpaid, non-cancelled orders */}
           {order.paymentStatus !== 'succeeded' && order.status !== 'cancelled' && (
             <Button

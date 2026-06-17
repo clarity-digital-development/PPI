@@ -107,6 +107,10 @@ export interface StepProps {
   // Optional: when an admin / team_admin is placing the order for an agent,
   // this is the agent's user id. Passed through to the API on submit.
   onBehalfOf?: string
+  // TeamMember.id (NOT a User id) the order is being placed for in the
+  // team_admin gate path. Used as the cart row's agentId for edit-time
+  // inventory scoping. See OrderWizard's props for the full reasoning.
+  placedForMemberId?: string
   // Current user's role — controls team-admin specific UX (cart, agent name input)
   currentUserRole?: string | null
   // Edit mode: when 'edit', the wizard edits an existing order in place

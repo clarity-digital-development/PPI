@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { orderItemSchema } from '@/lib/validations'
 import { validateScheduling } from '@/lib/scheduling'
-import { sendAdminOrderNotification } from '@/lib/email'
+import { sendAdminOrderNotification, sendOrderConfirmationEmail } from '@/lib/email'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
 import { audit, AuditAction } from '@/lib/audit'
 import { z } from 'zod'
@@ -55,8 +55,12 @@ export async function PATCH(
 
     const { id } = await params
 
+    // Owner-OR-admin gate. Admins can edit any pending order on a customer's
+    // behalf so they don't have to email the agent and ask for changes (per
+    // Ryan's ask). The audit log at the end already records actor.role, so
+    // admin edits are distinguishable from self-edits without further work.
     const existingOrder = await prisma.order.findFirst({
-      where: { id, userId: user.id },
+      where: user.role === 'admin' ? { id } : { id, userId: user.id },
       include: { orderItems: true, promoCode: true },
     })
 
@@ -356,11 +360,35 @@ export async function PATCH(
           isInvoiceBilling: fullOrder.paymentStatus === 'pending_invoice',
           isEdited: true,
         })
+
+        // When ADMIN was the editor (vs the customer self-editing), also
+        // notify the broker/customer so they know their order was touched.
+        // Pure self-edits (customer hits Edit on their own order) skip
+        // this — the customer is already aware they made the change.
+        if (user.role === 'admin' && fullOrder.userId !== user.id) {
+          await sendOrderConfirmationEmail({
+            customerName: fullOrder.user.fullName || fullOrder.user.name || '',
+            customerEmail: fullOrder.user.email,
+            orderNumber: fullOrder.orderNumber,
+            propertyAddress: `${fullOrder.propertyAddress}, ${fullOrder.propertyCity}, ${fullOrder.propertyState} ${fullOrder.propertyZip}`,
+            total: Number(fullOrder.total),
+            items: fullOrder.orderItems.map((it) => ({
+              description: it.description,
+              quantity: it.quantity,
+              total_price: Number(it.totalPrice),
+            })),
+            requestedDate: fullOrder.scheduledDate?.toISOString(),
+            installationNotes: fullOrder.propertyNotes || undefined,
+            recipientUserId: fullOrder.userId,
+            isInvoiceBilling: fullOrder.paymentStatus === 'pending_invoice',
+            isEditedBySupport: true,
+          })
+        }
       }
     } catch (emailErr) {
       // Email failure is non-fatal — the edit already committed; admin
       // can still see the updated order in /admin/orders/[id].
-      console.error('Edit admin notification failed:', emailErr)
+      console.error('Edit notification email failed:', emailErr)
     }
 
     return NextResponse.json({ order: updatedOrder })

@@ -256,6 +256,11 @@ function PlaceOrderPageInner() {
                   // Preset the agent name; the wizard merges this over its
                   // full defaults.
                   initialFormData={{ placed_for_agent_name: selectedMember.name }}
+                  // Persist the TeamMember.id on the cart row so editing the
+                  // row later re-fetches inventory scoped to this same agent
+                  // (vs falling back to the team_admin's entire pool, which
+                  // was the source of Ryan's "every rider showed up" bug).
+                  placedForMemberId={selectedMember.id}
                   lockboxInstallFee={freeLockboxInstall ? 0 : undefined}
                 />
               )}

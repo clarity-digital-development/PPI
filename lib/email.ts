@@ -33,6 +33,11 @@ interface OrderConfirmationEmailProps {
   // True when this customer pays by invoice (no charge at checkout). Swaps the
   // "thanks for your order" copy for an "added to invoice — bill coming" copy.
   isInvoiceBilling?: boolean
+  // True when this email is being sent because Pink Posts admin edited the
+  // order on the customer's behalf. Subject becomes "Order updated by
+  // support" and a blue banner explains the change. Used by the admin
+  // edit flow so brokers know their order was touched.
+  isEditedBySupport?: boolean
 }
 
 export async function sendOrderConfirmationEmail({
@@ -47,6 +52,7 @@ export async function sendOrderConfirmationEmail({
   recipientUserId,
   recipientPrefs,
   isInvoiceBilling,
+  isEditedBySupport,
 }: OrderConfirmationEmailProps) {
   // Pref gate — opt-out short-circuits before any Resend call.
   if (!(await shouldSendEmail(recipientUserId, 'emailOrderConfirmations', recipientPrefs))) {
@@ -75,11 +81,17 @@ export async function sendOrderConfirmationEmail({
       <div style="background-color: white; border-radius: 12px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
         <div style="text-align: center; margin-bottom: 24px;">
           <h1 style="color: #E84A7A; margin: 0;">Pink Posts Installations</h1>
-          <p style="color: #666; margin: 8px 0 0;">Order Confirmation</p>
+          <p style="color: #666; margin: 8px 0 0;">${isEditedBySupport ? 'Order Updated by Support' : 'Order Confirmation'}</p>
         </div>
 
+        ${isEditedBySupport ? `
+        <div style="background-color: #DBEAFE; border: 1px solid #93C5FD; color: #1E3A8A; padding: 14px 16px; border-radius: 8px; margin-bottom: 24px; font-size: 14px;">
+          <strong>Order updated by Pink Posts support.</strong> A member of our team made an adjustment to this order on your behalf. The latest details are below — please use this snapshot instead of the original order confirmation. No payment changes have been made.
+        </div>
+        ` : ''}
+
         <p style="color: #333;">Hi ${customerName},</p>
-        <p style="color: #333;">${isInvoiceBilling ? `This order has been added to your account and will appear on your next invoice. No payment has been collected yet.` : `Thank you for your order! We've received your request and will begin processing it shortly.`}</p>
+        <p style="color: #333;">${isEditedBySupport ? `We just updated order ${orderNumber} on your behalf. Here's the current state:` : (isInvoiceBilling ? `This order has been added to your account and will appear on your next invoice. No payment has been collected yet.` : `Thank you for your order! We've received your request and will begin processing it shortly.`)}</p>
 
         <div style="background-color: #FFF0F3; border-radius: 8px; padding: 16px; margin: 24px 0;">
           <p style="margin: 0; color: #666;"><strong>Order Number:</strong> ${orderNumber}</p>
@@ -127,7 +139,9 @@ export async function sendOrderConfirmationEmail({
   return getResend().emails.send({
     from: 'Pink Posts Installations <orders@pinkposts.com>',
     to: customerEmail,
-    subject: isInvoiceBilling ? `Order Added to Invoice - ${orderNumber}` : `Order Confirmation - ${orderNumber}`,
+    subject: isEditedBySupport
+      ? `Order Updated by Support - ${orderNumber}`
+      : isInvoiceBilling ? `Order Added to Invoice - ${orderNumber}` : `Order Confirmation - ${orderNumber}`,
     html,
   })
 }
