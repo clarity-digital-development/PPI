@@ -129,6 +129,12 @@ export async function GET(request: NextRequest) {
         paymentStatus: 'succeeded',
         postRentalStoppedAt: null,
         installation: { is: { status: 'active' } },
+        // Defense in depth: NEVER auto-charge an invoice-billing customer's
+        // card here, even if their order somehow got into paymentStatus
+        // 'succeeded' (e.g. via the orders/[id] complete-charge bug). Their
+        // cards may only be charged via the customer-initiated Stripe
+        // Payment Link on a bundled invoice — never on a cron.
+        user: { invoiceBilling: false },
       },
       include: { user: true, installation: true },
     })
@@ -247,6 +253,24 @@ export async function GET(request: NextRequest) {
 
         const payer = await resolveBillingPayer(row.order)
         const customerEmail = row.order.user.email
+
+        // Defense in depth #2: even after the Pass-1 findMany filter, refuse
+        // to call paymentIntents.create for any row whose underlying order
+        // owner is on invoice billing. Catches PostRentalCharge rows that
+        // were scheduled BEFORE this guard shipped (rows that already exist
+        // in 'due' state for invoice-billing customers — mark them failed
+        // with a clear reason instead of charging).
+        if (row.order.user.invoiceBilling) {
+          await markFailed(
+            row.id,
+            'invoice_billing',
+            'Customer is on invoice billing — auto-charge not permitted; bundle on next invoice instead',
+            row.attemptCount + 1,
+          )
+          summary.skipped++
+          summary.attempted--
+          continue
+        }
 
         if (!payer || !payer.stripeCustomerId || !payer.paymentMethodId) {
           await markFailed(row.id, 'no_payment_method', 'No card on file', row.attemptCount + 1)

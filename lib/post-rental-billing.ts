@@ -109,6 +109,7 @@ export type EligibilityReason =
   | 'exempt_role_admin'
   | 'exempt_role_team_admin'
   | 'exempt_per_customer'
+  | 'exempt_invoice_billing'
   | 'grandfathered'
   | 'order_not_completed'
   | 'payment_not_succeeded'
@@ -164,6 +165,13 @@ export function isPostRentalEligible(
   }
   if (order.user.isServiceAreaExempt) {
     return { eligible: false, reason: 'exempt_per_customer' }
+  }
+  // Invoice-billing customers' cards are never auto-charged anywhere in
+  // the system — post-rental fees included. Any rental owed by an
+  // invoice-billing customer must be added to a bundled invoice manually
+  // (admin SR invoice flow / broker self-serve / admin order edit).
+  if (order.user.invoiceBilling) {
+    return { eligible: false, reason: 'exempt_invoice_billing' }
   }
 
   // (5) Grandfathered — installed before rollout date and not opted in.

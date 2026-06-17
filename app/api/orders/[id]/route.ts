@@ -99,6 +99,11 @@ export async function PUT(
             name: true,
             fullName: true,
             stripeCustomerId: true,
+            // CRITICAL: must be selected so the completed branch can
+            // refuse to auto-charge invoice-billing customers. Their cards
+            // may only be charged via the customer-initiated Stripe Payment
+            // Link on a bundled invoice — never automatically here.
+            invoiceBilling: true,
           },
         },
         orderItems: true,
@@ -121,8 +126,24 @@ export async function PUT(
 
     // If order is completed, charge customer and create installation record
     if (status === 'completed') {
-      // Attempt to charge customer's saved payment method
-      if (order.paymentStatus !== 'succeeded') {
+      // Invoice-billing customers are NEVER auto-charged on completion.
+      // Their orders are placed with paymentStatus='pending_invoice' and
+      // must stay that way so they roll up into the next bundled invoice
+      // generated from /admin/invoices or the broker's self-serve flow.
+      // The only path that may charge their card is the customer-initiated
+      // Stripe Payment Link on a bundled invoice — never an admin button.
+      //
+      // Previously this branch only gated on `paymentStatus !== 'succeeded'`,
+      // which matched 'pending_invoice' and silently auto-charged invoice
+      // customers when admin clicked Complete. Double-billed them once the
+      // order also appeared on their invoice + enrolled them in the
+      // post-rental cron's daily auto-charges.
+      if (order.user.invoiceBilling) {
+        console.log(
+          `Order ${order.orderNumber}: skipping auto-charge — user.invoiceBilling=true. ` +
+          `Order will be bundled onto the next invoice (paymentStatus stays as 'pending_invoice').`
+        )
+      } else if (order.paymentStatus !== 'succeeded') {
         try {
           // Get customer's default payment method
           const defaultPaymentMethod = await prisma.paymentMethod.findFirst({

@@ -45,6 +45,19 @@ export async function POST(
       return NextResponse.json({ error: 'Order already paid' }, { status: 400 })
     }
 
+    // Invoice-billing customers' cards must never be charged via an admin
+    // button. Their orders bundle onto an invoice and only the customer's
+    // accountant pays it via the Stripe Payment Link. Refuse with a clear
+    // explanation so admin knows to bundle instead.
+    if (order.user.invoiceBilling) {
+      return NextResponse.json(
+        {
+          error: 'This customer is on invoice billing — cards cannot be charged directly. Bundle this order onto an invoice via /admin/invoices and the customer will pay the bundled invoice.',
+        },
+        { status: 400 },
+      )
+    }
+
     if (!order.user.stripeCustomerId) {
       return NextResponse.json({ error: 'Customer has no Stripe account' }, { status: 400 })
     }
