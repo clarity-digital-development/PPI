@@ -37,6 +37,39 @@ interface TeamInventoryData {
 
 type AssignableType = 'sign' | 'rider' | 'lockbox' | 'brochure_box'
 
+// Collapsed group of identical-and-same-agent items. Built on the client
+// from the per-row inventory the API returns. Ryan asked for "name ×3
+// (agent)" instead of three stacked rows for signs/riders/brochures.
+// Items only collapse when label + code + agent all match — lockboxes
+// (unique codes per record) effectively never bundle.
+interface ItemBundle {
+  key: string
+  label: string
+  code: string | null
+  assignedToMemberId: string | null
+  ids: string[]
+}
+
+function groupTeamItems(items: TeamItem[]): ItemBundle[] {
+  const groups = new Map<string, ItemBundle>()
+  for (const it of items) {
+    const k = `${it.label}|${it.code ?? ''}|${it.assignedToMemberId ?? ''}`
+    const existing = groups.get(k)
+    if (existing) {
+      existing.ids.push(it.id)
+    } else {
+      groups.set(k, {
+        key: k,
+        label: it.label,
+        code: it.code ?? null,
+        assignedToMemberId: it.assignedToMemberId,
+        ids: [it.id],
+      })
+    }
+  }
+  return Array.from(groups.values())
+}
+
 /**
  * Inventory list that truncates visual height to ~5 rows and scrolls within
  * the card instead of expanding it. Keeps the cards balanced on the grid
@@ -296,6 +329,116 @@ export default function InventoryPage() {
       teamInventory.brochureBoxes.length > 0
     )
 
+    // Reassign every item in a bundle to a new agent. Fires N PATCH requests
+    // in parallel (one per id) because the existing /api/teams/inventory PATCH
+    // accepts a single id at a time. Partial failures roll back only the
+    // failed ids and surface a per-bundle error message.
+    const assignBundle = async (
+      type: AssignableType,
+      bundle: ItemBundle,
+      rawValue: string,
+    ) => {
+      if (!teamInventory) return
+      const memberId = rawValue === '' ? null : rawValue
+      if (memberId === bundle.assignedToMemberId) return // no-op
+      const previous = bundle.assignedToMemberId
+      setItemErrors((e) => { const next = { ...e }; delete next[bundle.key]; return next })
+      setSavingItems((s) => ({ ...s, [bundle.key]: true }))
+      // Optimistic — flip every id in the bundle to the new agent locally.
+      for (const id of bundle.ids) updateLocalAssignment(type, id, memberId)
+      try {
+        const results = await Promise.allSettled(
+          bundle.ids.map((id) =>
+            fetch('/api/teams/inventory', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ type, id, memberId }),
+            }).then(async (r) => {
+              if (!r.ok) {
+                const d = await r.json().catch(() => ({}))
+                throw new Error(d.error || 'Failed')
+              }
+            }),
+          ),
+        )
+        const failedCount = results.filter((r) => r.status === 'rejected').length
+        if (failedCount > 0) {
+          // Roll back only the ones that failed (we don't know exactly which
+          // — easiest is to roll the whole bundle and let the user retry).
+          for (const id of bundle.ids) updateLocalAssignment(type, id, previous)
+          throw new Error(
+            failedCount === bundle.ids.length
+              ? `Couldn’t reassign any of ${bundle.ids.length} items — try again`
+              : `Reassigned ${bundle.ids.length - failedCount} of ${bundle.ids.length}; ${failedCount} failed — try again`,
+          )
+        }
+        // Filtered view: re-fetch so items that no longer match drop off.
+        if (agentFilter) {
+          const qs = `?member_id=${encodeURIComponent(agentFilter)}`
+          const refetch = await fetch(`/api/teams/inventory${qs}`)
+          if (refetch.ok) setTeamInventory(await refetch.json())
+        }
+      } catch (err) {
+        setItemErrors((e) => ({
+          ...e,
+          [bundle.key]: err instanceof Error ? err.message : 'Reassign failed',
+        }))
+      } finally {
+        setSavingItems((s) => { const next = { ...s }; delete next[bundle.key]; return next })
+      }
+    }
+
+    // Bundle row — shows "label ×N" with one agent selector that reassigns
+    // every item in the bundle. Used for signs / riders / brochures where
+    // multiple identical items can be assigned to the same agent.
+    const renderBundle = (type: AssignableType, bundle: ItemBundle) => {
+      const saving = !!savingItems[bundle.key]
+      const error = itemErrors[bundle.key]
+      const count = bundle.ids.length
+      return (
+        <li key={bundle.key} className="p-3 bg-gray-50 rounded-lg">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <Package className="w-4 h-4 text-gray-400 flex-shrink-0" />
+              <span className="text-sm text-gray-700 truncate">{bundle.label}</span>
+              {count > 1 && (
+                <span className="text-xs font-semibold text-pink-600 bg-pink-50 border border-pink-200 rounded px-1.5 py-0.5 flex-shrink-0">
+                  ×{count}
+                </span>
+              )}
+              {bundle.code && (
+                <span className="text-xs font-mono bg-gray-200 px-2 py-1 rounded flex-shrink-0">
+                  {bundle.code}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0 min-w-0">
+              {hasMembers && (
+                <SearchableSelect
+                  className="py-1.5 text-sm min-w-[180px]"
+                  options={memberOptions}
+                  value={bundle.assignedToMemberId ?? ''}
+                  disabled={saving}
+                  onChange={(next) => assignBundle(type, bundle, next)}
+                  searchPlaceholder="Search agents..."
+                  aria-label={`Assign ${bundle.label}${count > 1 ? ` (${count} items)` : ''}`}
+                />
+              )}
+            </div>
+          </div>
+          {!hasMembers && (
+            <p className="mt-2 text-xs text-gray-500">
+              <Link href="/dashboard/teams" className="text-pink-600 hover:underline">
+                Add team members on the My Team page
+              </Link>{' '}
+              to assign these items.
+            </p>
+          )}
+          {error && <p className="mt-2 text-xs text-error">{error}</p>}
+        </li>
+      )
+    }
+
     // Reusable item row with an inline assign Select.
     const renderItem = (type: AssignableType, item: TeamItem) => {
       const key = `${type}:${item.id}`
@@ -410,11 +553,14 @@ export default function InventoryPage() {
                     </div>
                   </div>
 
-                  {teamInventory?.signs && teamInventory.signs.length > 0 ? (
-                    <ScrollableList itemCount={teamInventory.signs.length}>
-                      {teamInventory.signs.map((sign) => renderItem('sign', sign))}
-                    </ScrollableList>
-                  ) : (
+                  {teamInventory?.signs && teamInventory.signs.length > 0 ? (() => {
+                    const bundles = groupTeamItems(teamInventory.signs)
+                    return (
+                      <ScrollableList itemCount={bundles.length}>
+                        {bundles.map((b) => renderBundle('sign', b))}
+                      </ScrollableList>
+                    )
+                  })() : (
                     <p className="text-sm text-gray-500 italic">No signs in storage</p>
                   )}
                 </CardContent>
@@ -433,11 +579,14 @@ export default function InventoryPage() {
                     </div>
                   </div>
 
-                  {teamInventory?.riders && teamInventory.riders.length > 0 ? (
-                    <ScrollableList itemCount={teamInventory.riders.length}>
-                      {teamInventory.riders.map((rider) => renderItem('rider', rider))}
-                    </ScrollableList>
-                  ) : (
+                  {teamInventory?.riders && teamInventory.riders.length > 0 ? (() => {
+                    const bundles = groupTeamItems(teamInventory.riders)
+                    return (
+                      <ScrollableList itemCount={bundles.length}>
+                        {bundles.map((b) => renderBundle('rider', b))}
+                      </ScrollableList>
+                    )
+                  })() : (
                     <p className="text-sm text-gray-500 italic">No riders in storage</p>
                   )}
                 </CardContent>
@@ -479,11 +628,14 @@ export default function InventoryPage() {
                     </div>
                   </div>
 
-                  {teamInventory?.brochureBoxes && teamInventory.brochureBoxes.length > 0 ? (
-                    <ScrollableList itemCount={teamInventory.brochureBoxes.length}>
-                      {teamInventory.brochureBoxes.map((box) => renderItem('brochure_box', box))}
-                    </ScrollableList>
-                  ) : (
+                  {teamInventory?.brochureBoxes && teamInventory.brochureBoxes.length > 0 ? (() => {
+                    const bundles = groupTeamItems(teamInventory.brochureBoxes)
+                    return (
+                      <ScrollableList itemCount={bundles.length}>
+                        {bundles.map((b) => renderBundle('brochure_box', b))}
+                      </ScrollableList>
+                    )
+                  })() : (
                     <p className="text-sm text-gray-500 italic">No brochure boxes in storage</p>
                   )}
                 </CardContent>
