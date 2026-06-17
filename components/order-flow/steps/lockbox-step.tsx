@@ -2,6 +2,7 @@
 
 import { Lock, Key, ShoppingCart, X, Package } from 'lucide-react'
 import { Input } from '@/components/ui'
+import { SearchableSelect } from '@/components/ui/SearchableSelect'
 import { cn } from '@/lib/utils'
 import type { StepProps } from '../types'
 import { PRICING } from '../types'
@@ -34,7 +35,11 @@ export function LockboxStep({ formData, updateFormData, inventory, lockboxInstal
         <p className="text-gray-600">Optional - Add a lockbox to your installation.</p>
       </div>
 
-      {/* Inventory lockboxes — listed individually so customer picks WHICH one */}
+      {/* Inventory lockboxes — searchable dropdown instead of a stacked list.
+          Brokers can have many lockboxes (each unique per record because they
+          carry their own code / serial), so a long auto-list pushed the
+          rental / at-property / none options below the fold. Dropdown +
+          search keeps the page compact while letting them filter by code. */}
       {hasStored && (
         <div>
           <div className="flex items-center gap-2 mb-2">
@@ -46,48 +51,54 @@ export function LockboxStep({ formData, updateFormData, inventory, lockboxInstal
           <p className="text-xs text-gray-500 mb-3">
             Pick the specific lockbox you want installed. Install fee: {installFeeLabel}.
           </p>
-          <div className="space-y-2">
-            {storedLockboxes.map((lockbox) => {
-              const isPicked = formData.customer_lockbox_id === lockbox.id
-              const isSentri = lockbox.lockbox_type === 'sentrilock'
-              const label = isSentri ? 'Sentrilock/Supra' : (lockbox.lockbox_type_name || 'Mechanical Lockbox')
-              return (
-                <button
-                  key={lockbox.id}
-                  type="button"
-                  onClick={() => handlePickStored(lockbox)}
-                  className={cn(
-                    'w-full flex items-center gap-4 p-4 rounded-xl border-2 transition-all text-left',
-                    isPicked
-                      ? 'border-pink-500 bg-pink-50'
-                      : 'border-gray-200 hover:border-gray-300'
-                  )}
-                >
-                  <div className={cn(
-                    'flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center',
-                    isPicked ? 'bg-pink-500' : 'bg-gray-100'
-                  )}>
-                    {isSentri
-                      ? <Lock className={cn('w-5 h-5', isPicked ? 'text-white' : 'text-gray-400')} />
-                      : <Key className={cn('w-5 h-5', isPicked ? 'text-white' : 'text-gray-400')} />}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-gray-900">{label}</p>
-                    {lockbox.lockbox_code ? (
-                      <p className="text-sm text-gray-600">
-                        Code / serial: <span className="font-mono font-medium text-gray-900">{lockbox.lockbox_code}</span>
-                      </p>
-                    ) : (
-                      <p className="text-xs text-gray-400">No code on file</p>
-                    )}
-                  </div>
-                  <p className="text-sm font-medium text-pink-600 flex-shrink-0">
-                    {installFeeLabel}
-                  </p>
-                </button>
-              )
+          <SearchableSelect
+            value={formData.customer_lockbox_id || ''}
+            onChange={(next) => {
+              const picked = storedLockboxes.find((lb) => lb.id === next)
+              if (picked) handlePickStored(picked)
+            }}
+            options={storedLockboxes.map((lb) => {
+              const isSentri = lb.lockbox_type === 'sentrilock'
+              const typeLabel = isSentri ? 'Sentrilock/Supra' : (lb.lockbox_type_name || 'Mechanical Lockbox')
+              const codeLabel = lb.lockbox_code ? `Code ${lb.lockbox_code}` : 'No code on file'
+              return { value: lb.id, label: `${typeLabel} — ${codeLabel}` }
             })}
-          </div>
+            placeholder={`Select a lockbox from your inventory (${storedLockboxes.length} available)…`}
+            searchPlaceholder="Filter by type or code…"
+            emptyText="No lockboxes match"
+          />
+          {/* Confirmation card — when a lockbox is picked, show the same
+              visual richness the prior auto-list rows had (icon + code + fee)
+              so the user gets clear feedback that this specific lockbox is
+              the one we'll install. Re-clicking the dropdown above swaps it. */}
+          {(() => {
+            const picked = storedLockboxes.find((lb) => lb.id === formData.customer_lockbox_id)
+            if (!picked) return null
+            const isSentri = picked.lockbox_type === 'sentrilock'
+            const typeLabel = isSentri ? 'Sentrilock/Supra' : (picked.lockbox_type_name || 'Mechanical Lockbox')
+            return (
+              <div className="mt-3 flex items-center gap-4 p-4 rounded-xl border-2 border-pink-500 bg-pink-50">
+                <div className="flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center bg-pink-500">
+                  {isSentri
+                    ? <Lock className="w-5 h-5 text-white" />
+                    : <Key className="w-5 h-5 text-white" />}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-gray-900">{typeLabel}</p>
+                  {picked.lockbox_code ? (
+                    <p className="text-sm text-gray-600">
+                      Code / serial: <span className="font-mono font-medium text-gray-900">{picked.lockbox_code}</span>
+                    </p>
+                  ) : (
+                    <p className="text-xs text-gray-400">No code on file</p>
+                  )}
+                </div>
+                <p className="text-sm font-medium text-pink-600 flex-shrink-0">
+                  {installFeeLabel}
+                </p>
+              </div>
+            )
+          })()}
         </div>
       )}
 
