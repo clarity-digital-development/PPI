@@ -1259,7 +1259,17 @@ export default function CustomerDetailPage() {
             <p className="text-sm text-gray-600 mb-4">
               These items are out on a property. Click &quot;Return to inventory&quot; once the customer has them back.
             </p>
-            <div className="space-y-2">
+            {/* Scroll cutoff after 5 items so a customer with dozens of
+                deployed items doesn't push the rest of the page below the
+                fold. Matches the same treatment the in-storage lists use. */}
+            {(() => {
+              const deployedCount =
+                data.inventory.deployed.signs.length +
+                data.inventory.deployed.riders.length +
+                data.inventory.deployed.lockboxes.length +
+                data.inventory.deployed.brochureBoxes.length
+              return (
+            <div className={deployedCount > 5 ? 'space-y-2 max-h-[280px] overflow-y-auto pr-1 -mr-1' : 'space-y-2'}>
               {data.inventory.deployed.signs.map(item => (
                 <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-lg border border-amber-200">
                   <div className="text-sm">
@@ -1307,6 +1317,8 @@ export default function CustomerDetailPage() {
                 </div>
               ))}
             </div>
+              )
+            })()}
           </CardContent>
         </Card>
       )}
