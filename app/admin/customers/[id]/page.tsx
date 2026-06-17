@@ -582,6 +582,177 @@ export default function CustomerDetailPage() {
           { value: 'unassigned', label: 'Unassigned' },
         ]
 
+        // Group identical items assigned to the same agent into a single
+        // "label ×N" row. Per Ryan: a customer with 50 Metal Frames all on
+        // Laura Grubb should see one bundled row, not 50 stacked rows.
+        // Bundle key = label + code + assignedToMemberId, so:
+        //   - Signs / riders / brochures / Other items with no per-record
+        //     code collapse cleanly by (description, agent).
+        //   - Lockboxes have unique codes per record so each row is its own
+        //     bundle of size 1 (no visual change) — they keep using renderRow.
+        type AdminItem = { id: string; label: string; code?: string | null; assignedToMemberId: string | null }
+        type AdminBundle = { key: string; label: string; code: string | null; assignedToMemberId: string | null; ids: string[] }
+        const groupAdminItems = (items: AdminItem[]): AdminBundle[] => {
+          const groups = new Map<string, AdminBundle>()
+          for (const it of items) {
+            const k = `${it.label}|${it.code ?? ''}|${it.assignedToMemberId ?? ''}`
+            const existing = groups.get(k)
+            if (existing) existing.ids.push(it.id)
+            else groups.set(k, { key: k, label: it.label, code: it.code ?? null, assignedToMemberId: it.assignedToMemberId, ids: [it.id] })
+          }
+          return Array.from(groups.values())
+        }
+
+        // Bundle-aware reassign — uses the existing bulk-reassign endpoint
+        // with N items in one payload (no per-id loop). Inherits the
+        // hold-conflict 409 handling from handleRowReassign.
+        const handleBundleReassign = async (
+          type: 'sign' | 'rider' | 'lockbox' | 'brochure_box' | 'other',
+          bundle: AdminBundle,
+          targetMemberId: string | null,
+        ) => {
+          const keys = bundle.ids.map((id) => `${type}:${id}`)
+          setRowReassigning((prev) => { const next = { ...prev }; for (const k of keys) next[k] = true; return next })
+          try {
+            const res = await fetch(`/api/admin/customers/${id}/inventory/bulk-reassign`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                items: bundle.ids.map((bid) => ({ type, id: bid })),
+                target_member_id: targetMemberId,
+              }),
+            })
+            if (res.ok) {
+              fetchCustomer()
+            } else {
+              const err = await res.json().catch(() => ({}))
+              if (res.status === 409 && err.code === 'items_held') {
+                alert(`One or more of the ${bundle.ids.length} ${bundle.label} items is in an active cart. Release the hold first via Admin → Inventory Holds, then try again.`)
+              } else {
+                alert(err.error || 'Failed to reassign items')
+              }
+            }
+          } catch (error) {
+            console.error('Error bundle-reassigning items:', error)
+            alert('Failed to reassign items')
+          } finally {
+            setRowReassigning((prev) => { const next = { ...prev }; for (const k of keys) delete next[k]; return next })
+          }
+        }
+
+        // Bundle-aware delete — prompts with the count, then fires N DELETEs
+        // in parallel (the existing endpoint is single-item). One fetchCustomer
+        // at the end so the UI doesn't flicker through N partial states.
+        const handleBundleDelete = async (
+          type: 'sign' | 'rider' | 'lockbox' | 'brochure_box' | 'other',
+          bundle: AdminBundle,
+        ) => {
+          const n = bundle.ids.length
+          const ok = confirm(
+            n === 1
+              ? `Delete this ${bundle.label}?`
+              : `Delete all ${n} ${bundle.label} items?`,
+          )
+          if (!ok) return
+          try {
+            await Promise.allSettled(
+              bundle.ids.map((bid) =>
+                fetch(`/api/admin/customers/${id}/inventory?type=${type}&item_id=${bid}`, { method: 'DELETE' }),
+              ),
+            )
+            fetchCustomer()
+          } catch (error) {
+            console.error('Error bundle-deleting items:', error)
+          }
+        }
+
+        // Bundle row — same visuals as renderRow but with a ×N badge, a
+        // checkbox that toggles every id in the bundle (used by the bulk
+        // reassign action bar above), and bundle-aware reassign + delete.
+        const renderBundleRow = (
+          type: 'sign' | 'rider' | 'lockbox' | 'brochure_box' | 'other',
+          bundle: AdminBundle,
+        ) => {
+          const keys = bundle.ids.map((bid) => `${type}:${bid}`)
+          // The whole bundle is "saving" when ANY of its ids is in flight.
+          const saving = keys.some((k) => !!rowReassigning[k])
+          // The whole bundle is "checked" only when EVERY id is in the
+          // selected set; partial selections render unchecked (clicking
+          // selects all).
+          const allChecked = keys.every((k) => selectedItems.has(k))
+          const someChecked = !allChecked && keys.some((k) => selectedItems.has(k))
+          const count = bundle.ids.length
+          return (
+            <li
+              key={bundle.key}
+              className={`p-3 rounded-lg transition-colors ${allChecked ? 'bg-pink-50 ring-1 ring-pink-200' : 'bg-gray-50'}`}
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <label className="flex items-center gap-3 min-w-0 cursor-pointer flex-1">
+                  <input
+                    type="checkbox"
+                    checked={allChecked}
+                    ref={(el) => { if (el) el.indeterminate = someChecked }}
+                    onChange={() => {
+                      // Toggle whole-bundle selection: if all are checked,
+                      // remove all; otherwise add the remaining ones.
+                      setSelectedItems((prev) => {
+                        const next = new Map(prev)
+                        if (allChecked) {
+                          for (const bid of bundle.ids) next.delete(`${type}:${bid}`)
+                        } else {
+                          for (const bid of bundle.ids) next.set(`${type}:${bid}`, { type, id: bid })
+                        }
+                        return next
+                      })
+                    }}
+                    className="w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500 flex-shrink-0"
+                  />
+                  <Package className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                  <span className="text-sm text-gray-700 truncate">{bundle.label}</span>
+                  {count > 1 && (
+                    <span className="text-xs font-semibold text-pink-600 bg-pink-50 border border-pink-200 rounded px-1.5 py-0.5 flex-shrink-0">
+                      ×{count}
+                    </span>
+                  )}
+                  {bundle.code && (
+                    <span className="text-xs font-mono bg-gray-200 px-2 py-1 rounded flex-shrink-0">
+                      {bundle.code}
+                    </span>
+                  )}
+                </label>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <SearchableSelect
+                    className="py-1.5 text-sm min-w-[180px]"
+                    options={memberOptions}
+                    value={bundle.assignedToMemberId ?? ''}
+                    disabled={saving}
+                    onChange={(next) => {
+                      const nextId = next === '' ? null : next
+                      if (nextId === (bundle.assignedToMemberId ?? null)) return
+                      handleBundleReassign(type, bundle, nextId)
+                    }}
+                    searchPlaceholder="Search agents..."
+                    aria-label={`Assign ${bundle.label}${count > 1 ? ` (${count} items)` : ''}`}
+                  />
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      handleBundleDelete(type, bundle)
+                    }}
+                    className="text-gray-400 hover:text-red-500 flex-shrink-0"
+                    title={count > 1 ? `Delete all ${count}` : 'Delete'}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            </li>
+          )
+        }
+
         // Per-row renderer — mirrors /dashboard/inventory:299-341 but adds the bulk checkbox + delete trash for admin.
         const renderRow = (
           type: 'sign' | 'rider' | 'lockbox' | 'brochure_box' | 'other',
@@ -701,13 +872,16 @@ export default function CustomerDetailPage() {
                       <p className="text-sm text-gray-500">{filteredInventory.signs.length} in storage</p>
                     </div>
                   </div>
-                  {filteredInventory.signs.length > 0 ? (
-                    <ul className={filteredInventory.signs.length > 5 ? 'space-y-3 max-h-[280px] overflow-y-auto pr-1 -mr-1' : 'space-y-3'}>
-                      {filteredInventory.signs.map(s => renderRow('sign', {
-                        id: s.id, label: s.description, assignedToMemberId: s.assignedToMemberId,
-                      }))}
-                    </ul>
-                  ) : (
+                  {filteredInventory.signs.length > 0 ? (() => {
+                    const bundles = groupAdminItems(filteredInventory.signs.map((s) => ({
+                      id: s.id, label: s.description, assignedToMemberId: s.assignedToMemberId,
+                    })))
+                    return (
+                      <ul className={bundles.length > 5 ? 'space-y-3 max-h-[280px] overflow-y-auto pr-1 -mr-1' : 'space-y-3'}>
+                        {bundles.map((b) => renderBundleRow('sign', b))}
+                      </ul>
+                    )
+                  })() : (
                     <p className="text-sm text-gray-500 italic">No signs in storage</p>
                   )}
                 </CardContent>
@@ -725,13 +899,16 @@ export default function CustomerDetailPage() {
                       <p className="text-sm text-gray-500">{filteredInventory.riders.length} in storage</p>
                     </div>
                   </div>
-                  {filteredInventory.riders.length > 0 ? (
-                    <ul className={filteredInventory.riders.length > 5 ? 'space-y-3 max-h-[280px] overflow-y-auto pr-1 -mr-1' : 'space-y-3'}>
-                      {filteredInventory.riders.map(r => renderRow('rider', {
-                        id: r.id, label: r.riderName, assignedToMemberId: r.assignedToMemberId,
-                      }))}
-                    </ul>
-                  ) : (
+                  {filteredInventory.riders.length > 0 ? (() => {
+                    const bundles = groupAdminItems(filteredInventory.riders.map((r) => ({
+                      id: r.id, label: r.riderName, assignedToMemberId: r.assignedToMemberId,
+                    })))
+                    return (
+                      <ul className={bundles.length > 5 ? 'space-y-3 max-h-[280px] overflow-y-auto pr-1 -mr-1' : 'space-y-3'}>
+                        {bundles.map((b) => renderBundleRow('rider', b))}
+                      </ul>
+                    )
+                  })() : (
                     <p className="text-sm text-gray-500 italic">No riders in storage</p>
                   )}
                 </CardContent>
@@ -773,13 +950,16 @@ export default function CustomerDetailPage() {
                       <p className="text-sm text-gray-500">{filteredInventory.brochureBoxes.length} in storage</p>
                     </div>
                   </div>
-                  {filteredInventory.brochureBoxes.length > 0 ? (
-                    <ul className={filteredInventory.brochureBoxes.length > 5 ? 'space-y-3 max-h-[280px] overflow-y-auto pr-1 -mr-1' : 'space-y-3'}>
-                      {filteredInventory.brochureBoxes.map(b => renderRow('brochure_box', {
-                        id: b.id, label: b.description || 'Brochure box', assignedToMemberId: b.assignedToMemberId,
-                      }))}
-                    </ul>
-                  ) : (
+                  {filteredInventory.brochureBoxes.length > 0 ? (() => {
+                    const bundles = groupAdminItems(filteredInventory.brochureBoxes.map((b) => ({
+                      id: b.id, label: b.description || 'Brochure box', assignedToMemberId: b.assignedToMemberId,
+                    })))
+                    return (
+                      <ul className={bundles.length > 5 ? 'space-y-3 max-h-[280px] overflow-y-auto pr-1 -mr-1' : 'space-y-3'}>
+                        {bundles.map((b) => renderBundleRow('brochure_box', b))}
+                      </ul>
+                    )
+                  })() : (
                     <p className="text-sm text-gray-500 italic">No brochure boxes in storage</p>
                   )}
                 </CardContent>
@@ -797,13 +977,16 @@ export default function CustomerDetailPage() {
                       <p className="text-sm text-gray-500">{filteredInventory.otherItems.length} in storage</p>
                     </div>
                   </div>
-                  {filteredInventory.otherItems.length > 0 ? (
-                    <ul className={filteredInventory.otherItems.length > 5 ? 'space-y-3 max-h-[280px] overflow-y-auto pr-1 -mr-1' : 'space-y-3'}>
-                      {filteredInventory.otherItems.map(o => renderRow('other', {
-                        id: o.id, label: o.description, assignedToMemberId: o.assignedToMemberId,
-                      }))}
-                    </ul>
-                  ) : (
+                  {filteredInventory.otherItems.length > 0 ? (() => {
+                    const bundles = groupAdminItems(filteredInventory.otherItems.map((o) => ({
+                      id: o.id, label: o.description, assignedToMemberId: o.assignedToMemberId,
+                    })))
+                    return (
+                      <ul className={bundles.length > 5 ? 'space-y-3 max-h-[280px] overflow-y-auto pr-1 -mr-1' : 'space-y-3'}>
+                        {bundles.map((b) => renderBundleRow('other', b))}
+                      </ul>
+                    )
+                  })() : (
                     <p className="text-sm text-gray-500 italic">No other items in storage</p>
                   )}
                 </CardContent>
