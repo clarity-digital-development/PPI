@@ -30,9 +30,14 @@ export default function EditOrderPage() {
   useEffect(() => {
     async function fetchData() {
       try {
-        const [orderRes, inventoryRes, teamsRes] = await Promise.all([
+        // Fetch order + teams first so we know which agent (if any) this order
+        // was placed for — that decides whether to scope inventory by member_id.
+        // Without this scope, a Semonin-style team_admin editing an order would
+        // see their ENTIRE team pool (all 80+ agents' riders/signs) instead of
+        // just the agent the order was placed for — same class of bug Ryan
+        // flagged for cart-rows in place-order/page.tsx:259-263.
+        const [orderRes, teamsRes] = await Promise.all([
           fetch(`/api/orders/${orderId}`),
-          fetch('/api/inventory'),
           fetch('/api/teams'), // 403 for non-team accounts — handled below
         ])
 
@@ -41,12 +46,39 @@ export default function EditOrderPage() {
         }
 
         const orderData = await orderRes.json()
-        const order = orderData.order as OrderLike & { id: string; orderNumber: string; status: string; total: number | string }
+        const order = orderData.order as OrderLike & {
+          id: string
+          orderNumber: string
+          status: string
+          total: number | string
+          placedForAgentName?: string | null
+        }
 
         if (order.status === 'completed' || order.status === 'cancelled') {
           throw new Error('This order can no longer be edited')
         }
 
+        // Resolve the agent (if any) to scope inventory by. The Order schema
+        // only stores the agent's NAME (placedForAgentName, free text — no
+        // placedForMemberId column), so we match by name on the team roster.
+        // Falls back to unscoped if no match — including renames, removed
+        // members, or solo customers without a team.
+        let memberIdScope: string | null = null
+        let teamsData: { team?: { freeLockboxInstall?: boolean }; members?: Array<{ id: string; name: string }> } | null = null
+        if (teamsRes.ok) {
+          teamsData = await teamsRes.json()
+          setFreeLockboxInstall(!!teamsData?.team?.freeLockboxInstall)
+          const targetName = (order.placedForAgentName || '').trim().toLowerCase()
+          if (targetName && Array.isArray(teamsData?.members)) {
+            const match = teamsData.members.find((m) => m.name.trim().toLowerCase() === targetName)
+            if (match) memberIdScope = match.id
+          }
+        }
+
+        const inventoryUrl = memberIdScope
+          ? `/api/inventory?member_id=${encodeURIComponent(memberIdScope)}`
+          : '/api/inventory'
+        const inventoryRes = await fetch(inventoryUrl)
         const rawInventory: WizardInventory | undefined = inventoryRes.ok
           ? await inventoryRes.json()
           : undefined
@@ -57,11 +89,6 @@ export default function EditOrderPage() {
         setInventory(augmentInventoryWithOrder(rawInventory, order))
         setFormData(orderToFormData(order))
         setEditMeta({ orderNumber: order.orderNumber, originalTotal: Number(order.total) })
-
-        if (teamsRes.ok) {
-          const teamsData = await teamsRes.json()
-          setFreeLockboxInstall(!!teamsData.team?.freeLockboxInstall)
-        }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load order')
       } finally {
