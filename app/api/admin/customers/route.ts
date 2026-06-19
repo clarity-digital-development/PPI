@@ -83,6 +83,11 @@ export async function GET(request: NextRequest) {
       rider_count: customer._count.customerRiders,
       lockbox_count: customer._count.customerLockboxes,
       order_count: customer._count.orders,
+      // Billing-contact email (Round 21). The admin invoice bundler shows
+      // this as the default recipient so the "Send to" field can pre-fill
+      // without an extra round-trip when the admin picks a customer.
+      billing_email: customer.billingEmail,
+      invoice_billing: customer.invoiceBilling,
     }))
 
     return NextResponse.json({ customers: customersWithCounts, total })

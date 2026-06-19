@@ -55,7 +55,15 @@ export async function POST(
   }
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'https://pinkposts.com'
-  const recipientEmail = invoice.user.billingEmail || invoice.user.email
+  // Recipient resolution: snapshot first (Round 21). For invoices created
+  // BEFORE Round 21 deployed (recipientEmail is NULL), fall back to the
+  // same create-time resolution the bundler uses today — billingEmail ||
+  // email. The original "drift" concern only applies when a snapshot
+  // exists and disagrees with current billingEmail; for legacy rows the
+  // snapshot doesn't exist at all, so honoring the current billing
+  // contact matches admin expectations everywhere else in Round 21.
+  const recipientEmail: string =
+    invoice.recipientEmail || invoice.user.billingEmail || invoice.user.email
 
   // Best-effort deactivate the old Payment Link so a stale URL can't accept
   // payment after we've issued a new one. Failure is non-fatal — admin may

@@ -3,10 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { audit, AuditAction } from '@/lib/audit'
-import { sendInvoiceEmail } from '@/lib/email'
-import { buildInvoicePdfBytes } from '@/lib/invoices/invoice-pdf'
-import { loadInvoiceDetailForPdf } from '@/lib/invoices/load-detail'
-import { createInvoiceCheckoutSession } from '@/lib/stripe/server'
+import { processInvoiceSendJob } from '@/lib/invoices/send-invoice-job'
 
 /**
  * Admin invoice bundler.
@@ -168,6 +165,11 @@ export async function GET(request: NextRequest) {
       order_count: i._count.orders,
       service_request_count: i._count.serviceRequests,
       created_at: i.createdAt.toISOString(),
+      // Background-worker state for the email-status badge + Resend button.
+      email_status: i.emailStatus,
+      recipient_email: i.recipientEmail,
+      email_error: i.emailError,
+      sending_started_at: i.sendingStartedAt?.toISOString() ?? null,
     })),
   })
 }
@@ -192,16 +194,37 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'startDate must be on or before endDate' }, { status: 400 })
   }
 
+  // Optional one-off recipient override (Round 21). When the admin types a
+  // different address in the "Send to" field, this routes the bundled invoice
+  // there for this send ONLY — without mutating User.billingEmail. Empty
+  // string + null both fall back to the user's default. Validated minimally;
+  // Resend rejects malformed addresses anyway.
+  const recipientEmailOverrideRaw =
+    typeof body.recipientEmailOverride === 'string' ? body.recipientEmailOverride.trim() : null
+  const recipientEmailOverride = recipientEmailOverrideRaw || null
+  if (recipientEmailOverride && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmailOverride)) {
+    return NextResponse.json(
+      { error: 'Recipient email is not a valid address.' },
+      { status: 400 },
+    )
+  }
+
   const customer = await prisma.user.findUnique({
     where: { id: customerId },
     select: { id: true, email: true, fullName: true, name: true, company: true, billingEmail: true },
   })
   if (!customer) return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
 
-  // Where the bundled-invoice email actually lands. Billing-contact email
-  // (admin-set on /admin/customers/[id]) wins so accountants get the bill
-  // directly; account email is the fallback.
-  const recipientEmail = customer.billingEmail || customer.email
+  // Recipient resolution — 3-tier fallback. Snapshotted onto the Invoice row
+  // so the audit log + Resend retry know exactly where the email went, even
+  // if User.billingEmail changes later.
+  const resolvedRecipientEmail =
+    recipientEmailOverride || customer.billingEmail || customer.email
+  const recipientSource: 'override' | 'billing' | 'account' = recipientEmailOverride
+    ? 'override'
+    : customer.billingEmail
+      ? 'billing'
+      : 'account'
 
   // Find every unpaid invoice-billing order AND every completed pending-invoice
   // service-request in range that isn't already on another invoice. The
@@ -257,8 +280,15 @@ export async function POST(request: NextRequest) {
         // Capability token for the public PDF viewer. Generated at bundler
         // time so the email link can include it directly.
         publicPdfToken: generatePublicPdfToken(),
+        // Email-send state — defaults to 'queued'; the background worker
+        // flips it through 'sending' → 'sent' | 'failed' | 'skipped'.
+        emailStatus: 'queued',
+        // Snapshot: the exact address this invoice is targeted to. Trusted
+        // by the worker over any later mutation of User.billingEmail so the
+        // audit log stays honest.
+        recipientEmail: resolvedRecipientEmail,
       },
-      select: { id: true, invoiceNumber: true, total: true, subtotal: true, publicPdfToken: true },
+      select: { id: true, invoiceNumber: true, total: true, subtotal: true, publicPdfToken: true, recipientEmail: true, emailStatus: true },
     })
 
     // Race guard: filter the UPDATE on `invoiceId: null` too, then verify
@@ -304,77 +334,10 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  // Create the Stripe Checkout Session AFTER the transaction commits so the
-  // invoice + bundled rows are definitely persisted before we point Stripe
-  // at this invoice id. If session creation fails, we still let the email
-  // send (without a Pay button) — admin can regenerate later.
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'https://pinkposts.com'
-  let checkoutUrl: string | null = null
-  try {
-    const session = await createInvoiceCheckoutSession({
-      invoiceId: result.invoice.id,
-      invoiceNumber: result.invoice.invoiceNumber,
-      amountInCents: Math.round(Number(result.invoice.total) * 100),
-      customerEmail: customer.email,
-      description: `${result.ordersCount} order(s) + ${result.serviceRequestsCount} service trip(s) — ${startDate.toISOString().slice(0, 10)} → ${endDate.toISOString().slice(0, 10)}`,
-      successUrl: `${baseUrl}/invoice-paid?invoice=${result.invoice.invoiceNumber}`,
-      cancelUrl: `${baseUrl}/invoice-cancelled?invoice=${result.invoice.invoiceNumber}`,
-    })
-    checkoutUrl = session.url
-    await prisma.invoice.update({
-      where: { id: result.invoice.id },
-      data: { checkoutSessionId: session.id, checkoutUrl: session.url },
-    })
-  } catch (stripeErr) {
-    console.error('Invoice checkout-session create failed (email will still send without Pay button):', stripeErr)
-  }
-
-  // Email the customer. Reservation flag stops a double-send if the admin
-  // hits the button twice in quick succession.
-  const reserved = await prisma.invoice.updateMany({
-    where: { id: result.invoice.id, invoiceEmailSentAt: null },
-    data: { invoiceEmailSentAt: new Date() },
-  })
-  if (reserved.count > 0) {
-    try {
-      // Fetch the freshly-bundled invoice with everything the PDF needs, so
-      // the customer gets the document attached and doesn't have to log in
-      // to download it. PDF gen errors are non-fatal — fall back to sending
-      // the email without an attachment so the customer still gets the link.
-      let pdfBytes: Uint8Array | null = null
-      try {
-        const full = await loadInvoiceDetailForPdf(result.invoice.id)
-        if (full) pdfBytes = buildInvoicePdfBytes(full)
-      } catch (pdfErr) {
-        console.error('Invoice PDF generation failed; sending email without attachment:', pdfErr)
-      }
-      await sendInvoiceEmail({
-        invoiceId: result.invoice.id,
-        invoiceNumber: result.invoice.invoiceNumber,
-        customerName: customer.fullName || customer.name || customer.email,
-        customerEmail: recipientEmail,
-        companyName: customer.company,
-        rangeStart: startDate.toISOString().slice(0, 10),
-        rangeEnd: endDate.toISOString().slice(0, 10),
-        total: Number(result.invoice.total),
-        orderCount: result.ordersCount,
-        serviceRequestCount: result.serviceRequestsCount,
-        pdfBytes,
-        pdfUrl: `${baseUrl}/api/invoices/${result.invoice.id}/pdf?token=${result.publicPdfToken}`,
-        payUrl: checkoutUrl,
-        recipientUserId: customerId,
-      })
-    } catch (err) {
-      console.error('Invoice email send failed:', err)
-      await prisma.invoice
-        .updateMany({
-          where: { id: result.invoice.id, invoiceEmailSentAt: { not: null } },
-          data: { invoiceEmailSentAt: null },
-        })
-        .catch(() => {})
-    }
-  }
-
+  // Audit log INTENT — which recipient the admin queued the invoice for.
+  // The worker writes a SEPARATE outcome event (InvoiceEmailSent / Failed /
+  // Skipped) at send time so the trail records both what was queued and
+  // what the customer actually saw.
   await audit({
     actor: { id: user.id, email: user.email, role: user.role },
     action: AuditAction.InvoiceCreated,
@@ -383,10 +346,12 @@ export async function POST(request: NextRequest) {
     metadata: {
       customerId,
       customerEmail: customer.email,
-      // Where the email actually went — billing contact if set, else account.
-      // Useful for debugging "the accountant says they never got the invoice."
-      sentToEmail: recipientEmail,
-      usedBillingEmailOverride: !!customer.billingEmail,
+      // Snapshotted recipient — what the admin TYPED (or the default).
+      sentToEmail: resolvedRecipientEmail,
+      recipientSource,
+      recipientEmailOverride,
+      usedBillingEmailOverride: recipientSource === 'billing',
+      usedRecipientOverride: recipientSource === 'override',
       orderCount: result.ordersCount,
       orderNumbers: result.orderNumbers,
       serviceRequestCount: result.serviceRequestsCount,
@@ -398,6 +363,36 @@ export async function POST(request: NextRequest) {
     request,
   })
 
+  // Fire-and-forget the background worker. Railway runs a long-lived Node
+  // process so the setImmediate'd promise continues to completion after
+  // the HTTP response is sent (unlike serverless/edge runtimes which would
+  // kill it). The whole reason we moved this out of the request handler:
+  // doing Stripe Payment Link + PDF + Resend synchronously took 10-15s and
+  // Safari (+ Railway's gateway) timed out the fetch, leaving Ryan with a
+  // "Load failed" error even when the work succeeded server-side.
+  setImmediate(() => {
+    processInvoiceSendJob({
+      invoiceId: result.invoice!.id,
+      resolvedRecipientEmail,
+      recipientSource,
+      rangeStartIso: startDate.toISOString(),
+      rangeEndIso: endDate.toISOString(),
+    }).catch((err) => {
+      console.error('Background invoice-send job crashed:', err)
+      // Mark failed best-effort so the UI doesn't show "Queued" forever.
+      prisma.invoice
+        .update({
+          where: { id: result.invoice!.id },
+          data: {
+            emailStatus: 'failed',
+            emailError: String(err?.message ?? err).slice(0, 500),
+            sendingStartedAt: null,
+          },
+        })
+        .catch(() => {})
+    })
+  })
+
   return NextResponse.json({
     invoice: {
       id: result.invoice.id,
@@ -405,6 +400,8 @@ export async function POST(request: NextRequest) {
       total: Number(result.invoice.total),
       order_count: result.ordersCount,
       service_request_count: result.serviceRequestsCount,
+      email_status: 'queued',
+      recipient_email: resolvedRecipientEmail,
     },
   })
 }

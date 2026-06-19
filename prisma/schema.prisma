@@ -558,6 +558,27 @@ model Invoice {
   // to keep the "send invoice" call idempotent even if a webhook retries it.
   invoiceEmailSentAt DateTime? @map("invoice_email_sent_at")
 
+  // Background-worker email state (Round 21). The POST /api/admin/invoices
+  // route returns immediately after the DB transaction and a fire-and-forget
+  // worker handles Stripe Payment Link + PDF generation + Resend send. These
+  // columns make the worker's progress observable in the admin UI so failures
+  // don't disappear into the void.
+  emailStatus       InvoiceEmailStatus @default(queued) @map("email_status")
+  // The email address the invoice was actually sent to (snapshot). Set at
+  // creation time from the recipientEmailOverride OR user.billingEmail OR
+  // user.email. The Resend endpoint can atomically overwrite this when the
+  // admin retries to a different address. NEVER re-derive at send time —
+  // always trust the snapshot to keep the audit log faithful.
+  recipientEmail    String?            @map("recipient_email")
+  // Last error from the worker (Stripe / PDF / Resend). Cleared on the next
+  // successful send. Surfaced inline on the admin invoices page so failures
+  // are visible without a tooltip hover.
+  emailError        String?            @map("email_error")
+  // Timestamp when the worker claimed this row (set when emailStatus flips
+  // queued/failed → sending). Used by the startup heal hook to recover rows
+  // left in 'sending' by a process restart mid-job.
+  sendingStartedAt  DateTime?          @map("sending_started_at")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -567,6 +588,9 @@ model Invoice {
 
   @@index([userId])
   @@index([status])
+  // Admin worklist: surface invoices that need retry (failed) or are still
+  // queued/sending so the page can poll only the ones actively transitioning.
+  @@index([emailStatus])
   @@map("invoices")
 }
 
@@ -574,6 +598,23 @@ enum InvoiceStatus {
   sent
   paid
   void
+}
+
+// Background-worker outcome of the invoice email send. Distinct from
+// InvoiceStatus (which tracks the bundle/paid lifecycle).
+enum InvoiceEmailStatus {
+  // Row created, worker not yet started.
+  queued
+  // Worker has claimed the row and is doing Stripe + PDF + Resend.
+  // sendingStartedAt tracks WHEN — admin startup heal hook flips rows
+  // stuck >10min back to 'failed' so a manual Resend can recover them.
+  sending
+  // Resend returned a message id; email is on its way.
+  sent
+  // Worker hit an error somewhere in the pipeline; emailError populated.
+  failed
+  // shouldSendEmail() returned false (recipient opted out of invoice emails).
+  skipped
 }
 
 model OrderItem {

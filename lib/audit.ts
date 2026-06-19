@@ -98,6 +98,18 @@ export const AuditAction = {
   InvoiceCreated:              'invoice.created',
   InvoicePaid:                 'invoice.paid',
   InvoiceVoided:               'invoice.voided',
+  // Email-send lifecycle on a bundled invoice. InvoiceCreated records the
+  // admin's INTENT (which recipient they typed); the three below record the
+  // worker's OUTCOME (what the customer actually saw). Splitting them keeps
+  // the audit log faithful even when a Resend overrides the recipient
+  // between create and send.
+  InvoiceEmailSent:            'invoice.email.sent',
+  InvoiceEmailFailed:          'invoice.email.failed',
+  InvoiceEmailSkipped:         'invoice.email.skipped',
+  // Admin clicked Resend on the invoice list (after a failed or sent state),
+  // optionally with a recipient override. Distinct from InvoiceCreated so
+  // forensic queries can tell first-send vs retry apart.
+  InvoiceResent:               'invoice.resent',
   ServiceAreaBlock:            'service_area.block',
   ServiceAreaSurchargeApplied: 'service_area.surcharge_applied',
   // Policy-notice acceptance — legal trail proving each non-exempt user
