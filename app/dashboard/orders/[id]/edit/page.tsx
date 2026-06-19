@@ -151,6 +151,13 @@ export default function EditOrderPage() {
             second post, lockbox, brochure box, or scheduling. Use the numbered steps
             above to jump straight to a section. Save your changes on the final step.
           </p>
+          <p className="text-sm text-pink-900 mt-2">
+            <strong>Heads up:</strong> if your edit changes the total, the difference is
+            charged to your card on file when you save — you&apos;ll get a receipt by email
+            with the new total. Invoice-billing accounts have the difference folded into
+            the next invoice instead. Refunds (lower total) are processed manually by Pink
+            Posts — we&apos;ll reach out.
+          </p>
         </div>
 
         <OrderWizard

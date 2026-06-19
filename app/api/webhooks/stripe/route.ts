@@ -62,6 +62,19 @@ export async function POST(request: NextRequest) {
       case 'payment_intent.succeeded': {
         const paymentIntent = event.data.object as Stripe.PaymentIntent
 
+        // Order-edit-diff branch — tagged by app/api/orders/[id]/edit with
+        // metadata.kind = 'order_edit_diff'. The DB row for this PI is NOT
+        // on order.paymentIntentId (that still points to the original PI);
+        // it's on order.lastEditPaymentIntentId. The synchronous edit-route
+        // handler already persisted editChargeStatus='charged_diff' before
+        // returning, so this webhook event is purely informational — we ack
+        // it (200) to stop Stripe's exponential retry storm instead of
+        // falling through to the orphan-handler 500.
+        if (paymentIntent.metadata?.kind === 'order_edit_diff') {
+          console.log(`Webhook: payment_intent.succeeded for order-edit-diff PI ${paymentIntent.id} (orderId ${paymentIntent.metadata.orderId}) — ack'd`)
+          return NextResponse.json({ received: true, kind: 'order_edit_diff' })
+        }
+
         // Invoice-payment branch — tagged by app/api/invoices/[id]/pay-intent
         // with metadata.kind = 'invoice'. Flip the Invoice to paid AND every
         // bundled Order's paymentStatus from pending_invoice → succeeded.
@@ -231,6 +244,27 @@ export async function POST(request: NextRequest) {
       case 'payment_intent.payment_failed': {
         const paymentIntent = event.data.object as Stripe.PaymentIntent
 
+        // Order-edit-diff branch — the diff PI is on order.lastEditPaymentIntentId,
+        // not order.paymentIntentId. The sync edit-route catch already handles
+        // off_session synchronous failures; this event covers any async/3DS
+        // post-confirm failures. Flip editChargeStatus so the admin worklist
+        // surfaces it. Don't touch order.paymentStatus or inventory — the
+        // ORIGINAL order is unaffected.
+        if (paymentIntent.metadata?.kind === 'order_edit_diff' && paymentIntent.metadata.orderId) {
+          await prisma.order.updateMany({
+            where: {
+              id: paymentIntent.metadata.orderId,
+              lastEditPaymentIntentId: paymentIntent.id,
+            },
+            data: {
+              editChargeStatus: 'charge_failed',
+              editChargeLastError: `Asynchronous Stripe failure: ${paymentIntent.last_payment_error?.message ?? 'unknown'}`,
+            },
+          })
+          console.log(`Webhook: edit-diff PI ${paymentIntent.id} failed asynchronously — marked order ${paymentIntent.metadata.orderId} editChargeStatus=charge_failed`)
+          break
+        }
+
         await prisma.order.updateMany({
           where: { paymentIntentId: paymentIntent.id },
           data: { paymentStatus: 'failed' },
@@ -244,6 +278,22 @@ export async function POST(request: NextRequest) {
 
       case 'payment_intent.canceled': {
         const paymentIntent = event.data.object as Stripe.PaymentIntent
+
+        // Order-edit-diff: same logic as payment_failed but for explicit cancel.
+        if (paymentIntent.metadata?.kind === 'order_edit_diff' && paymentIntent.metadata.orderId) {
+          await prisma.order.updateMany({
+            where: {
+              id: paymentIntent.metadata.orderId,
+              lastEditPaymentIntentId: paymentIntent.id,
+            },
+            data: {
+              editChargeStatus: 'charge_failed',
+              editChargeLastError: 'Edit-diff PaymentIntent canceled',
+            },
+          })
+          console.log(`Webhook: edit-diff PI ${paymentIntent.id} canceled — marked order ${paymentIntent.metadata.orderId} editChargeStatus=charge_failed`)
+          break
+        }
 
         await prisma.order.updateMany({
           where: { paymentIntentId: paymentIntent.id },

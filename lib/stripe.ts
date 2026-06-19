@@ -75,26 +75,57 @@ export async function setDefaultPaymentMethod(
   })
 }
 
-// Charge a saved payment method
+// Charge a saved payment method. `idempotencyKey` should be set whenever the
+// caller can compute a deterministic key for the operation — Stripe dedupes
+// on it for 24h so an admin double-click, network retry, or two-tab race
+// collapses to a single PaymentIntent. Without a key, identical requests
+// produce identical Stripe charges. The edit-diff path keys on
+// `order-edit-diff:<orderId>:<originalCents>:<newCents>` which uniquely
+// identifies the exact (order, before, after) transition.
 export async function chargePaymentMethod(
   customerId: string,
   paymentMethodId: string,
   amount: number, // in cents
   description: string,
-  metadata?: Record<string, string>
+  metadata?: Record<string, string>,
+  idempotencyKey?: string,
 ): Promise<Stripe.PaymentIntent> {
-  const paymentIntent = await stripe.paymentIntents.create({
-    amount,
-    currency: 'usd',
-    customer: customerId,
-    payment_method: paymentMethodId,
-    off_session: true,
-    confirm: true,
-    description,
-    metadata,
-  })
+  const paymentIntent = await stripe.paymentIntents.create(
+    {
+      amount,
+      currency: 'usd',
+      customer: customerId,
+      payment_method: paymentMethodId,
+      off_session: true,
+      confirm: true,
+      description,
+      metadata,
+    },
+    idempotencyKey ? { idempotencyKey } : undefined,
+  )
 
   return paymentIntent
+}
+
+// Stripe error codes that indicate the saved PaymentMethod is no longer
+// usable at Stripe (detached, expired, deleted). When chargePaymentMethod
+// throws one of these, the caller should mark the local PaymentMethod row
+// stale (isDefault=false) so future charges fall to a "no card on file"
+// outcome instead of retrying the same broken PM forever.
+export const STRIPE_DETACHED_PM_CODES = new Set([
+  'resource_missing',
+  'payment_method_unactivated',
+  'payment_method_invalid',
+  // Card-specific death modes that also warrant detaching locally.
+  'card_declined',
+  'expired_card',
+])
+
+export function isDetachedPaymentMethodError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const e = err as { code?: string; type?: string; raw?: { code?: string } }
+  const code = e.code ?? e.raw?.code
+  return !!code && STRIPE_DETACHED_PM_CODES.has(code)
 }
 
 // Create a payment intent for manual payment

@@ -88,6 +88,23 @@ export default function OrderDetailsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [cancelOpen, setCancelOpen] = useState(false)
+  // Edit-charge toast: review-step.tsx writes the post-save chargeOutcome
+  // here when redirecting from the edit page so we can surface charge_failed
+  // / credit_pending / no_payment_method to the customer without making them
+  // hunt through their email.
+  const [editChargeToast, setEditChargeToast] = useState<{ kind: string; diff?: number; netDiff?: number; cardLast4?: string | null; cardBrand?: string | null } | null>(null)
+  useEffect(() => {
+    if (!orderId) return
+    try {
+      const raw = sessionStorage.getItem(`edit-charge-toast:${orderId}`)
+      if (raw) {
+        setEditChargeToast(JSON.parse(raw))
+        sessionStorage.removeItem(`edit-charge-toast:${orderId}`)
+      }
+    } catch {
+      // sessionStorage unavailable; just skip the toast.
+    }
+  }, [orderId])
 
   async function fetchOrder() {
     if (!orderId) {
@@ -211,6 +228,52 @@ export default function OrderDetailsPage() {
         {/* Complete Payment banner — only renders if order has unresolved payment intent */}
         {order.paymentStatus !== 'succeeded' && order.status !== 'cancelled' && (
           <CompletePaymentButton orderId={order.id} amount={Number(order.total)} />
+        )}
+
+        {/* Edit-charge toast — surfaces the outcome of the most recent edit's
+            diff charge after a save-and-redirect from the edit page. Cleared
+            on next refresh (sessionStorage was consumed on mount). */}
+        {editChargeToast && (
+          <div
+            className={`mb-4 p-4 rounded-xl border ${
+              editChargeToast.kind === 'charged_diff'
+                ? 'bg-green-50 border-green-200 text-green-900'
+                : editChargeToast.kind === 'credit_pending'
+                  ? 'bg-blue-50 border-blue-200 text-blue-900'
+                  : editChargeToast.kind === 'invoice_billing_skip'
+                    ? 'bg-blue-50 border-blue-200 text-blue-900'
+                    : 'bg-amber-50 border-amber-200 text-amber-900'
+            }`}
+          >
+            {editChargeToast.kind === 'charged_diff' && (
+              <p className="text-sm">
+                <strong>Saved.</strong> ${(editChargeToast.netDiff ?? 0).toFixed(2)} charged
+                {editChargeToast.cardBrand && editChargeToast.cardLast4
+                  ? ` to ${editChargeToast.cardBrand.toUpperCase()} •••• ${editChargeToast.cardLast4}`
+                  : ' to card on file'}. Receipt sent by email.
+              </p>
+            )}
+            {editChargeToast.kind === 'credit_pending' && (
+              <p className="text-sm">
+                <strong>Saved.</strong> Refund of ${Math.abs(editChargeToast.diff ?? 0).toFixed(2)} coming back to the card on file within 3–5 business days.
+              </p>
+            )}
+            {editChargeToast.kind === 'invoice_billing_skip' && (
+              <p className="text-sm">
+                <strong>Saved.</strong> Difference of ${Math.abs(editChargeToast.diff ?? 0).toFixed(2)} will be reflected on the next invoice.
+              </p>
+            )}
+            {editChargeToast.kind === 'charge_failed' && (
+              <p className="text-sm">
+                <strong>Saved, but charge failed.</strong> ${Math.abs(editChargeToast.diff ?? 0).toFixed(2)} declined — Pink Posts will reach out to collect.
+              </p>
+            )}
+            {editChargeToast.kind === 'no_payment_method' && (
+              <p className="text-sm">
+                <strong>Saved.</strong> ${Math.abs(editChargeToast.diff ?? 0).toFixed(2)} owed — no card on file. Pink Posts will reach out to collect.
+              </p>
+            )}
+          </div>
         )}
 
         {/* Order Header */}

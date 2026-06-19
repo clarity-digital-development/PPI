@@ -6,11 +6,28 @@ import { validateScheduling } from '@/lib/scheduling'
 import { sendAdminOrderNotification, sendOrderConfirmationEmail } from '@/lib/email'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
 import { audit, AuditAction } from '@/lib/audit'
+import { chargePaymentMethod, isDetachedPaymentMethodError } from '@/lib/stripe'
+import { resolveEffectivePayer } from '@/lib/orders/effective-payer'
 import { z } from 'zod'
 
-// Full edit payload. The order is rebuilt from this (mirrors order creation),
-// but is NOT re-charged — the existing payment intent, fuel surcharge and any
-// applied promo code are preserved. Property/scheduling fields are optional and
+// What happened to the customer's wallet as a result of this edit. The customer
+// email + admin email show a one-liner derived from this so accountants can
+// reconcile without opening Stripe. The `kind` mirrors the EditChargeStatus
+// Prisma enum so it can be persisted directly to order.editChargeStatus.
+type EditChargeOutcome =
+  | { kind: 'no_change' } // diff === 0
+  | { kind: 'invoice_billing_skip'; diff: number } // diff folds into next invoice
+  | { kind: 'charged_diff'; diff: number; paymentIntentId: string; cardLast4: string | null; cardBrand: string | null; netDiff: number; appliedCreditCents: number }
+  | { kind: 'charge_failed'; diff: number; reason: string }
+  | { kind: 'no_payment_method'; diff: number } // diff > 0 but no card on file — admin must collect manually
+  | { kind: 'credit_pending'; diff: number; pendingCreditCentsAfter: number } // diff < 0 — admin issues manual refund via Stripe dashboard
+
+// Full edit payload. The order is rebuilt from this (mirrors order creation).
+// The original payment intent, fuel surcharge, and applied promo code are
+// preserved across the edit, but the DIFF between the old and new total IS
+// charged at save time (positive diff → card on file, negative → flagged for
+// manual refund, invoice-billing → folded into next invoice). See the
+// chargeOutcome branch below. Property/scheduling fields are optional and
 // fall back to the existing order when omitted so partial payloads can't wipe
 // data.
 const editOrderSchema = z.object({
@@ -34,6 +51,11 @@ const editOrderSchema = z.object({
   // Scheduling
   requested_date: z.string().optional(),
   is_expedited: z.boolean().optional(),
+  // Optimistic concurrency token — client sends the order.total it observed
+  // when loading the edit page. Server rejects (409) if the DB value diverges.
+  // Optional for backwards compat: older clients without the token bypass the
+  // check, accepting the last-write-wins behavior they have today.
+  expected_total: z.number().optional(),
 })
 
 const NO_POST_SURCHARGE = 40
@@ -76,6 +98,20 @@ export async function PATCH(
       )
     }
 
+    // Block edits on orders that have already been bundled onto an invoice
+    // (invoiceId set). The invoice has a fixed total + a Stripe Payment Link
+    // generated against the OLD price, so a silent edit would silently drift
+    // both. Per Ryan: rare (most edits happen same-day), and the workflow is
+    // to regenerate the invoice manually. This is a pre-flight check; the
+    // invoice-bundle job could still attach invoiceId between here and the
+    // transaction below, so the tx.order.updateMany also re-checks invoiceId.
+    if (existingOrder.invoiceId) {
+      return NextResponse.json(
+        { error: 'Error: order already invoiced. Please contact 859-395-8188 to make changes.' },
+        { status: 409 }
+      )
+    }
+
     const body = await request.json()
     const validationResult = editOrderSchema.safeParse(body)
 
@@ -87,6 +123,27 @@ export async function PATCH(
     }
 
     const editData = validationResult.data
+
+    // ---- Optimistic concurrency check ----
+    // Client sends expected_total = order.total as seen when the edit page
+    // loaded. If two admins open the same pending order and both save, the
+    // second one's expected_total will mismatch the DB and we 409 them with
+    // a "reload" message. Without this guard, the second save silently
+    // overwrites the first's items AND computes its diff against the first's
+    // post-edit total (wrong baseline → wrong charge). Backwards-compatible:
+    // clients that don't send expected_total skip the check (last-write-wins).
+    if (editData.expected_total !== undefined) {
+      const observedTotal = Number(existingOrder.total)
+      if (Math.abs(observedTotal - editData.expected_total) > 0.01) {
+        return NextResponse.json(
+          {
+            error: `This order changed since you opened the edit page (was $${editData.expected_total.toFixed(2)}, now $${observedTotal.toFixed(2)}). Reload the page and re-apply your changes.`,
+            code: 'concurrent_edit',
+          },
+          { status: 409 }
+        )
+      }
+    }
 
     // Server-side schedule gate. Only apply when the edit actually CHANGES
     // the schedule — otherwise an order placed yesterday couldn't be edited
@@ -131,7 +188,10 @@ export async function PATCH(
       noPostSurcharge = 0
     }
 
-    // ---- Recompute pricing (no re-charge) ----
+    // ---- Recompute pricing ----
+    // The diff between this new total and the existing order.total is charged
+    // (or credit-flagged, or invoice-folded) at save time below — search for
+    // "chargeOutcome" — so admins don't have to chase the gap manually.
     const newSubtotal = editData.items.reduce((sum, item) => sum + item.total_price, 0)
 
     // Fuel surcharge is preserved from the existing order (never re-charged).
@@ -182,6 +242,16 @@ export async function PATCH(
       ? new Date(editData.requested_date + 'T12:00:00Z')
       : null
 
+    // Resolve the effective payer ONCE before the transaction. For
+    // team_admin-on-behalf-of orders the agent is `userId` but the team_admin
+    // is `placedByUserId` and was the human whose card was originally charged
+    // — so any diff charge must hit the team_admin's wallet, not the agent's.
+    const payer = await resolveEffectivePayer({
+      userId: existingOrder.userId,
+      placedByUserId: existingOrder.placedByUserId,
+    })
+
+    let raceLost = false
     const updatedOrder = await prisma.$transaction(async (tx) => {
       // Replace ALL line items (the post is included in items[] as item_type
       // 'post', mirroring order creation)
@@ -224,8 +294,13 @@ export async function PATCH(
       if (newBrochureIds.size)
         await tx.customerBrochureBox.updateMany({ where: { id: { in: Array.from(newBrochureIds) } }, data: { inStorage: false } })
 
-      const order = await tx.order.update({
-        where: { id },
+      // Race-safe: invoice-bundle job (admin/invoices) can stamp invoiceId on
+      // a pending order at any moment via updateMany({ invoiceId: null }).
+      // updateMany with the same predicate here returns count=0 if the bundler
+      // raced us, in which case we throw to roll back the whole transaction
+      // (orderItem deletes, inventory swaps) and 409 the caller.
+      const updateResult = await tx.order.updateMany({
+        where: { id, invoiceId: null },
         data: {
           postTypeId: newPostTypeId,
           // Property
@@ -253,15 +328,211 @@ export async function PATCH(
           tax,
           total,
         },
+      })
+      if (updateResult.count === 0) {
+        // Bundler beat us. Mark for the outer 409 and roll back the tx by throwing.
+        raceLost = true
+        throw new Error('INVOICE_BUNDLE_RACE')
+      }
+
+      const order = await tx.order.findUniqueOrThrow({
+        where: { id },
         include: { orderItems: true, postType: true },
       })
-
       return order
+    }).catch((err) => {
+      if (raceLost) return null
+      throw err
     })
+
+    if (!updatedOrder) {
+      return NextResponse.json(
+        { error: 'Error: order already invoiced. Please contact 859-395-8188 to make changes.' },
+        { status: 409 }
+      )
+    }
 
     console.log(
       `Edited order ${updatedOrder.orderNumber}: restored ${idsToRestore.signs.length} signs, ${idsToRestore.riders.length} riders, ${idsToRestore.lockboxes.length} lockboxes, ${idsToRestore.brochureBoxes.length} brochures; locked ${newSignIds.size} signs, ${newRiderIds.size} riders, ${newLockboxIds.size} lockboxes, ${newBrochureIds.size} brochures; new total $${total.toFixed(2)}`
     )
+
+    // ---- Charge / credit the diff ----
+    // Per Ryan: regular customers should be auto-charged the positive diff at
+    // admin-save time; invoice-billing customers' edits roll up into their
+    // next invoice; negative diffs are logged as credit_pending so admin can
+    // issue the refund manually via Stripe (auto-refund is a v2). Rounded to
+    // cents to avoid 0.001-style float drift triggering nuisance Stripe calls.
+    //
+    // Source of truth precedence:
+    //   1. order.paymentStatus === 'pending_invoice' → invoice-billing skip
+    //      (regardless of user.invoiceBilling, which is mutable post-creation
+    //      and would otherwise double-bill a customer whose flag flipped)
+    //   2. order.paymentStatus !== 'succeeded' AND diff > 0 → flag for manual
+    //      collection: the original wasn't paid so charging just the diff
+    //      would leave the original total unbilled
+    //   3. diff < 0 → accumulate into pendingCreditCents; admin refunds
+    //      manually via Stripe dashboard. Stays on the order so the NEXT
+    //      positive diff nets against it (no overcharge on add-after-remove)
+    //   4. diff > 0 → net against pendingCreditCents first, then charge the
+    //      net to the EFFECTIVE PAYER's card (team_admin if on-behalf-of,
+    //      else order owner) with an idempotency key keyed on
+    //      (orderId, originalCents, newCents) so double-saves collapse
+    const originalTotalCents = Math.round(Number(existingOrder.total) * 100)
+    const newTotalCents = Math.round(Number(updatedOrder.total) * 100)
+    const originalTotal = originalTotalCents / 100
+    const diff = (newTotalCents - originalTotalCents) / 100
+    const existingPendingCreditCents = existingOrder.pendingCreditCents
+
+    let chargeOutcome: EditChargeOutcome = { kind: 'no_change' }
+    let newEditChargeStatus: 'no_change' | 'charged_diff' | 'charge_failed' | 'credit_pending' | 'no_payment_method' | 'invoice_billing_skip' = 'no_change'
+    let newLastEditPaymentIntentId: string | null = null
+    let newEditChargeLastError: string | null = null
+    let newLastEditChargedAt: Date | null = null
+    let pendingCreditCentsAfter = existingPendingCreditCents
+
+    if (diff !== 0) {
+      if (existingOrder.paymentStatus === 'pending_invoice') {
+        chargeOutcome = { kind: 'invoice_billing_skip', diff }
+        newEditChargeStatus = 'invoice_billing_skip'
+      } else if (existingOrder.paymentStatus !== 'succeeded' && diff > 0) {
+        // Original order never fully paid (failed/pending/processing). Don't
+        // try to charge just the diff — leaves the customer underbilled.
+        chargeOutcome = { kind: 'no_payment_method', diff }
+        newEditChargeStatus = 'no_payment_method'
+        newEditChargeLastError = `Original order paymentStatus=${existingOrder.paymentStatus} — never fully collected. Admin must charge the full updated total manually.`
+      } else if (diff < 0) {
+        pendingCreditCentsAfter = existingPendingCreditCents + Math.round(-diff * 100)
+        chargeOutcome = { kind: 'credit_pending', diff, pendingCreditCentsAfter }
+        newEditChargeStatus = 'credit_pending'
+      } else {
+        // diff > 0 and paymentStatus === 'succeeded'. Net against any prior
+        // unresolved credit so admin doesn't get a double-charge complaint
+        // when a remove-then-add edit nets to zero.
+        const diffCents = Math.round(diff * 100)
+        const creditToApplyCents = Math.min(diffCents, existingPendingCreditCents)
+        const netDiffCents = diffCents - creditToApplyCents
+        pendingCreditCentsAfter = existingPendingCreditCents - creditToApplyCents
+
+        if (netDiffCents === 0) {
+          // Pending credit fully covered the diff — no Stripe call.
+          chargeOutcome = {
+            kind: 'charged_diff',
+            diff,
+            paymentIntentId: 'credit_offset',
+            cardLast4: null,
+            cardBrand: null,
+            netDiff: 0,
+            appliedCreditCents: creditToApplyCents,
+          }
+          newEditChargeStatus = 'charged_diff'
+          newLastEditChargedAt = new Date()
+        } else if (!payer || !payer.stripeCustomerId) {
+          chargeOutcome = { kind: 'no_payment_method', diff }
+          newEditChargeStatus = 'no_payment_method'
+          newEditChargeLastError = !payer
+            ? 'Could not resolve order payer (orphaned placedByUserId/userId).'
+            : `Payer ${payer.email} has no Stripe customer on file.`
+          pendingCreditCentsAfter = existingPendingCreditCents
+        } else {
+          const defaultPaymentMethod = await prisma.paymentMethod.findFirst({
+            where: { userId: payer.id, isDefault: true },
+          })
+          if (!defaultPaymentMethod) {
+            chargeOutcome = { kind: 'no_payment_method', diff }
+            newEditChargeStatus = 'no_payment_method'
+            newEditChargeLastError = `${payer.isBroker ? 'Broker' : 'Customer'} ${payer.email} has no card on file.`
+            pendingCreditCentsAfter = existingPendingCreditCents
+          } else {
+            // Idempotency key uniquely identifies the (order, before, after)
+            // transition — Stripe dedupes within 24h so admin double-clicks
+            // / network retries / two-tab races collapse to one PaymentIntent.
+            const idempotencyKey = `order-edit-diff:${updatedOrder.id}:${originalTotalCents}:${newTotalCents}`
+            try {
+              const paymentIntent = await chargePaymentMethod(
+                payer.stripeCustomerId,
+                defaultPaymentMethod.stripePaymentMethodId,
+                netDiffCents,
+                `Order ${updatedOrder.orderNumber} edit — diff charge`,
+                {
+                  orderId: updatedOrder.id,
+                  orderNumber: updatedOrder.orderNumber,
+                  kind: 'order_edit_diff',
+                  originalTotal: originalTotal.toFixed(2),
+                  newTotal: Number(updatedOrder.total).toFixed(2),
+                  payerUserId: payer.id,
+                  appliedCreditCents: creditToApplyCents.toString(),
+                },
+                idempotencyKey,
+              )
+              chargeOutcome = {
+                kind: 'charged_diff',
+                diff,
+                paymentIntentId: paymentIntent.id,
+                cardLast4: defaultPaymentMethod.last4 ?? null,
+                cardBrand: defaultPaymentMethod.brand ?? null,
+                netDiff: netDiffCents / 100,
+                appliedCreditCents: creditToApplyCents,
+              }
+              newEditChargeStatus = 'charged_diff'
+              newLastEditPaymentIntentId = paymentIntent.id
+              newLastEditChargedAt = new Date()
+            } catch (err) {
+              const reason = err instanceof Error ? err.message : 'unknown'
+              console.error(`Edit diff charge failed for order ${updatedOrder.orderNumber}:`, err)
+              // Detached / dead PM: flip the local row stale so future edits
+              // don't keep firing the same broken card. Don't apply credit
+              // since we didn't actually charge.
+              if (isDetachedPaymentMethodError(err)) {
+                try {
+                  await prisma.paymentMethod.update({
+                    where: { id: defaultPaymentMethod.id },
+                    data: { isDefault: false },
+                  })
+                  console.warn(`Marked stale PaymentMethod ${defaultPaymentMethod.id} for user ${payer.id} (detached/declined at Stripe)`)
+                } catch (markErr) {
+                  console.error('Failed to mark detached PM stale:', markErr)
+                }
+                chargeOutcome = { kind: 'no_payment_method', diff }
+                newEditChargeStatus = 'no_payment_method'
+                newEditChargeLastError = `Card on file is no longer usable at Stripe — payer should add a new card. (${reason})`
+              } else {
+                chargeOutcome = { kind: 'charge_failed', diff, reason }
+                newEditChargeStatus = 'charge_failed'
+                newEditChargeLastError = reason
+              }
+              pendingCreditCentsAfter = existingPendingCreditCents
+            }
+          }
+        }
+      }
+    }
+    console.log(`Edit charge outcome for ${updatedOrder.orderNumber}: ${chargeOutcome.kind}${diff !== 0 ? ` (diff $${diff.toFixed(2)}, pendingCreditCents ${existingPendingCreditCents}→${pendingCreditCentsAfter})` : ''}`)
+
+    // Persist chargeOutcome to durable Order columns BEFORE the audit log so
+    // a successful Stripe charge always has a queryable trail even if audit
+    // logging fails. /admin/orders worklist filters on editChargeStatus to
+    // surface charge_failed / no_payment_method / credit_pending orders.
+    try {
+      await prisma.order.update({
+        where: { id: updatedOrder.id },
+        data: {
+          editChargeStatus: newEditChargeStatus,
+          editChargeLastError: newEditChargeLastError,
+          lastEditPaymentIntentId: newLastEditPaymentIntentId,
+          lastEditChargedAt: newLastEditChargedAt,
+          pendingCreditCents: pendingCreditCentsAfter,
+        },
+      })
+    } catch (persistErr) {
+      // If this fails after a successful Stripe charge, money moved but
+      // local state shows the old status. Log loudly so admin can reconcile
+      // via Stripe Dashboard using metadata.orderId.
+      console.error(
+        `CRITICAL: failed to persist editChargeStatus=${newEditChargeStatus} on order ${updatedOrder.orderNumber}` +
+        (newLastEditPaymentIntentId ? ` — Stripe PI ${newLastEditPaymentIntentId} succeeded but is not linked locally.` : ''),
+        persistErr,
+      )
+    }
 
     // Capture before/after deltas so admin can read the audit log and see
     // exactly what changed. Items array is the most common edit (add/remove
@@ -299,6 +570,8 @@ export async function PATCH(
           orderNumber: updatedOrder.orderNumber,
           before: beforeSnapshot,
           after: afterSnapshot,
+          diff,
+          chargeOutcome,
         },
         request,
       })
@@ -311,21 +584,26 @@ export async function PATCH(
     // install crews don't work off the stale original email. Subject is
     // prefixed "[EDITED]" so admin spots the re-send in their inbox.
     // The original email is NOT recalled — Resend doesn't support that —
-    // it just gets superseded by this one. Customer is not re-notified.
-    try {
-      const fullOrder = await prisma.order.findUnique({
-        where: { id: updatedOrder.id },
-        include: {
-          orderItems: true,
-          user: true,
-          postType: { select: { name: true } },
-        },
+    // it just gets superseded by this one.
+    //
+    // Admin + customer email sends each have their OWN try/catch so a
+    // failure in one (Resend hiccup, bounce, rate limit) doesn't suppress
+    // the other. For charge_failed / no_payment_method outcomes, BOTH
+    // recipients need to see the message — admin to act, customer to know.
+    const fullOrder = await prisma.order.findUnique({
+      where: { id: updatedOrder.id },
+      include: {
+        orderItems: true,
+        user: true,
+        postType: { select: { name: true } },
+      },
+    })
+    if (fullOrder) {
+      const assignedAgent = await resolveAssignedAgent({
+        placedForAgentName: fullOrder.placedForAgentName,
+        teamId: fullOrder.user.teamId,
       })
-      if (fullOrder) {
-        const assignedAgent = await resolveAssignedAgent({
-          placedForAgentName: fullOrder.placedForAgentName,
-          teamId: fullOrder.user.teamId,
-        })
+      try {
         await sendAdminOrderNotification({
           orderNumber: fullOrder.orderNumber,
           customerName: fullOrder.user.fullName || fullOrder.user.name || '',
@@ -359,16 +637,47 @@ export async function PATCH(
           assignedAgentPhone: assignedAgent?.phone ?? null,
           isInvoiceBilling: fullOrder.paymentStatus === 'pending_invoice',
           isEdited: true,
+          originalTotal,
+          editChargeOutcome: chargeOutcome,
         })
+      } catch (adminEmailErr) {
+        // Admin email failure shouldn't block the customer email below.
+        console.error('Admin edit notification email failed:', adminEmailErr)
+      }
 
-        // When ADMIN was the editor (vs the customer self-editing), also
-        // notify the broker/customer so they know their order was touched.
-        // Pure self-edits (customer hits Edit on their own order) skip
-        // this — the customer is already aware they made the change.
-        if (user.role === 'admin' && fullOrder.userId !== user.id) {
+      try {
+        // Customer email send conditions:
+        //   1. Admin edited another user's order — original "by support" path
+        //   2. ANY edit that moved the customer's wallet (card charged,
+        //      credit owed, charge failed, no PM) — they need a receipt.
+        //      Without this, a customer self-edit charges their card with
+        //      zero confirmation email — a chargeback magnet.
+        // For invoice-billing skips (no Stripe call) and no_change (no $
+        // delta), self-edits don't get a separate email.
+        const isAdminEditingOther = user.role === 'admin' && fullOrder.userId !== user.id
+        const isWalletImpact =
+          chargeOutcome.kind === 'charged_diff' ||
+          chargeOutcome.kind === 'credit_pending' ||
+          chargeOutcome.kind === 'charge_failed' ||
+          chargeOutcome.kind === 'no_payment_method'
+
+        if (isAdminEditingOther || isWalletImpact) {
+          // Route the receipt to the effective PAYER, not always the order
+          // owner. For team_admin-on-behalf-of orders, the broker paid and
+          // should get the receipt — they're the human accountants will ask.
+          // Falls back to order owner when payer == owner (solo customer).
+          const useBrokerRecipient = !!payer && payer.id !== fullOrder.userId
+          const recipientName = useBrokerRecipient
+            ? payer.fullName
+            : (fullOrder.user.fullName || fullOrder.user.name || '')
+          const recipientEmail = useBrokerRecipient
+            ? payer.email
+            : fullOrder.user.email
+          const recipientUserId = useBrokerRecipient ? payer.id : fullOrder.userId
+
           await sendOrderConfirmationEmail({
-            customerName: fullOrder.user.fullName || fullOrder.user.name || '',
-            customerEmail: fullOrder.user.email,
+            customerName: recipientName,
+            customerEmail: recipientEmail,
             orderNumber: fullOrder.orderNumber,
             propertyAddress: `${fullOrder.propertyAddress}, ${fullOrder.propertyCity}, ${fullOrder.propertyState} ${fullOrder.propertyZip}`,
             total: Number(fullOrder.total),
@@ -379,19 +688,27 @@ export async function PATCH(
             })),
             requestedDate: fullOrder.scheduledDate?.toISOString(),
             installationNotes: fullOrder.propertyNotes || undefined,
-            recipientUserId: fullOrder.userId,
+            recipientUserId,
             isInvoiceBilling: fullOrder.paymentStatus === 'pending_invoice',
-            isEditedBySupport: true,
+            isEditedBySupport: isAdminEditingOther,
+            isSelfEdited: !isAdminEditingOther,
+            originalTotal,
+            editChargeOutcome: chargeOutcome,
           })
         }
+      } catch (customerEmailErr) {
+        console.error('Customer edit notification email failed:', customerEmailErr)
       }
-    } catch (emailErr) {
-      // Email failure is non-fatal — the edit already committed; admin
-      // can still see the updated order in /admin/orders/[id].
-      console.error('Edit notification email failed:', emailErr)
     }
 
-    return NextResponse.json({ order: updatedOrder })
+    // Return chargeOutcome so the admin UI can toast a charge_failed /
+    // no_payment_method / credit_pending warning rather than a generic
+    // success message. /admin/orders/[id]/edit save button reads this.
+    return NextResponse.json({
+      order: updatedOrder,
+      editChargeOutcome: chargeOutcome,
+      pendingCreditCents: pendingCreditCentsAfter,
+    })
   } catch (error) {
     console.error('Error editing order:', error)
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'

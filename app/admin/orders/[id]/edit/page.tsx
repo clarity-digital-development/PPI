@@ -153,6 +153,14 @@ export default function AdminEditOrderPage() {
           section. Save your changes on the final step. The customer will receive an updated confirmation
           email and our install crew will get a fresh [EDITED] notification.
         </p>
+        <p className="text-sm text-pink-900 mt-2">
+          <strong>Charge behavior on save:</strong> for paid orders, the diff is charged to the payer&apos;s
+          card on file (broker for on-behalf-of orders) and the receipt email shows what was charged.
+          Invoice-billing customers (paymentStatus=pending_invoice): diff folds into next invoice, no card
+          hit. Negative diff: flagged as &ldquo;credit pending&rdquo; on the order — issue the refund manually via
+          Stripe and Pink Posts will see it cleared. Failed charges / no card on file: surfaced as red/amber
+          chips on /admin/orders (filter &ldquo;Charge issues&rdquo;).
+        </p>
       </div>
 
       <OrderWizard

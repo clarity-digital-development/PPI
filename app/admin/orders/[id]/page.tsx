@@ -100,6 +100,12 @@ interface Order {
   refundedAt: string | null
   refundedAmount: number | string | null
   cancelledAt: string | null
+  // Edit-time diff charge tracking (Round 19)
+  editChargeStatus: 'no_change' | 'charged_diff' | 'charge_failed' | 'credit_pending' | 'no_payment_method' | 'invoice_billing_skip' | null
+  editChargeLastError: string | null
+  lastEditPaymentIntentId: string | null
+  lastEditChargedAt: string | null
+  pendingCreditCents: number
   user: {
     id: string
     fullName: string | null
@@ -729,6 +735,87 @@ export default function AdminOrderDetailPage() {
                     ${Number(order.total).toFixed(2)}
                   </p>
                 </div>
+
+                {/* Last edit charge — surfaces the outcome of the most
+                    recent order edit's diff charge so admin doesn't have to
+                    open Stripe to reconcile. Only renders when the order
+                    has been edited (editChargeStatus != null). */}
+                {order.editChargeStatus && order.editChargeStatus !== 'no_change' && (
+                  <div className="pt-4 border-t border-gray-100">
+                    <p className="text-sm font-medium text-gray-900 mb-2">Last edit charge</p>
+                    {order.editChargeStatus === 'charged_diff' && (
+                      <div className="text-sm">
+                        <Badge variant="success">Charged</Badge>
+                        {order.lastEditPaymentIntentId && order.lastEditPaymentIntentId !== 'credit_offset' && (
+                          <a
+                            href={`https://dashboard.stripe.com/payments/${order.lastEditPaymentIntentId}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="block mt-2 text-pink-600 hover:text-pink-700 underline text-xs font-mono"
+                          >
+                            {order.lastEditPaymentIntentId.slice(0, 18)}…
+                          </a>
+                        )}
+                        {order.lastEditPaymentIntentId === 'credit_offset' && (
+                          <p className="mt-2 text-xs text-gray-600">Fully covered by prior credit — no Stripe charge.</p>
+                        )}
+                        {order.lastEditChargedAt && (
+                          <p className="mt-1 text-xs text-gray-500">
+                            {new Date(order.lastEditChargedAt).toLocaleString()}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {order.editChargeStatus === 'charge_failed' && (
+                      <div className="text-sm">
+                        <Badge variant="error">Charge failed</Badge>
+                        {order.editChargeLastError && (
+                          <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">
+                            {order.editChargeLastError}
+                          </p>
+                        )}
+                        <p className="mt-2 text-xs text-gray-600">
+                          Collect manually via Stripe dashboard.
+                        </p>
+                      </div>
+                    )}
+                    {order.editChargeStatus === 'no_payment_method' && (
+                      <div className="text-sm">
+                        <Badge variant="warning">No card on file</Badge>
+                        {order.editChargeLastError && (
+                          <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
+                            {order.editChargeLastError}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {order.editChargeStatus === 'credit_pending' && (
+                      <div className="text-sm">
+                        <Badge variant="info">Credit owed</Badge>
+                        <p className="mt-2 text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded p-2">
+                          Customer owed ${(order.pendingCreditCents / 100).toFixed(2)}. Issue refund manually via Stripe dashboard.
+                        </p>
+                      </div>
+                    )}
+                    {order.editChargeStatus === 'invoice_billing_skip' && (
+                      <div className="text-sm">
+                        <Badge variant="neutral">Invoice billing — diff folded into next invoice</Badge>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Pending credit balance (non-zero) — separate from
+                    editChargeStatus because a credit_pending can be partially
+                    consumed by a later positive diff, leaving a residual. */}
+                {order.pendingCreditCents > 0 && order.editChargeStatus !== 'credit_pending' && (
+                  <div className="pt-4 border-t border-gray-100">
+                    <p className="text-sm font-medium text-gray-900 mb-2">Unresolved credit</p>
+                    <p className="text-sm text-blue-700 bg-blue-50 border border-blue-200 rounded p-2">
+                      Customer owed <strong>${(order.pendingCreditCents / 100).toFixed(2)}</strong> from a prior edit. Issue refund manually via Stripe.
+                    </p>
+                  </div>
+                )}
 
                 {/* Show charge card option if payment is not succeeded */}
                 {order.paymentStatus !== 'succeeded' && (

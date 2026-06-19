@@ -987,12 +987,36 @@ export function ReviewStep({
           sign_orientation_other: formData.sign_orientation_other,
           requested_date: formData.requested_date,
           is_expedited: formData.schedule_type === 'expedited',
+          // Optimistic concurrency token — the total we observed at page
+          // load. Server 409s if it doesn't match the current DB value so
+          // two admins editing the same order can't silently overwrite
+          // each other or charge against stale baselines.
+          expected_total: editMeta?.originalTotal,
         }),
       })
 
       const data = await response.json()
       if (!response.ok) {
+        if (response.status === 409 && data.code === 'concurrent_edit') {
+          // Conflict — surface a more useful prompt than the generic error.
+          setError(`${data.error} (Page will reload to show the latest version.)`)
+          setTimeout(() => window.location.reload(), 2500)
+          return
+        }
         throw new Error(data.error || 'Failed to save changes')
+      }
+      // Pass the edit-charge outcome through to the order detail page via
+      // sessionStorage so it can toast a charge_failed / credit_pending /
+      // no_payment_method warning rather than the bland "saved" message.
+      if (data.editChargeOutcome && data.editChargeOutcome.kind !== 'no_change') {
+        try {
+          sessionStorage.setItem(
+            `edit-charge-toast:${orderId}`,
+            JSON.stringify(data.editChargeOutcome),
+          )
+        } catch {
+          // sessionStorage may be unavailable (private mode, quota); ignore.
+        }
       }
       router.push(`/dashboard/orders/${orderId}`)
     } catch (err) {

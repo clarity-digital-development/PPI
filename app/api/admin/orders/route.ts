@@ -19,6 +19,11 @@ export async function GET(request: NextRequest) {
     const customerId = searchParams.get('customer_id')
     const startDate = searchParams.get('start_date')
     const endDate = searchParams.get('end_date')
+    // Edit-charge worklist: ?charge_issues=true filters to orders whose most
+    // recent edit needs admin follow-up — failed Stripe charge, no card on
+    // file, or a credit owed back to the customer awaiting manual refund.
+    // 'charged_diff' and 'invoice_billing_skip' are excluded (no action needed).
+    const chargeIssues = searchParams.get('charge_issues') === 'true'
     const limit = parseInt(searchParams.get('limit') || '50')
     const offset = parseInt(searchParams.get('offset') || '0')
 
@@ -27,6 +32,9 @@ export async function GET(request: NextRequest) {
       ...(customerId ? { userId: customerId } : {}),
       ...(startDate ? { createdAt: { gte: new Date(startDate) } } : {}),
       ...(endDate ? { createdAt: { lte: new Date(endDate) } } : {}),
+      ...(chargeIssues
+        ? { editChargeStatus: { in: ['charge_failed', 'no_payment_method', 'credit_pending'] as Array<'charge_failed' | 'no_payment_method' | 'credit_pending'> } }
+        : {}),
     }
 
     // Total matching count so the admin UI can paginate through every order
@@ -64,6 +72,10 @@ export async function GET(request: NextRequest) {
       created_at: order.createdAt.toISOString(),
       scheduled_date: order.scheduledDate?.toISOString() || null,
       is_expedited: order.isExpedited,
+      edit_charge_status: order.editChargeStatus,
+      edit_charge_last_error: order.editChargeLastError,
+      last_edit_payment_intent_id: order.lastEditPaymentIntentId,
+      pending_credit_cents: order.pendingCreditCents,
       profiles: {
         full_name: order.user.fullName,
         email: order.user.email,

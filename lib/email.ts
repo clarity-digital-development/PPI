@@ -1,6 +1,84 @@
 import { Resend } from 'resend'
 import { shouldSendEmail, logSuppressed, type UserEmailPrefs } from '@/lib/email-preferences'
 
+// Result of the diff charge attempted when admin saves an order edit. Drives
+// the one-liner shown in the customer + admin emails so accountants can
+// reconcile without opening Stripe. Keep in sync with the EditChargeOutcome
+// type in app/api/orders/[id]/edit/route.ts AND the EditChargeStatus Prisma
+// enum.
+export type EditChargeOutcome =
+  | { kind: 'no_change' }
+  | { kind: 'invoice_billing_skip'; diff: number }
+  | { kind: 'charged_diff'; diff: number; paymentIntentId: string; cardLast4: string | null; cardBrand: string | null; netDiff: number; appliedCreditCents: number }
+  | { kind: 'charge_failed'; diff: number; reason: string }
+  | { kind: 'no_payment_method'; diff: number }
+  | { kind: 'credit_pending'; diff: number; pendingCreditCentsAfter: number }
+
+// Builds the inner HTML for the "Change summary" block. Returns '' for
+// no_change or missing originalTotal. Palette is semantically meaningful:
+//   green: money successfully moved (charged or covered by prior credit)
+//   blue:  informational invoice-fold OR refund coming back to you
+//   amber: action required by Pink Posts (no card on file, manual collection)
+//   red:   card was tried and declined
+function renderEditChargeBlock(outcome: EditChargeOutcome | undefined, originalTotal: number | undefined, newTotal: number): string {
+  if (!outcome || outcome.kind === 'no_change' || originalTotal === undefined) return ''
+  const diff = 'diff' in outcome ? outcome.diff : 0
+  const absDiff = Math.abs(diff)
+  const diffSign = diff > 0 ? '+' : '-'
+  const diffLabel = `${diffSign}$${absDiff.toFixed(2)}`
+  let actionLine: string
+  let accent: { bg: string; border: string; text: string }
+  switch (outcome.kind) {
+    case 'charged_diff': {
+      // Two sub-cases: full Stripe charge, or fully-credit-offset (no PI created).
+      const card = outcome.cardBrand && outcome.cardLast4
+        ? ` to ${outcome.cardBrand.toUpperCase()} •••• ${outcome.cardLast4}`
+        : ' to your card on file'
+      const credit = outcome.appliedCreditCents > 0
+        ? ` ($${(outcome.appliedCreditCents / 100).toFixed(2)} applied from your previous credit)`
+        : ''
+      if (outcome.paymentIntentId === 'credit_offset') {
+        actionLine = `<strong>$${absDiff.toFixed(2)} fully covered by your previous credit.</strong> Nothing new was charged.`
+      } else {
+        actionLine = `<strong>$${outcome.netDiff.toFixed(2)} charged${card}.</strong>${credit}`
+      }
+      accent = { bg: '#ECFDF5', border: '#A7F3D0', text: '#065F46' }
+      break
+    }
+    case 'charge_failed':
+      actionLine = `<strong>Card charge for $${absDiff.toFixed(2)} declined.</strong> Pink Posts will reach out at 859-395-8188 to collect — please reply if you'd like to update your card on file.`
+      accent = { bg: '#FEF2F2', border: '#FECACA', text: '#991B1B' }
+      break
+    case 'no_payment_method':
+      actionLine = `<strong>$${absDiff.toFixed(2)} owed.</strong> We don't have a working card on file — please reply or call 859-395-8188 with payment details.`
+      accent = { bg: '#FFFBEB', border: '#FDE68A', text: '#92400E' }
+      break
+    case 'credit_pending':
+      // Refund-coming = blue (informational, good news) — NOT amber, which we
+      // reserve for "Pink Posts needs to act" / "customer owes money".
+      actionLine = `<strong>Refund of $${absDiff.toFixed(2)} coming your way.</strong> We'll process it to your card on file within 3-5 business days. Reply or call 859-395-8188 if you don't see it.`
+      accent = { bg: '#EFF6FF', border: '#BFDBFE', text: '#1E3A8A' }
+      break
+    case 'invoice_billing_skip':
+      actionLine = diff > 0
+        ? `<strong>$${absDiff.toFixed(2)} added to your next invoice.</strong>`
+        : `<strong>$${absDiff.toFixed(2)} credited on your next invoice.</strong>`
+      accent = { bg: '#EFF6FF', border: '#BFDBFE', text: '#1E3A8A' }
+      break
+  }
+  return `
+    <div style="background-color: ${accent.bg}; border: 1px solid ${accent.border}; color: ${accent.text}; padding: 14px 16px; border-radius: 8px; margin: 16px 0; font-size: 14px;">
+      <p style="margin: 0 0 8px; font-size: 15px;"><strong>Change summary</strong></p>
+      <table style="width: 100%; font-size: 14px;">
+        <tr><td style="padding: 2px 0;">Previous total</td><td style="text-align: right; padding: 2px 0;">$${originalTotal.toFixed(2)}</td></tr>
+        <tr><td style="padding: 2px 0;">New total</td><td style="text-align: right; padding: 2px 0;">$${newTotal.toFixed(2)}</td></tr>
+        <tr><td style="padding: 2px 0; border-top: 1px solid ${accent.border};"><strong>Difference</strong></td><td style="text-align: right; padding: 2px 0; border-top: 1px solid ${accent.border};"><strong>${diffLabel}</strong></td></tr>
+      </table>
+      <p style="margin: 10px 0 0;">${actionLine}</p>
+    </div>
+  `
+}
+
 // Lazy initialization to avoid build-time errors
 let resend: Resend | null = null
 
@@ -38,6 +116,18 @@ interface OrderConfirmationEmailProps {
   // support" and a blue banner explains the change. Used by the admin
   // edit flow so brokers know their order was touched.
   isEditedBySupport?: boolean
+  // True when the customer self-edited their own order AND the edit moved
+  // money (charged the card, owed a refund, etc.). Subject becomes "Order
+  // edit receipt" and the banner uses neutral "you updated this order"
+  // wording instead of "by support". Mutually exclusive with isEditedBySupport.
+  isSelfEdited?: boolean
+  // Original (pre-edit) total — drives the change-summary block on edit
+  // emails so accountants can reconcile the diff vs. the new total above.
+  originalTotal?: number
+  // Outcome of the diff charge attempted at edit time — controls the action
+  // line on the change-summary block ("$5 charged to Visa ••••1234",
+  // "$10 credit pending", "added to your next invoice", etc.).
+  editChargeOutcome?: EditChargeOutcome
 }
 
 export async function sendOrderConfirmationEmail({
@@ -53,6 +143,9 @@ export async function sendOrderConfirmationEmail({
   recipientPrefs,
   isInvoiceBilling,
   isEditedBySupport,
+  isSelfEdited,
+  originalTotal,
+  editChargeOutcome,
 }: OrderConfirmationEmailProps) {
   // Pref gate — opt-out short-circuits before any Resend call.
   if (!(await shouldSendEmail(recipientUserId, 'emailOrderConfirmations', recipientPrefs))) {
@@ -81,17 +174,31 @@ export async function sendOrderConfirmationEmail({
       <div style="background-color: white; border-radius: 12px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
         <div style="text-align: center; margin-bottom: 24px;">
           <h1 style="color: #E84A7A; margin: 0;">Pink Posts Installations</h1>
-          <p style="color: #666; margin: 8px 0 0;">${isEditedBySupport ? 'Order Updated by Support' : 'Order Confirmation'}</p>
+          <p style="color: #666; margin: 8px 0 0;">${isEditedBySupport ? 'Order Updated by Support' : isSelfEdited ? 'Order Edit Receipt' : 'Order Confirmation'}</p>
         </div>
 
         ${isEditedBySupport ? `
         <div style="background-color: #DBEAFE; border: 1px solid #93C5FD; color: #1E3A8A; padding: 14px 16px; border-radius: 8px; margin-bottom: 24px; font-size: 14px;">
-          <strong>Order updated by Pink Posts support.</strong> A member of our team made an adjustment to this order on your behalf. The latest details are below — please use this snapshot instead of the original order confirmation. No payment changes have been made.
+          <strong>Order updated by Pink Posts support.</strong> A member of our team made an adjustment to this order on your behalf. The latest details are below — please use this snapshot instead of the original order confirmation.
         </div>
+        ${renderEditChargeBlock(editChargeOutcome, originalTotal, total)}
+        ` : isSelfEdited ? `
+        <div style="background-color: #DBEAFE; border: 1px solid #93C5FD; color: #1E3A8A; padding: 14px 16px; border-radius: 8px; margin-bottom: 24px; font-size: 14px;">
+          <strong>You updated this order.</strong> This is your receipt — the latest details are below. Please use this snapshot instead of the original order confirmation.
+        </div>
+        ${renderEditChargeBlock(editChargeOutcome, originalTotal, total)}
         ` : ''}
 
         <p style="color: #333;">Hi ${customerName},</p>
-        <p style="color: #333;">${isEditedBySupport ? `We just updated order ${orderNumber} on your behalf. Here's the current state:` : (isInvoiceBilling ? `This order has been added to your account and will appear on your next invoice. No payment has been collected yet.` : `Thank you for your order! We've received your request and will begin processing it shortly.`)}</p>
+        <p style="color: #333;">${
+          isEditedBySupport
+            ? `We just updated order ${orderNumber} on your behalf. Here's the current state:`
+            : isSelfEdited
+              ? `Your edits to order ${orderNumber} are saved. Here's the current state:`
+              : (isInvoiceBilling
+                  ? `This order has been added to your account and will appear on your next invoice. No payment has been collected yet.`
+                  : `Thank you for your order! We've received your request and will begin processing it shortly.`)
+        }</p>
 
         <div style="background-color: #FFF0F3; border-radius: 8px; padding: 16px; margin: 24px 0;">
           <p style="margin: 0; color: #666;"><strong>Order Number:</strong> ${orderNumber}</p>
@@ -141,7 +248,11 @@ export async function sendOrderConfirmationEmail({
     to: customerEmail,
     subject: isEditedBySupport
       ? `Order Updated by Support - ${orderNumber}`
-      : isInvoiceBilling ? `Order Added to Invoice - ${orderNumber}` : `Order Confirmation - ${orderNumber}`,
+      : isSelfEdited
+        ? `Order Edit Receipt - ${orderNumber}`
+        : isInvoiceBilling
+          ? `Order Added to Invoice - ${orderNumber}`
+          : `Order Confirmation - ${orderNumber}`,
     html,
   })
 }
@@ -188,6 +299,11 @@ interface AdminNotificationEmailProps {
   // email (without it, install crews work from stale data — items, notes,
   // post type can all change post-placement via /api/orders/[id]/edit).
   isEdited?: boolean
+  // For isEdited=true: pre-edit total and what happened to the diff (charge,
+  // credit-pending, invoice-folded, failed). Drives the "Change summary"
+  // block so admin can reconcile vs Stripe without opening the dashboard.
+  originalTotal?: number
+  editChargeOutcome?: EditChargeOutcome
 }
 
 export async function sendAdminOrderNotification({
@@ -220,6 +336,8 @@ export async function sendAdminOrderNotification({
   assignedAgentPhone,
   isInvoiceBilling,
   isEdited,
+  originalTotal,
+  editChargeOutcome,
 }: AdminNotificationEmailProps) {
   const adminEmail = process.env.ADMIN_EMAIL
   if (!adminEmail) {
@@ -284,6 +402,58 @@ export async function sendAdminOrderNotification({
     ? `\nAssigned Agent: ${assignedAgentName}${assignedAgentPhone ? ` (${assignedAgentPhone})` : ''}`
     : ''
 
+  // Plain-text change summary for edited orders — mirrors the customer-side
+  // block but is text-only for the admin notification. Skipped when there's
+  // no diff to report.
+  let editChangeSummary = ''
+  if (isEdited && editChargeOutcome && editChargeOutcome.kind !== 'no_change' && originalTotal !== undefined) {
+    const diff = 'diff' in editChargeOutcome ? editChargeOutcome.diff : 0
+    const absDiff = Math.abs(diff)
+    const sign = diff > 0 ? '+' : '-'
+    let action = ''
+    switch (editChargeOutcome.kind) {
+      case 'charged_diff': {
+        const card = editChargeOutcome.cardBrand && editChargeOutcome.cardLast4
+          ? `${editChargeOutcome.cardBrand.toUpperCase()} ****${editChargeOutcome.cardLast4}`
+          : 'card on file'
+        const creditNote = editChargeOutcome.appliedCreditCents > 0
+          ? ` (applied $${(editChargeOutcome.appliedCreditCents / 100).toFixed(2)} from prior credit)`
+          : ''
+        if (editChargeOutcome.paymentIntentId === 'credit_offset') {
+          action = `✅ FULLY COVERED by prior credit — no Stripe charge needed${creditNote}.`
+        } else {
+          action = `✅ CHARGED $${editChargeOutcome.netDiff.toFixed(2)} to ${card} (PaymentIntent: ${editChargeOutcome.paymentIntentId})${creditNote}.`
+        }
+        break
+      }
+      case 'charge_failed':
+        action = `❌ CHARGE FAILED for $${absDiff.toFixed(2)} — ${editChargeOutcome.reason}. COLLECT MANUALLY. See /admin/orders worklist filter "Charge issues".`
+        break
+      case 'no_payment_method':
+        action = `⚠️ $${absDiff.toFixed(2)} OWED — no usable card on file. COLLECT MANUALLY.`
+        break
+      case 'credit_pending':
+        action = `⚠️ $${absDiff.toFixed(2)} CREDIT PENDING — issue refund via Stripe dashboard. Total unresolved credit on this order: $${(editChargeOutcome.pendingCreditCentsAfter / 100).toFixed(2)}.`
+        break
+      case 'invoice_billing_skip':
+        action = diff > 0
+          ? `$${absDiff.toFixed(2)} will be added to next invoice (order is pending_invoice).`
+          : `$${absDiff.toFixed(2)} will be credited on next invoice (order is pending_invoice).`
+        break
+    }
+    editChangeSummary = `
+================================================================
+                       CHANGE SUMMARY
+================================================================
+  Previous total: $${originalTotal.toFixed(2)}
+  New total:      $${total.toFixed(2)}
+  Difference:     ${sign}$${absDiff.toFixed(2)}
+
+  ACTION: ${action}
+================================================================
+`
+  }
+
   const text = `
 ${isEdited ? '✏️ ORDER EDITED — use this snapshot, NOT the original email. Items, notes, or post type may have changed since placement.\n\n' : ''}${isEdited ? 'Updated Order Details' : 'New Order Received!'}
 
@@ -302,7 +472,7 @@ Installation Details:${installationDetails}
 
 Order Items:
 ${itemsList}
-
+${editChangeSummary}
 Pricing Breakdown:${pricingBreakdown}
 Total: $${total.toFixed(2)}
 

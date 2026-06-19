@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { Eye, Check, Clock, Truck, XCircle, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Eye, Check, Clock, Truck, XCircle, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react'
 import { Select, Badge, Button } from '@/components/ui'
 
 const PAGE_SIZE = 25
@@ -17,6 +17,10 @@ interface Order {
   total: number
   created_at: string
   scheduled_date: string | null
+  edit_charge_status: 'no_change' | 'charged_diff' | 'charge_failed' | 'credit_pending' | 'no_payment_method' | 'invoice_billing_skip' | null
+  edit_charge_last_error: string | null
+  last_edit_payment_intent_id: string | null
+  pending_credit_cents: number
   profiles: {
     full_name: string
     email: string
@@ -74,13 +78,18 @@ export default function AdminOrdersPage() {
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState('')
+  // Edit-charge worklist toggle — when true, only show orders whose latest
+  // edit needs admin follow-up (charge_failed / no_payment_method / credit_pending).
+  // Matches the email's "see worklist filter" pointer so admin can click
+  // straight from a failed-charge email into the actionable list.
+  const [chargeIssuesOnly, setChargeIssuesOnly] = useState(false)
   const [page, setPage] = useState(0)
   const [total, setTotal] = useState(0)
 
-  // Reset to the first page whenever the status filter changes
+  // Reset to the first page whenever any filter changes
   useEffect(() => {
     setPage(0)
-  }, [statusFilter])
+  }, [statusFilter, chargeIssuesOnly])
 
   useEffect(() => {
     async function fetchOrders() {
@@ -88,6 +97,7 @@ export default function AdminOrdersPage() {
       try {
         const params = new URLSearchParams()
         if (statusFilter) params.set('status', statusFilter)
+        if (chargeIssuesOnly) params.set('charge_issues', 'true')
         params.set('limit', String(PAGE_SIZE))
         params.set('offset', String(page * PAGE_SIZE))
 
@@ -105,7 +115,7 @@ export default function AdminOrdersPage() {
     }
 
     fetchOrders()
-  }, [statusFilter, page])
+  }, [statusFilter, chargeIssuesOnly, page])
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
@@ -136,12 +146,24 @@ export default function AdminOrdersPage() {
           <h1 className="text-2xl font-bold text-gray-900">Orders</h1>
           <p className="text-gray-600">Manage and track all orders</p>
         </div>
-        <div className="w-full md:w-48">
-          <Select
-            options={statusOptions}
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-          />
+        <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+          <Button
+            variant={chargeIssuesOnly ? 'primary' : 'outline'}
+            size="sm"
+            onClick={() => setChargeIssuesOnly((v) => !v)}
+            className="gap-2"
+            title="Show only orders whose latest edit needs follow-up: failed charge, no card on file, or credit owed back to customer"
+          >
+            <AlertTriangle className="w-4 h-4" />
+            {chargeIssuesOnly ? 'Charge issues only · clear' : 'Charge issues'}
+          </Button>
+          <div className="w-full sm:w-48">
+            <Select
+              options={statusOptions}
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+            />
+          </div>
         </div>
       </div>
 
@@ -207,6 +229,21 @@ export default function AdminOrdersPage() {
                         {getStatusIcon(order.status)}
                         {order.status}
                       </Badge>
+                      {order.edit_charge_status === 'charge_failed' && (
+                        <div className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded-full px-2 py-0.5" title={order.edit_charge_last_error ?? 'Charge failed'}>
+                          <AlertTriangle className="w-3 h-3" /> Charge failed
+                        </div>
+                      )}
+                      {order.edit_charge_status === 'no_payment_method' && (
+                        <div className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5" title={order.edit_charge_last_error ?? 'No payment method'}>
+                          <AlertTriangle className="w-3 h-3" /> No card
+                        </div>
+                      )}
+                      {order.edit_charge_status === 'credit_pending' && order.pending_credit_cents > 0 && (
+                        <div className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-full px-2 py-0.5" title="Customer owed a refund — issue manually via Stripe">
+                          Credit ${(order.pending_credit_cents / 100).toFixed(2)}
+                        </div>
+                      )}
                     </td>
                     <td className="px-6 py-4 text-center">
                       <Badge

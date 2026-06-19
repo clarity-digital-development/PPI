@@ -474,6 +474,26 @@ model Order {
   // orders into an Invoice via /admin/invoices.
   invoiceId String? @map("invoice_id")
 
+  // Edit-time diff charge tracking. Set on every order edit; null only on
+  // orders that have never been edited. Drives the admin worklist filter
+  // and survives audit-log failures (the audit row is secondary).
+  editChargeStatus        EditChargeStatus? @map("edit_charge_status")
+  // Free-text error from the most recent failed diff charge (Stripe error
+  // message). Only meaningful when editChargeStatus = 'charge_failed' or
+  // 'no_payment_method'. Cleared on the next successful charge.
+  editChargeLastError     String?           @map("edit_charge_last_error")
+  // PaymentIntent id of the most recent successful diff charge. Lets the
+  // webhook reconcile metadata.kind='order_edit_diff' events by orderId and
+  // gives admin a click-through reference in /admin/orders/[id].
+  lastEditPaymentIntentId String?           @map("last_edit_payment_intent_id")
+  lastEditChargedAt       DateTime?         @map("last_edit_charged_at")
+  // Cumulative negative-diff balance ("we owe customer $X"). Incremented on
+  // each credit_pending edit, decremented manually when admin issues the
+  // Stripe refund. ALSO netted against the next positive diff at edit time so
+  // a customer who lost a $5 rider then later added $10 in services is charged
+  // $5 net rather than charged $10 + still owed $5.
+  pendingCreditCents      Int               @default(0) @map("pending_credit_cents")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -491,6 +511,9 @@ model Order {
   @@index([placedByUserId])
   @@index([cancelledByUserId])
   @@index([invoiceId])
+  // Admin worklist: find orders that need follow-up after a failed/skipped
+  // edit-time diff charge.
+  @@index([editChargeStatus])
   @@map("orders")
 }
 
@@ -608,6 +631,29 @@ enum PaymentStatus {
   // placement. Flips to `succeeded` when the parent Invoice's payment intent
   // succeeds (see app/api/webhooks/stripe handler).
   pending_invoice
+}
+
+// Outcome of the most recent diff charge attempted at order-edit time.
+// Drives the admin worklist filter at /admin/orders and the edit-time
+// receipt email's change-summary block. Kept in sync with the discriminated
+// union EditChargeOutcome in app/api/orders/[id]/edit/route.ts.
+enum EditChargeStatus {
+  // Edit saved with no total change (no Stripe interaction).
+  no_change
+  // Card on file was charged the positive diff successfully. lastEditPaymentIntentId
+  // points to the diff PI in Stripe.
+  charged_diff
+  // Card on file declined / SCA challenge / off_session refused — needs follow-up.
+  charge_failed
+  // Negative diff: customer owed a refund, awaiting manual Stripe-dashboard refund
+  // by admin. pendingCreditCents holds the unresolved amount.
+  credit_pending
+  // Positive diff but no card on file (and never charged off_session). Admin must
+  // collect manually.
+  no_payment_method
+  // Order is on invoice billing (paymentStatus = 'pending_invoice'); the diff is
+  // already reflected in the order.total so it folds into the next bundled invoice.
+  invoice_billing_skip
 }
 
 // ============================================
