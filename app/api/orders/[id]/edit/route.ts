@@ -124,6 +124,49 @@ export async function PATCH(
 
     const editData = validationResult.data
 
+    // ---- Self-edit price-manipulation guard ----
+    // The PATCH body's items[].total_price is currently trusted (same pattern
+    // as order creation at app/api/orders/route.ts:217 — a pre-existing
+    // codebase-wide trust we have not yet untangled). For admin edits that
+    // trust is acceptable: admin is staff and authorized to set prices. For
+    // customer self-edits it is NOT acceptable because the diff feeds Stripe.
+    // Two specific attack shapes are blocked here as defense-in-depth until
+    // server-side price recomputation lands in a follow-up PR:
+    //
+    //   1. Negative diff (refund manufacture): a customer could submit
+    //      items with total_price near 0, producing a large negative diff
+    //      that becomes a credit_pending refund obligation against their card.
+    //   2. Implausible inflation: a customer could also push the total to
+    //      something extreme and either game the netting or simply create
+    //      garbage data — blocked by a 2x-of-original sanity bound below.
+    //
+    // Admin role bypasses both checks (admin can refund or restructure freely).
+    if (user.role !== 'admin') {
+      const claimedSubtotal = editData.items.reduce((sum, item) => sum + item.total_price, 0)
+      const originalTotal = Number(existingOrder.total)
+      // Approximate new total before tax/fees just for the sanity bound. Real
+      // total recomputation happens further down; this is a fast pre-check.
+      const claimedTotalApprox = claimedSubtotal + Number(existingOrder.fuelSurcharge)
+      if (claimedTotalApprox < originalTotal) {
+        return NextResponse.json(
+          {
+            error: 'Please contact Pink Posts at 859-395-8188 to remove items from a paid order — self-edits cannot reduce the total.',
+            code: 'self_edit_negative_diff_blocked',
+          },
+          { status: 403 }
+        )
+      }
+      if (claimedTotalApprox > originalTotal * 2 + 50) {
+        return NextResponse.json(
+          {
+            error: 'This edit more than doubles the order total. Please contact Pink Posts at 859-395-8188 for large adjustments.',
+            code: 'self_edit_implausible_diff_blocked',
+          },
+          { status: 403 }
+        )
+      }
+    }
+
     // ---- Optimistic concurrency check ----
     // Client sends expected_total = order.total as seen when the edit page
     // loaded. If two admins open the same pending order and both save, the
