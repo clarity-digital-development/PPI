@@ -87,6 +87,10 @@ model User {
   // "Add to invoice". Their orders skip Stripe at placement and accumulate
   // until an admin bundles them into an Invoice for collection.
   invoiceBilling      Boolean  @default(false) @map("invoice_billing")
+  // CR2 (Round 22): admin-toggle that bills this account a single flat fee per
+  // order ($66.07 = $60 base + $2.47 fuel + 6% tax) regardless of items chosen.
+  // Enforced server-side at order create/edit; items still flow to fulfillment.
+  flatFeeBilling      Boolean  @default(false) @map("flat_fee_billing")
   // Optional billing-contact email — when set, bundled-invoice emails go
   // here instead of the broker's account email. Lets a broker route bills
   // to their accountant without forwarding. Falls back to `email` when null.
@@ -420,6 +424,10 @@ model Order {
   // Out-of-area surcharge: $50 (5000 cents) when ZIP falls in surcharge band of nearest center.
   serviceAreaSurchargeCents Int     @default(0) @map("service_area_surcharge_cents")
   serviceAreaCenterId       String? @map("service_area_center_id")
+  // CR4 (Round 22): true when this order was priced as a flat-fee order (payer
+  // had flatFeeBilling at creation). Frozen on the order so edits recompute as
+  // flat (no diff-charge) and invoices/reporting can identify clamped orders.
+  flatFeeApplied            Boolean @default(false) @map("flat_fee_applied")
   expediteFee               Decimal @default(0) @map("expedite_fee") @db.Decimal(10, 2)
   discount                  Decimal @default(0) @db.Decimal(10, 2)
   tax                       Decimal @default(0) @db.Decimal(10, 2)

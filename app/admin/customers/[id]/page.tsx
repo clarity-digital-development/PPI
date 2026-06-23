@@ -17,6 +17,7 @@ interface CustomerData {
     role: 'customer' | 'team_admin' | 'admin'
     is_service_area_exempt?: boolean
     invoice_billing?: boolean
+    flat_fee_billing?: boolean
   }
   team: {
     id: string
@@ -112,6 +113,7 @@ export default function CustomerDetailPage() {
     role: 'customer' | 'team_admin' | 'admin'
     is_service_area_exempt: boolean
     invoice_billing: boolean
+    flat_fee_billing: boolean
     billing_email: string
   }>({
     full_name: '',
@@ -121,6 +123,7 @@ export default function CustomerDetailPage() {
     role: 'customer',
     is_service_area_exempt: false,
     invoice_billing: false,
+    flat_fee_billing: false,
     billing_email: '',
   })
   const [saving, setSaving] = useState(false)
@@ -165,6 +168,7 @@ export default function CustomerDetailPage() {
           role: data.customer.role,
           is_service_area_exempt: data.customer.is_service_area_exempt ?? false,
           invoice_billing: data.customer.invoice_billing ?? false,
+          flat_fee_billing: data.customer.flat_fee_billing ?? false,
           billing_email: data.customer.billing_email || '',
         })
       }
@@ -189,6 +193,7 @@ export default function CustomerDetailPage() {
           role: editData.role,
           is_service_area_exempt: editData.is_service_area_exempt,
           invoice_billing: editData.invoice_billing,
+          flat_fee_billing: editData.flat_fee_billing,
           billing_email: editData.billing_email,
         }),
       })
@@ -1673,6 +1678,24 @@ export default function CustomerDetailPage() {
                 <span className="font-medium text-gray-700">Pay on invoice (no charge at checkout)</span>
                 <span className="block text-xs text-gray-500">
                   This customer&apos;s orders <strong>and service-trip charges</strong> are placed without a Stripe charge and accumulate as <em>Pending invoice</em>. The Invoice action on each service request will say &quot;Add to invoice&quot; instead of &quot;Charge card.&quot; Bundle and send invoices from <strong>/admin/invoices</strong> (or the broker can self-serve from <strong>/dashboard/order-history</strong>).
+                </span>
+              </span>
+            </label>
+          </div>
+          {/* CR4: flat-fee billing — every order for this account is a flat
+              $66.07 regardless of items chosen. Enforced server-side. */}
+          <div>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={editData.flat_fee_billing}
+                onChange={(e) => setEditData({ ...editData, flat_fee_billing: e.target.checked })}
+                className="mt-0.5 w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
+              />
+              <span className="text-sm">
+                <span className="font-medium text-gray-700">Flat-fee billing ($66.07 per order)</span>
+                <span className="block text-xs text-gray-500">
+                  Every order for this account is charged a flat <strong>$66.07</strong> ($60 base + $2.47 gas + 6% tax) regardless of what&apos;s selected — expedite, no-post, promo, and out-of-area fees are suppressed. Items still flow to fulfillment and service requests as normal.
                 </span>
               </span>
             </label>

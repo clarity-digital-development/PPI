@@ -8,6 +8,7 @@ import { createPaymentIntent, createCustomer, calculateTax, getStripeErrorMessag
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 import { resolveServiceArea } from '@/lib/service-area'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
+import { computeFlatFeePricing } from '@/lib/orders/pricing'
 
 const FUEL_SURCHARGE = 2.47
 const NO_POST_SURCHARGE = 40
@@ -317,7 +318,23 @@ export async function POST(request: NextRequest) {
       taxCalculationMethod = 'fallback'
     }
 
-    const total = discountedSubtotal + actualFuelSurcharge + expediteFee + noPostSurcharge + tax
+    const computedTotal = discountedSubtotal + actualFuelSurcharge + expediteFee + noPostSurcharge + tax
+
+    // CR4 (Round 22): flat-fee accounts pay a fixed $66.07 regardless of items
+    // selected. Enforced HERE on the server (item totals are client-trusted, so
+    // the UI alone can't be authoritative). Real items are still persisted below
+    // for fulfillment; only the money fields are clamped. Suppresses expedite,
+    // no-post, promo discount, and the out-of-area surcharge.
+    const isFlatFee = !!payer.flatFeeBilling
+    const flat = isFlatFee ? computeFlatFeePricing() : null
+    const finalSubtotal = flat ? flat.subtotal : subtotal
+    const finalDiscount = flat ? 0 : discount
+    const finalFuelSurcharge = flat ? flat.fuelSurcharge : actualFuelSurcharge
+    const finalNoPostSurcharge = flat ? 0 : noPostSurcharge
+    const finalExpediteFee = flat ? 0 : expediteFee
+    const finalTax = flat ? flat.tax : tax
+    const total = flat ? flat.total : computedTotal
+    const finalServiceAreaSurchargeCents = flat ? 0 : (sa.tier === 'surcharge' ? sa.surchargeCents : 0)
 
     // Invoice-billing payers skip the Stripe charge at checkout — their orders
     // accumulate as pending_invoice and an admin collects via /admin/invoices.
@@ -445,18 +462,20 @@ export async function POST(request: NextRequest) {
         installationLocation: orderData.installation_location,
         scheduledDate: orderData.requested_date ? new Date(orderData.requested_date + 'T12:00:00Z') : null,
         isExpedited: orderData.is_expedited,
-        subtotal,
-        fuelSurcharge: actualFuelSurcharge,
-        noPostSurcharge,
+        subtotal: finalSubtotal,
+        fuelSurcharge: finalFuelSurcharge,
+        noPostSurcharge: finalNoPostSurcharge,
         // CR2: no PPI post in the ground (agent's own post / no post) ⇒ no
         // recurring post-rental. Mirrors the noPostSurcharge condition.
         postRentalDisabled: !orderData.post_type,
-        expediteFee,
-        discount,
-        tax,
+        expediteFee: finalExpediteFee,
+        discount: finalDiscount,
+        tax: finalTax,
         total,
+        // CR4: mark flat-fee orders so edits recompute as flat (no diff-charge).
+        flatFeeApplied: isFlatFee,
         // WHY: persist actual surcharge so reporting + invoice math match what the customer paid.
-        serviceAreaSurchargeCents: sa.tier === 'surcharge' ? sa.surchargeCents : 0,
+        serviceAreaSurchargeCents: finalServiceAreaSurchargeCents,
         serviceAreaCenterId: sa.decidedBy?.centerId ?? null,
         promoCodeId,
         paymentIntentId: paymentIntent?.id || null,

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser, generateOrderNumber } from '@/lib/auth-utils'
 import { createPaymentIntent, createCustomer, getStripeErrorMessage, stripe } from '@/lib/stripe/server'
-import { computeOrderPricing } from '@/lib/orders/pricing'
+import { computeOrderPricing, computeFlatFeePricing } from '@/lib/orders/pricing'
 import { claimHoldsInTx, HoldConflictError, releaseHolds, type HoldClaim } from '@/lib/inventory-holds'
 import { validateScheduling } from '@/lib/scheduling'
 import crypto from 'node:crypto'
@@ -191,11 +191,16 @@ export async function POST(request: NextRequest) {
         postTypeId = pt.id
       }
 
-      const pricing = computeOrderPricing({
-        items: o.items,
-        hasPostType: !!o.post_type,
-        isExpedited: !!o.is_expedited,
-      })
+      // CR4 (Round 22): flat-fee accounts pay a fixed $66.07 per order
+      // regardless of items. Clamp here so grandTotal, the PaymentIntent, and
+      // the persisted totals are all flat; real items still flow to fulfillment.
+      const pricing = actor.flatFeeBilling
+        ? computeFlatFeePricing()
+        : computeOrderPricing({
+            items: o.items,
+            hasPostType: !!o.post_type,
+            isExpedited: !!o.is_expedited,
+          })
 
       // Build the claim list for this order from any hold_ids the cart sent.
       const claims: HoldClaim[] = []
@@ -357,8 +362,12 @@ export async function POST(request: NextRequest) {
               discount: c.pricing.discount,
               tax: c.pricing.tax,
               total: c.pricing.total,
+              // CR4: mark flat-fee orders so edits recompute as flat (no diff).
+              flatFeeApplied: !!actor.flatFeeBilling,
               // WHY: persist actual surcharge so reporting + invoice math match what the customer paid.
-              serviceAreaSurchargeCents: c.serviceArea.tier === 'surcharge' ? c.serviceArea.surchargeCents : 0,
+              serviceAreaSurchargeCents: actor.flatFeeBilling
+                ? 0
+                : c.serviceArea.tier === 'surcharge' ? c.serviceArea.surchargeCents : 0,
               serviceAreaCenterId: c.serviceArea.decidedBy?.centerId ?? null,
               paymentIntentId: null,
               paymentStatus: isInvoiceBilling ? 'pending_invoice' : 'pending',

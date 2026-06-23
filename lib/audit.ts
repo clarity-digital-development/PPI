@@ -95,6 +95,7 @@ export const AuditAction = {
   ServiceCenterDelete:         'service_center.delete',
   UserExemptToggle:            'user.service_area_exempt_toggle',
   UserInvoiceBillingToggle:    'user.invoice_billing_toggle',
+  UserFlatFeeBillingToggle:    'user.flat_fee_billing_toggle',
   InvoiceCreated:              'invoice.created',
   InvoicePaid:                 'invoice.paid',
   InvoiceVoided:               'invoice.voided',

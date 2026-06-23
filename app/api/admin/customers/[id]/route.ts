@@ -203,6 +203,7 @@ export async function GET(
         role: customer.role,
         is_service_area_exempt: customer.isServiceAreaExempt,
         invoice_billing: customer.invoiceBilling,
+        flat_fee_billing: customer.flatFeeBilling,
         billing_email: customer.billingEmail,
       },
       team,
@@ -344,6 +345,23 @@ export async function PUT(
       }
     }
 
+    // CR4: flat-fee billing toggle — same audited-delta pattern as above.
+    let flatFeeBillingAudit: { from: boolean; to: boolean } | null = null
+    if (body.flat_fee_billing !== undefined) {
+      const nextFlatFee = Boolean(body.flat_fee_billing)
+      const cur = await prisma.user.findUnique({
+        where: { id },
+        select: { flatFeeBilling: true },
+      })
+      if (!cur) {
+        return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
+      }
+      if (cur.flatFeeBilling !== nextFlatFee) {
+        updateData.flatFeeBilling = nextFlatFee
+        flatFeeBillingAudit = { from: cur.flatFeeBilling, to: nextFlatFee }
+      }
+    }
+
     let roleChangeAudit: { from: string; to: AllowedRole } | null = null
     if (body.role !== undefined) {
       // Defense in depth: even though the route is already gated to admins
@@ -438,6 +456,17 @@ export async function PUT(
         targetType: 'user',
         targetId: customer.id,
         metadata: { email: customer.email, ...invoiceBillingAudit },
+        request,
+      })
+    }
+
+    if (flatFeeBillingAudit) {
+      await audit({
+        actor: { id: user.id, email: user.email, role: user.role },
+        action: AuditAction.UserFlatFeeBillingToggle,
+        targetType: 'user',
+        targetId: customer.id,
+        metadata: { email: customer.email, ...flatFeeBillingAudit },
         request,
       })
     }
