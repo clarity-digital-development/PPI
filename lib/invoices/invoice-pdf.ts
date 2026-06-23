@@ -32,7 +32,11 @@ export interface InvoiceOrder {
   property_city: string
   property_state: string
   property_zip: string
+  subtotal: number
   total: number
+  // CR4: flat-fee orders bill a single line ($60 base; fuel + tax show in the
+  // invoice Total) instead of the real à-la-carte items.
+  flat_fee_applied: boolean
   placed_for_agent_name: string | null
   items: InvoiceItem[]
 }
@@ -218,7 +222,12 @@ export function buildInvoicePdfDoc(invoice: InvoiceDetail): jsPDF {
   for (const o of invoice.orders) {
     const addr = formatAddress(o.property_address, o.property_city, o.property_state, o.property_zip)
     const agent = o.placed_for_agent_name || '—'
-    if (o.items.length === 0) {
+    if (o.flat_fee_applied) {
+      // CR4: one flat line at the order subtotal ($60); the $2.47 fuel + 6% tax
+      // are reflected in the invoice Total below, so line items reconcile to the
+      // invoice Subtotal.
+      rows.push([o.order_number, fmtDate(o.created_at), addr, agent, 'Flat Installation Fee', '1', fmtCurrency(o.subtotal), fmtCurrency(o.subtotal)])
+    } else if (o.items.length === 0) {
       rows.push([o.order_number, fmtDate(o.created_at), addr, agent, '(order)', '', '', fmtCurrency(o.total)])
     } else {
       o.items.forEach((it, idx) => {

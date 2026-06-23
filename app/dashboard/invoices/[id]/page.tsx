@@ -279,14 +279,18 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
                       <p className="text-xs text-pink-600 mt-1">Agent: {o.placed_for_agent_name}</p>
                     )}
                     <ul className="mt-2 text-xs text-gray-600 space-y-0.5">
-                      {o.items.map((it, idx) => (
-                        <li key={idx}>
-                          • {it.description}
-                          {it.quantity > 1 ? ` ×${it.quantity}` : ''}
-                          {it.quantity > 1 && ` — ${formatCurrency(it.unit_price)} ea`}
-                          {' — '}{formatCurrency(it.total_price)}
-                        </li>
-                      ))}
+                      {o.flat_fee_applied ? (
+                        <li>• Flat Installation Fee — {formatCurrency(o.subtotal)} (+ gas &amp; tax)</li>
+                      ) : (
+                        o.items.map((it, idx) => (
+                          <li key={idx}>
+                            • {it.description}
+                            {it.quantity > 1 ? ` ×${it.quantity}` : ''}
+                            {it.quantity > 1 && ` — ${formatCurrency(it.unit_price)} ea`}
+                            {' — '}{formatCurrency(it.total_price)}
+                          </li>
+                        ))
+                      )}
                     </ul>
                   </div>
                 ))}

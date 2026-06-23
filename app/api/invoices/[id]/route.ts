@@ -65,7 +65,9 @@ export async function GET(
         property_city: o.propertyCity,
         property_state: o.propertyState,
         property_zip: o.propertyZip,
+        subtotal: Number(o.subtotal),
         total: Number(o.total),
+        flat_fee_applied: o.flatFeeApplied,
         placed_for_agent_name: o.placedForAgentName,
         items: o.orderItems.map((it) => ({
           description: it.description,
