@@ -37,6 +37,7 @@ export type ResolveReason =
   | 'zip_not_in_centroid_dataset'
   | 'no_active_centers'
   | 'all_centers_out_of_area'
+  | 'zip_override'
 
 export interface ResolveInput {
   zip: string | null | undefined
@@ -142,6 +143,22 @@ export async function resolveServiceArea(input: ResolveInput): Promise<ResolveRe
   const zip = normalizeZip(input.zip)
   if (!zip) {
     return { tier: 'out_of_area', surchargeCents: 0, contactPhone: DEFAULT_PHONE, reason: 'zip_invalid_format' }
+  }
+
+  // 2b. Explicit ZIP override (CR1 / Round 22). Authoritative for ZIPs the
+  // straight-line model gets wrong (e.g. Danville 40422 ~53min real drive but
+  // ~34 estimated). Consulted before the distance model; exempt users above
+  // already bypassed it. A missing/inactive row falls through to the model.
+  const override = await prisma.serviceAreaZipOverride.findUnique({ where: { zip } })
+  if (override && override.isActive) {
+    if (override.tier === 'out_of_area') {
+      return { tier: 'out_of_area', surchargeCents: 0, contactPhone: DEFAULT_PHONE, reason: 'zip_override' }
+    }
+    if (override.tier === 'standard') {
+      return { tier: 'standard', surchargeCents: 0, reason: 'zip_override' }
+    }
+    // default: 'surcharge'
+    return { tier: 'surcharge', surchargeCents: override.surchargeCents, reason: 'zip_override' }
   }
 
   // 3. ZIP centroid lookup.

@@ -1022,6 +1022,25 @@ model ServiceCenter {
   @@map("service_centers")
 }
 
+// Explicit per-ZIP service-area overrides (CR1 / Round 22). The straight-line
+// haversine distance model under-predicts drive time for some rural corridors
+// (e.g. Danville 40422 estimates ~34 min but is a ~53 min real drive), so those
+// ZIPs never trip the surcharge band. resolveServiceArea() consults this list
+// AFTER the exempt fast-path but BEFORE the distance model, so a listed ZIP is
+// authoritative. tier is one of 'surcharge' | 'out_of_area' | 'standard'.
+model ServiceAreaZipOverride {
+  zip            String   @id @db.VarChar(5)
+  tier           String   @default("surcharge")
+  surchargeCents Int      @default(5000) @map("surcharge_cents")
+  note           String?
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([isActive])
+  @@map("service_area_zip_overrides")
+}
+
 // ============================================
 // Post-Rental Billing
 // ============================================
