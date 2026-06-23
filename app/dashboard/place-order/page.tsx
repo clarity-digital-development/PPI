@@ -82,6 +82,9 @@ function PlaceOrderPageInner() {
   const [hasTeam, setHasTeam] = useState(false)
   // Per-broker perk: owned-lockbox install is free for this team.
   const [freeLockboxInstall, setFreeLockboxInstall] = useState(false)
+  // CR4: flat-fee account — the review screen shows the flat $66.07 instead of
+  // itemized pricing (the server clamps the charge regardless).
+  const [flatFee, setFlatFee] = useState(false)
   const [selectedMember, setSelectedMember] = useState<TeamMember | null>(null)
   const [memberInventory, setMemberInventory] = useState<Inventory | undefined>()
   const [memberInventoryLoading, setMemberInventoryLoading] = useState(false)
@@ -143,6 +146,7 @@ function PlaceOrderPageInner() {
           const data = await profileRes.json()
           role = data.user?.role || null
           setCurrentUserRole(role)
+          setFlatFee(!!data.user?.flat_fee_billing)
         }
 
         if (agentRes && agentRes.ok) {
@@ -262,6 +266,7 @@ function PlaceOrderPageInner() {
                   // was the source of Ryan's "every rider showed up" bug).
                   placedForMemberId={selectedMember.id}
                   lockboxInstallFee={freeLockboxInstall ? 0 : undefined}
+                  flatFee={flatFee}
                 />
               )}
             </>
@@ -407,6 +412,7 @@ function PlaceOrderPageInner() {
               initialFormData={editingItem?.formData}
               editingCartItemId={editingItem?.id}
               lockboxInstallFee={editingItem && freeLockboxInstall ? 0 : undefined}
+              flatFee={flatFee}
             />
           </>
         )}

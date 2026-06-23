@@ -11,6 +11,7 @@ import { useCart } from '@/lib/cart'
 import { lockboxDescriptionSuffix } from '@/lib/orders/lockbox-description'
 import type { StepProps } from '../types'
 import { PRICING } from '../types'
+import { FLAT_FEE_BASE } from '@/lib/orders/pricing'
 
 // Post type values are now the display names themselves
 
@@ -28,6 +29,7 @@ export function ReviewStep({
   orderId,
   editMeta,
   lockboxInstallFee,
+  flatFee,
   editingCartItemId,
 }: StepProps) {
   // Edit mode reuses this step to save changes to an existing order (PATCH,
@@ -250,6 +252,14 @@ export function ReviewStep({
   const fallbackTax = Math.round(taxableAmount * PRICING.tax_rate * 100) / 100
   const tax = calculatedTax !== null ? calculatedTax : fallbackTax
   const total = discountedSubtotal + fuelSurcharge + expediteFee + noPostSurcharge + tax
+
+  // CR4: flat-fee accounts are billed a fixed amount per order regardless of
+  // items. The server is authoritative (it clamps on create/edit); this only
+  // changes what the review screen DISPLAYS so it matches what will be charged.
+  const isFlatFee = !!flatFee
+  const flatTax = Math.round(FLAT_FEE_BASE * PRICING.tax_rate * 100) / 100 // $3.60
+  const flatTotal = FLAT_FEE_BASE + PRICING.fuel_surcharge + flatTax // $66.07
+  const displayTotal = isFlatFee ? flatTotal : total
 
   // Build items for tax calculation (same structure used in submit)
   const buildTaxItems = useCallback(() => {
@@ -622,7 +632,7 @@ export function ReviewStep({
           agentName: agentName || existingRow.agentName || 'Unassigned',
           formData,
           items,
-          estimatedTotal: total,
+          estimatedTotal: displayTotal,
           propertyAddress: `${formData.property_address}, ${formData.property_city}`,
           holdIds,
           holdsExpireAt,
@@ -644,7 +654,7 @@ export function ReviewStep({
           agentEmail,
           formData,
           items,
-          estimatedTotal: total,
+          estimatedTotal: displayTotal,
           propertyAddress: `${formData.property_address}, ${formData.property_city}`,
           addedAt: new Date().toISOString(),
           holdIds,
@@ -1171,15 +1181,20 @@ export function ReviewStep({
           {orderItems.map((item, index) => (
             <div key={index} className="flex justify-between text-sm">
               <span className="text-gray-600">{item.description}</span>
-              <span className="font-medium text-gray-900">${item.price.toFixed(2)}</span>
+              {isFlatFee ? (
+                <span className="text-gray-400 text-xs">included</span>
+              ) : (
+                <span className="font-medium text-gray-900">${item.price.toFixed(2)}</span>
+              )}
             </div>
           ))}
         </div>
 
         {/* Promo Code — hidden while editing (the server keeps the order's
             existing promo and recomputes the discount; promo can't be changed
-            during an edit) */}
-        {!isEdit && (
+            during an edit) and hidden for flat-fee accounts (promo doesn't
+            apply to the flat $66.07). */}
+        {!isEdit && !isFlatFee && (
         <div className="mt-4 pt-4 border-t border-gray-200">
           <div className="flex items-center gap-2 mb-2">
             <Tag className="w-4 h-4 text-gray-500" />
@@ -1232,6 +1247,27 @@ export function ReviewStep({
 
         {/* Totals */}
         <div className="mt-4 pt-4 border-t border-gray-200 space-y-2">
+          {isFlatFee && (
+            <>
+              <div className="rounded-lg bg-pink-50 border border-pink-200 p-2 text-xs text-pink-700">
+                Flat-fee account — billed a flat ${flatTotal.toFixed(2)} per order regardless of items selected.
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-600">Flat Installation Fee</span>
+                <span className="text-gray-900">${FLAT_FEE_BASE.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-600">Fuel Surcharge</span>
+                <span className="text-gray-900">${PRICING.fuel_surcharge.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-600">Sales Tax (6%)</span>
+                <span className="text-gray-900">${flatTax.toFixed(2)}</span>
+              </div>
+            </>
+          )}
+          {!isFlatFee && (
+          <>
           <div className="flex justify-between text-sm">
             <span className="text-gray-600">Subtotal</span>
             <span className="text-gray-900">${subtotal.toFixed(2)}</span>
@@ -1293,6 +1329,8 @@ export function ReviewStep({
                 {total > editMeta.originalTotal ? '+' : '-'}${Math.abs(total - editMeta.originalTotal).toFixed(2)}
               </span>
             </div>
+          )}
+          </>
           )}
         </div>
       </div>
@@ -1455,8 +1493,8 @@ export function ReviewStep({
             {addingToCart
               ? (editingCartItemId ? 'Saving…' : 'Adding…')
               : editingCartItemId
-                ? `Update cart item — $${total.toFixed(2)}`
-                : `Add to Cart — $${total.toFixed(2)}`}
+                ? `Update cart item — $${displayTotal.toFixed(2)}`
+                : `Add to Cart — $${displayTotal.toFixed(2)}`}
           </Button>
           <p className="text-xs text-center text-gray-500">
             {editingCartItemId
@@ -1471,7 +1509,7 @@ export function ReviewStep({
           onClick={handleSubmit}
           disabled={isSubmitting || (!activePaymentMethods?.length && !formData.payment_method_id) || serviceAreaQuote?.tier === 'out_of_area'}
         >
-          {isSubmitting ? 'Processing...' : `Place Order — $${total.toFixed(2)}`}
+          {isSubmitting ? 'Processing...' : `Place Order — $${displayTotal.toFixed(2)}`}
         </Button>
       )}
 

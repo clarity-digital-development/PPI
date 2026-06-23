@@ -37,6 +37,7 @@ export async function GET() {
         role: true,
         teamId: true,
         invoiceBilling: true,
+        flatFeeBilling: true,
         // Notification preference flags (default-true for transactional, default-false for marketing)
         emailOrderConfirmations: true,
         emailServiceRequests: true,
@@ -50,6 +51,7 @@ export async function GET() {
     const exposed = profile && {
       ...profile,
       invoice_billing: profile.invoiceBilling,
+      flat_fee_billing: profile.flatFeeBilling,
     }
 
     // `user` mirrors `profile` for callers that want either shape
