@@ -467,6 +467,10 @@ model Order {
   // grandfathered orders onto the schedule. StoppedAt = the moment pickup
   // begins (set when removal is scheduled OR completed) — cron stops here.
   postRentalEnabledOverride Boolean   @default(false) @map("post_rental_enabled_override")
+  // CR2 (Round 22): admin manual opt-OUT of recurring post-rental billing for
+  // this order — e.g. the agent supplied their own post. Wins over the opt-in
+  // override above. Auto-set true at checkout for no-post orders.
+  postRentalDisabled        Boolean   @default(false) @map("post_rental_disabled")
   postRentalStoppedAt       DateTime? @map("post_rental_stopped_at")
 
   // Invoice the order was bundled onto for collection. Null while the order is

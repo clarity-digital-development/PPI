@@ -351,6 +351,8 @@ export async function POST(request: NextRequest) {
               subtotal: c.pricing.subtotal,
               fuelSurcharge: c.pricing.fuelSurcharge,
               noPostSurcharge: c.pricing.noPostSurcharge,
+              // CR2: agent's own post / no PPI post ⇒ no recurring post-rental.
+              postRentalDisabled: !o.post_type,
               expediteFee: c.pricing.expediteFee,
               discount: c.pricing.discount,
               tax: c.pricing.tax,

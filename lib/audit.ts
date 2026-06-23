@@ -125,6 +125,7 @@ export const AuditAction = {
   PostRentalChargeSkipped:   'post_rental.charge.skipped',
   PostRentalChargeRetry:     'post_rental.charge.retry',
   PostRentalOverrideToggle:  'post_rental.override.toggle',
+  PostRentalDisableToggle:   'post_rental.disable.toggle',
   PostRentalStopped:         'post_rental.stopped',
 } as const
 export type AuditActionName = (typeof AuditAction)[keyof typeof AuditAction]

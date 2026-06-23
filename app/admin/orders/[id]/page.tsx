@@ -39,7 +39,7 @@ interface PostRentalChargeRow {
 }
 
 interface PostRentalView {
-  status: 'active' | 'grandfathered' | 'stopped' | 'exempt' | 'never_eligible'
+  status: 'active' | 'grandfathered' | 'stopped' | 'disabled' | 'exempt' | 'never_eligible'
   reason?: string
   installedAt: string | null
   stoppedAt: string | null
@@ -165,6 +165,7 @@ export default function AdminOrderDetailPage() {
   const [postRental, setPostRental] = useState<PostRentalView | null>(null)
   const [retryingChargeId, setRetryingChargeId] = useState<string | null>(null)
   const [overrideSaving, setOverrideSaving] = useState(false)
+  const [disableSaving, setDisableSaving] = useState(false)
   const [postRentalError, setPostRentalError] = useState<string | null>(null)
   const [postRentalBanner, setPostRentalBanner] = useState<string | null>(null)
 
@@ -336,6 +337,31 @@ export default function AdminOrderDetailPage() {
       setPostRentalError(err instanceof Error ? err.message : 'Toggle failed')
     } finally {
       setOverrideSaving(false)
+    }
+  }
+
+  async function handleToggleDisable(nextDisabled: boolean) {
+    if (disableSaving) return
+    setDisableSaving(true)
+    setPostRentalError(null)
+    try {
+      const res = await fetch(`/api/admin/orders/${orderId}/post-rental/disable`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ disabled: nextDisabled }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || 'Toggle failed')
+      setPostRentalBanner(
+        nextDisabled
+          ? 'Post-rental billing disabled for this order (customer-owned post).'
+          : 'Post-rental billing re-enabled for this order.'
+      )
+      await loadOrder()
+    } catch (err) {
+      setPostRentalError(err instanceof Error ? err.message : 'Toggle failed')
+    } finally {
+      setDisableSaving(false)
     }
   }
 
@@ -701,10 +727,12 @@ export default function AdminOrderDetailPage() {
               error={postRentalError}
               retryingChargeId={retryingChargeId}
               overrideSaving={overrideSaving}
+              disableSaving={disableSaving}
               onDismissBanner={() => setPostRentalBanner(null)}
               onDismissError={() => setPostRentalError(null)}
               onRetry={handleRetryCharge}
               onToggleOverride={handleToggleOverride}
+              onToggleDisable={handleToggleDisable}
             />
           )}
         </div>
@@ -998,6 +1026,7 @@ const statusBadgeVariant: Record<
   active: 'success',
   grandfathered: 'neutral',
   stopped: 'info',
+  disabled: 'warning',
   exempt: 'info',
   never_eligible: 'neutral',
 }
@@ -1006,6 +1035,7 @@ const statusLabel: Record<PostRentalView['status'], string> = {
   active: 'Active',
   grandfathered: 'Grandfathered',
   stopped: 'Stopped (pickup)',
+  disabled: 'Disabled (own post)',
   exempt: 'Exempt',
   never_eligible: 'Not eligible',
 }
@@ -1055,10 +1085,12 @@ function PostRentalCard(props: {
   error: string | null
   retryingChargeId: string | null
   overrideSaving: boolean
+  disableSaving: boolean
   onDismissBanner: () => void
   onDismissError: () => void
   onRetry: (chargeId: string) => void
   onToggleOverride: (nextEnabled: boolean) => void
+  onToggleDisable: (nextDisabled: boolean) => void
 }) {
   const {
     view,
@@ -1066,10 +1098,12 @@ function PostRentalCard(props: {
     error,
     retryingChargeId,
     overrideSaving,
+    disableSaving,
     onDismissBanner,
     onDismissError,
     onRetry,
     onToggleOverride,
+    onToggleDisable,
   } = props
 
   return (
@@ -1139,6 +1173,36 @@ function PostRentalCard(props: {
             ) : (
               <p className="text-sm text-gray-600">No upcoming charges scheduled.</p>
             )}
+          </div>
+        )}
+
+        {view.status !== 'exempt' && (
+          <div className="mb-4 flex items-center justify-between p-3 bg-gray-50 border border-gray-200 rounded-lg">
+            <div className="text-sm">
+              <p className="font-medium text-gray-900">
+                Disable post-rental billing (customer-owned post)
+              </p>
+              <p className="text-gray-500 text-xs mt-0.5">
+                Turn on when the agent supplied their own post — PPI charges no
+                recurring rental for this order. Overrides the opt-in below.
+              </p>
+            </div>
+            <label className="inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={view.status === 'disabled'}
+                disabled={disableSaving}
+                onChange={(e) => onToggleDisable(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div
+                className={`relative w-11 h-6 bg-gray-300 rounded-full peer peer-checked:bg-pink-600 transition-colors ${disableSaving ? 'opacity-50' : ''}`}
+              >
+                <div
+                  className={`absolute top-0.5 left-0.5 h-5 w-5 bg-white rounded-full transition-transform ${view.status === 'disabled' ? 'translate-x-5' : ''}`}
+                />
+              </div>
+            </label>
           </div>
         )}
 

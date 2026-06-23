@@ -15,6 +15,7 @@ type OrderForView = {
   status: string
   paymentStatus: string
   postRentalEnabledOverride: boolean
+  postRentalDisabled: boolean
   postRentalStoppedAt: Date | null
 }
 
@@ -34,6 +35,7 @@ export type PostRentalViewStatus =
   | 'active'
   | 'grandfathered'
   | 'stopped'
+  | 'disabled'
   | 'exempt'
   | 'never_eligible'
 
@@ -131,6 +133,20 @@ export function computePostRentalView(args: {
   const installedAt = installation ? installation.installedAt.toISOString() : null
   const stoppedAt = order.postRentalStoppedAt ? order.postRentalStoppedAt.toISOString() : null
   const override = order.postRentalEnabledOverride
+
+  // CR2: admin manually disabled post-rental for this order (e.g. customer-owned
+  // post). Authoritative — surfaced before everything else.
+  if (order.postRentalDisabled) {
+    return {
+      status: 'disabled',
+      reason: 'Post-rental billing disabled for this order (e.g. customer-owned post)',
+      installedAt,
+      stoppedAt,
+      override,
+      nextCharge: null,
+      history,
+    }
+  }
 
   // Status resolution mirrors the eligibility predicate ladder so admin sees
   // the same answer the cron would.

@@ -128,6 +128,8 @@ export async function GET(request: NextRequest) {
         status: 'completed',
         paymentStatus: 'succeeded',
         postRentalStoppedAt: null,
+        // CR2: never schedule rental for orders manually opted out (own post).
+        postRentalDisabled: false,
         installation: { is: { status: 'active' } },
         // Defense in depth: NEVER auto-charge an invoice-billing customer's
         // card here, even if their order somehow got into paymentStatus

@@ -104,6 +104,7 @@ export function chargesDue(installedAt: Date, now: Date): DueCharge[] {
 export type EligibilityReason =
   | 'no_active_installation'
   | 'already_stopped'
+  | 'manual_opt_out'
   | 'pickup_before_6mo'
   | 'pickup_scheduled'
   | 'exempt_role_admin'
@@ -143,6 +144,13 @@ export function isPostRentalEligible(
   // (2) Cron previously observed pickup — clock is stopped, hard halt.
   if (order.postRentalStoppedAt != null) {
     return { eligible: false, reason: 'already_stopped' }
+  }
+
+  // (2.5) Admin manually opted this order OUT of post-rental billing — e.g. the
+  // agent supplied their own post, so PPI charges no recurring rental. This
+  // wins over the grandfathered opt-in override below.
+  if (order.postRentalDisabled) {
+    return { eligible: false, reason: 'manual_opt_out' }
   }
 
   // (3) Removal scheduled before 6-month anniversary → suppress entirely.
