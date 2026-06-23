@@ -176,30 +176,10 @@ export async function processInvoiceSendJob(args: SendInvoiceJobArgs): Promise<v
       recipientUserId: invoice.userId,
     })
 
-    // shouldSendEmail-suppressed path: recipient opted out, mark as
-    // skipped so the badge says "Opted out" rather than "Sent" (lying)
-    // or "Failed" (alarming).
-    if (result && typeof result === 'object' && 'suppressed' in result && result.suppressed) {
-      await prisma.invoice.update({
-        where: { id: invoiceId },
-        data: { emailStatus: 'skipped', emailError: null, sendingStartedAt: null },
-      })
-      await audit({
-        actor: { system: true },
-        action: AuditAction.InvoiceEmailSkipped,
-        targetType: 'invoice',
-        targetId: invoiceId,
-        metadata: {
-          invoiceNumber: invoice.invoiceNumber,
-          intendedRecipient: resolvedRecipientEmail,
-          recipientSource,
-          reason: 'recipient opted out (emailOrderConfirmations preference)',
-          stripeError,
-          pdfError,
-        },
-      })
-      return
-    }
+    // CR3 (Round 22): invoices always send — the opt-out "skipped" path was
+    // removed (see sendInvoiceEmail; a bill is transactional and must reach the
+    // customer even if they opted out of order email). Resend API errors are
+    // still handled below so a rejected send flips the row to 'failed'.
 
     // CRITICAL: Resend v2 SDK returns { data, error } on EVERY call — it
     // does NOT throw on API errors (invalid recipient, suppression list,

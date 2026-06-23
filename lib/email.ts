@@ -554,15 +554,14 @@ export async function sendInvoiceEmail({
   fromOverride,
   subjectOverride,
   bannerHtml,
-  recipientUserId,
-  recipientPrefs,
 }: InvoiceEmailProps) {
-  // Reuse the order-confirmation preference key — same channel for the same
-  // transactional purpose; we don't want a separate opt-out for invoices.
-  if (!(await shouldSendEmail(recipientUserId, 'emailOrderConfirmations', recipientPrefs))) {
-    logSuppressed('sendInvoiceEmail', recipientUserId, 'emailOrderConfirmations')
-    return { suppressed: true as const }
-  }
+  // CR3 (Round 22): an invoice is a transactional billing document and must
+  // ALWAYS send, even when the recipient has opted out of order/marketing
+  // email. CAN-SPAM exempts transactional/relationship mail, and password-reset
+  // + admin-alert emails in this file already bypass preferences the same way.
+  // There is therefore deliberately NO shouldSendEmail() gate here.
+  // (recipientUserId / recipientPrefs stay on InvoiceEmailProps for call-site
+  // symmetry with the other senders, but are intentionally not consulted.)
 
   // Build the bundle-count line — "N orders + M service trips" when both,
   // collapses cleanly when only one kind is present.
