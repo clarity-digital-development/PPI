@@ -343,12 +343,47 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
           </Card>
         )}
 
-        {/* Grand total */}
+        {/* Grand total — broken out so Subtotal → Total is fully explained */}
         <Card>
           <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-500">Total due</span>
-              <span className="text-lg font-bold text-pink-600">{formatCurrency(invoice.total)}</span>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-gray-500">Subtotal</span>
+                <span className="text-gray-900">{formatCurrency(invoice.subtotal)}</span>
+              </div>
+              {invoice.discount_total > 0 && (
+                <div className="flex justify-between text-green-600">
+                  <span>Discount</span><span>-{formatCurrency(invoice.discount_total)}</span>
+                </div>
+              )}
+              {invoice.no_post_total > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Service Trip Fee (no post)</span>
+                  <span className="text-gray-900">{formatCurrency(invoice.no_post_total)}</span>
+                </div>
+              )}
+              {invoice.expedite_total > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Expedite Fee</span>
+                  <span className="text-gray-900">{formatCurrency(invoice.expedite_total)}</span>
+                </div>
+              )}
+              {invoice.fuel_total > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Fuel Surcharge</span>
+                  <span className="text-gray-900">{formatCurrency(invoice.fuel_total)}</span>
+                </div>
+              )}
+              {invoice.tax_total > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Sales Tax</span>
+                  <span className="text-gray-900">{formatCurrency(invoice.tax_total)}</span>
+                </div>
+              )}
+              <div className="flex items-center justify-between border-t border-gray-200 pt-2 mt-2">
+                <span className="text-sm text-gray-500">Total due</span>
+                <span className="text-lg font-bold text-pink-600">{formatCurrency(invoice.total)}</span>
+              </div>
             </div>
           </CardContent>
         </Card>

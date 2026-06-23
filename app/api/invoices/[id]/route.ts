@@ -49,6 +49,11 @@ export async function GET(
       range_end: invoice.rangeEnd.toISOString(),
       subtotal: Number(invoice.subtotal),
       total: Number(invoice.total),
+      fuel_total: invoice.orders.reduce((s, o) => s + Number(o.fuelSurcharge ?? 0), 0),
+      tax_total: invoice.orders.reduce((s, o) => s + Number(o.tax ?? 0), 0),
+      expedite_total: invoice.orders.reduce((s, o) => s + Number(o.expediteFee ?? 0), 0),
+      no_post_total: invoice.orders.reduce((s, o) => s + Number(o.noPostSurcharge ?? 0), 0),
+      discount_total: invoice.orders.reduce((s, o) => s + Number(o.discount ?? 0), 0),
       sent_at: invoice.sentAt?.toISOString() ?? null,
       paid_at: invoice.paidAt?.toISOString() ?? null,
       customer: {

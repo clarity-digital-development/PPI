@@ -20,6 +20,8 @@ export async function loadInvoiceDetailForPdf(invoiceId: string): Promise<Invoic
     },
   })
   if (!invoice) return null
+  const orderSum = (key: 'fuelSurcharge' | 'tax' | 'expediteFee' | 'noPostSurcharge' | 'discount') =>
+    invoice.orders.reduce((s, o) => s + Number((o as Record<string, unknown>)[key] ?? 0), 0)
   return {
     id: invoice.id,
     invoice_number: invoice.invoiceNumber,
@@ -28,6 +30,11 @@ export async function loadInvoiceDetailForPdf(invoiceId: string): Promise<Invoic
     range_end: invoice.rangeEnd.toISOString(),
     subtotal: Number(invoice.subtotal),
     total: Number(invoice.total),
+    fuel_total: orderSum('fuelSurcharge'),
+    tax_total: orderSum('tax'),
+    expedite_total: orderSum('expediteFee'),
+    no_post_total: orderSum('noPostSurcharge'),
+    discount_total: orderSum('discount'),
     sent_at: invoice.sentAt?.toISOString() ?? null,
     paid_at: invoice.paidAt?.toISOString() ?? null,
     customer: {

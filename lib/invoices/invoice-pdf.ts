@@ -62,6 +62,14 @@ export interface InvoiceDetail {
   range_end: string
   subtotal: number
   total: number
+  // Aggregated across the bundled orders so the totals box can explain the
+  // gap between Subtotal and Total (fuel + tax + fees), instead of an
+  // unexplained jump. Service-request amounts sit inside subtotal already.
+  fuel_total: number
+  tax_total: number
+  expedite_total: number
+  no_post_total: number
+  discount_total: number
   sent_at: string | null
   paid_at: string | null
   customer: {
@@ -315,35 +323,46 @@ export function buildInvoicePdfDoc(invoice: InvoiceDetail): jsPDF {
   // jspdf-autotable hangs the final Y position off the doc as lastAutoTable.
   const finalY = (doc as any).lastAutoTable?.finalY ?? metaTop + 70
   let tY = finalY + 24
-  if (tY > pageHeight - 100) {
+  // Reserve room for the subtotal + breakdown rows + total so the box never
+  // splits awkwardly across the page break.
+  if (tY > pageHeight - 200) {
     doc.addPage()
     tY = 80
   }
 
-  // Subtotal row (10pt, muted).
-  const subtotalY = tY
-  doc.setFontSize(10)
-  doc.setTextColor(MUTED.r, MUTED.g, MUTED.b)
-  doc.text('Subtotal', pageWidth - margin - 90, subtotalY, { align: 'right' })
-  doc.setTextColor(INK.r, INK.g, INK.b)
-  doc.text(fmtCurrency(invoice.subtotal), pageWidth - margin, subtotalY, { align: 'right' })
+  // Subtotal + breakdown rows. Listing fuel/tax/fees here explains the gap
+  // between Subtotal and Total (previously the jump had no line items).
+  const labelX = pageWidth - margin - 90
+  const amtX = pageWidth - margin
+  let rowY = tY
+  const detailRow = (label: string, value: number, negative = false) => {
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(10)
+    doc.setTextColor(MUTED.r, MUTED.g, MUTED.b)
+    doc.text(label, labelX, rowY, { align: 'right' })
+    doc.setTextColor(INK.r, INK.g, INK.b)
+    doc.text((negative ? '-' : '') + fmtCurrency(value), amtX, rowY, { align: 'right' })
+    rowY += 16
+  }
 
-  // Divider line — sits 12pt below the Subtotal baseline so it's clear of
-  // both the descenders of "Subtotal" and the cap-height of the 13pt "Total"
-  // beneath it. The earlier (tY - 8) put it right inside the "Total" text.
-  const lineY = subtotalY + 12
+  detailRow('Subtotal', invoice.subtotal)
+  if (invoice.discount_total > 0) detailRow('Discount', invoice.discount_total, true)
+  if (invoice.no_post_total > 0) detailRow('Service Trip Fee (no post)', invoice.no_post_total)
+  if (invoice.expedite_total > 0) detailRow('Expedite Fee', invoice.expedite_total)
+  if (invoice.fuel_total > 0) detailRow('Fuel Surcharge', invoice.fuel_total)
+  if (invoice.tax_total > 0) detailRow('Sales Tax', invoice.tax_total)
+
+  // Divider, then the bold Total.
+  const lineY = rowY - 4
   doc.setDrawColor(220, 220, 220)
   doc.line(pageWidth - margin - 160, lineY, pageWidth - margin, lineY)
-
-  // Total row (13pt bold). 22pt gap below the line gives the cap-height of
-  // the bigger font room to sit cleanly without crashing into the divider.
   const totalY = lineY + 22
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(13)
   doc.setTextColor(MUTED.r, MUTED.g, MUTED.b)
-  doc.text('Total', pageWidth - margin - 90, totalY, { align: 'right' })
+  doc.text('Total', labelX, totalY, { align: 'right' })
   doc.setTextColor(PINK.r, PINK.g, PINK.b)
-  doc.text(fmtCurrency(invoice.total), pageWidth - margin, totalY, { align: 'right' })
+  doc.text(fmtCurrency(invoice.total), amtX, totalY, { align: 'right' })
   doc.setFont('helvetica', 'normal')
   tY = totalY
 
