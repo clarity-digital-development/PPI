@@ -44,7 +44,21 @@ function toSelectedRider(selection: RiderSelection): SelectedRider | null {
   if (!rider) {
     rider = RIDERS.find(r => r.slug === selection.rider_type)
   }
-  if (!rider) return null
+  if (!rider) {
+    // Same fix as rider-step.tsx: non-catalog rider with a real
+    // customer_rider_id (e.g., Semonin agent-name + custom-slogan riders)
+    // gets a synthetic SelectedRider so it doesn't disappear on edit
+    // round-trip. See rider-step.tsx for the full rationale.
+    if (selection.customer_rider_id) {
+      return {
+        riderId: selection.rider_type,
+        source,
+        price,
+        customValue: selection.custom_value,
+      }
+    }
+    return null
+  }
   return {
     riderId: rider.id,
     source,

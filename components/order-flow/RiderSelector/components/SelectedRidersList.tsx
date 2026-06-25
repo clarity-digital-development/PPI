@@ -47,11 +47,19 @@ export function SelectedRidersList({
           // Custom free-text rider (pickup/at-property) — riderId is a synthetic
           // "custom-text-..." key and customValue holds the typed name verbatim.
           const isCustomText = rider.riderId.startsWith('custom-text-')
+          // Round 23 fix: when a rider's slug isn't in the RIDERS catalog
+          // (e.g., Semonin's admin-managed agent-name riders), riderId IS the
+          // slug. Humanize it ("robert-butler-w-photo" → "Robert Butler W Photo")
+          // so the selected pill is readable instead of showing raw slug.
+          const humanizedSlug = rider.riderId
+            .split('-')
+            .map(w => (w.length > 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w))
+            .join(' ')
           const displayName = isCustomText
             ? String(rider.customValue || 'Custom rider')
             : rider.customValue
               ? `${rider.customValue} Acres`
-              : riderData?.name || rider.riderId
+              : riderData?.name || humanizedSlug
           const sourceLabel = rider.source === 'rental'
             ? 'Rental'
             : rider.source === 'at_property'
