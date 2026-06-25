@@ -1,11 +1,48 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, Suspense } from 'react'
 import Link from 'next/link'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Eye, Check, Clock, Truck, XCircle, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react'
 import { Select, Badge, Button } from '@/components/ui'
 
 const PAGE_SIZE = 25
+
+type StatusFilter = '' | 'pending' | 'confirmed' | 'scheduled' | 'in_progress' | 'completed' | 'cancelled'
+const VALID_STATUSES: StatusFilter[] = ['', 'pending', 'confirmed', 'scheduled', 'in_progress', 'completed', 'cancelled']
+const FILTER_STORAGE_KEY = 'admin-orders-filters-v1'
+
+// localStorage fallback: when the user navigates back to /admin/orders via the
+// sidebar (no query string), restore their last filter so they don't have to
+// re-pick from the dropdown every time. URL params always win when present,
+// so shared/bookmarked links and the failed-charge-email deep-link
+// (?charge_issues=true) still take precedence over the saved default.
+function readPersistedFilters(): { statusFilter: StatusFilter; chargeIssuesOnly: boolean } | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(FILTER_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { statusFilter?: unknown; chargeIssuesOnly?: unknown }
+    const s = typeof parsed.statusFilter === 'string' && VALID_STATUSES.includes(parsed.statusFilter as StatusFilter)
+      ? (parsed.statusFilter as StatusFilter)
+      : ''
+    return { statusFilter: s, chargeIssuesOnly: parsed.chargeIssuesOnly === true }
+  } catch {
+    return null
+  }
+}
+
+function writePersistedFilters(statusFilter: StatusFilter, chargeIssuesOnly: boolean) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(
+      FILTER_STORAGE_KEY,
+      JSON.stringify({ statusFilter, chargeIssuesOnly })
+    )
+  } catch {
+    /* localStorage blocked or quota exceeded — silently degrade to URL-only */
+  }
+}
 
 interface Order {
   id: string
@@ -74,24 +111,89 @@ const getStatusVariant = (status: string): 'info' | 'success' | 'warning' | 'err
   }
 }
 
+// Wrapped in <Suspense> because useSearchParams() requires it during
+// static prerender (Next.js 14 bails out otherwise). Matches the
+// app/admin/customers/page.tsx pattern.
 export default function AdminOrdersPage() {
+  return (
+    <Suspense fallback={null}>
+      <AdminOrdersPageInner />
+    </Suspense>
+  )
+}
+
+function AdminOrdersPageInner() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
+
+  // URL is the single source of truth — derive filters/page from searchParams
+  // on every render. This makes browser back/forward + external deep-links
+  // (e.g., ?charge_issues=true from failed-charge emails) Just Work, because
+  // a URL change triggers a re-render and the derived values flip with it.
+  // No state↔URL sync effects to fight over precedence.
+  const urlStatus = searchParams.get('status')
+  const urlChargeIssues = searchParams.get('charge_issues')
+  const urlPage = searchParams.get('page')
+  const statusFilter: StatusFilter = VALID_STATUSES.includes((urlStatus ?? '') as StatusFilter)
+    ? ((urlStatus ?? '') as StatusFilter)
+    : ''
+  const chargeIssuesOnly = urlChargeIssues === 'true'
+  const page = Math.max(0, Number.parseInt(urlPage ?? '0', 10) || 0)
+
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
-  const [statusFilter, setStatusFilter] = useState('')
-  // Edit-charge worklist toggle — when true, only show orders whose latest
-  // edit needs admin follow-up (charge_failed / no_payment_method / credit_pending).
-  // Matches the email's "see worklist filter" pointer so admin can click
-  // straight from a failed-charge email into the actionable list.
-  const [chargeIssuesOnly, setChargeIssuesOnly] = useState(false)
-  const [page, setPage] = useState(0)
   const [total, setTotal] = useState(0)
 
-  // Reset to the first page whenever any filter changes
-  useEffect(() => {
-    setPage(0)
-  }, [statusFilter, chargeIssuesOnly])
+  // Single writer: pushes a new filter/page set to the URL, and persists the
+  // filters (not page) to localStorage so a sidebar round-trip back to
+  // /admin/orders restores Ryan's last selection. Page is intentionally NOT
+  // saved to localStorage — stale page numbers go bad as new orders arrive.
+  function pushUrl(next: { statusFilter: StatusFilter; chargeIssuesOnly: boolean; page: number }) {
+    writePersistedFilters(next.statusFilter, next.chargeIssuesOnly)
+    const params = new URLSearchParams()
+    if (next.statusFilter) params.set('status', next.statusFilter)
+    if (next.chargeIssuesOnly) params.set('charge_issues', 'true')
+    if (next.page > 0) params.set('page', String(next.page))
+    const qs = params.toString()
+    router.replace(qs ? `/admin/orders?${qs}` : '/admin/orders', { scroll: false })
+  }
 
+  // Filter changes always reset page to 0 atomically (no separate effect),
+  // so the fetch fires exactly once with the right offset.
+  function changeStatus(value: StatusFilter) {
+    pushUrl({ statusFilter: value, chargeIssuesOnly, page: 0 })
+  }
+  function toggleChargeIssues() {
+    pushUrl({ statusFilter, chargeIssuesOnly: !chargeIssuesOnly, page: 0 })
+  }
+  function changePage(next: number) {
+    pushUrl({ statusFilter, chargeIssuesOnly, page: next })
+  }
+
+  // Mount-only restore: if URL has no filters but localStorage does, replay
+  // them into the URL so the page renders with the saved filter applied. Ref
+  // guard so this runs exactly once per mount and never fights an explicit
+  // user action.
+  const hasRestored = useRef(false)
   useEffect(() => {
+    if (hasRestored.current) return
+    hasRestored.current = true
+    if (urlStatus !== null || urlChargeIssues !== null) return
+    const persisted = readPersistedFilters()
+    if (!persisted) return
+    if (persisted.statusFilter === '' && !persisted.chargeIssuesOnly) return
+    pushUrl({ statusFilter: persisted.statusFilter, chargeIssuesOnly: persisted.chargeIssuesOnly, page: 0 })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // AbortController guards against two races: (1) the brief wasted fetch
+  // when a fresh mount's localStorage restore fires after the initial empty
+  // fetch — the empty one is aborted before it can overwrite the restored
+  // filter; (2) rapid pagination clicks — each newer fetch cancels the
+  // previous in-flight one so a slow earlier response can't clobber the
+  // latest result.
+  useEffect(() => {
+    const ac = new AbortController()
     async function fetchOrders() {
       setLoading(true)
       try {
@@ -101,20 +203,23 @@ export default function AdminOrdersPage() {
         params.set('limit', String(PAGE_SIZE))
         params.set('offset', String(page * PAGE_SIZE))
 
-        const res = await fetch(`/api/admin/orders?${params}`)
+        const res = await fetch(`/api/admin/orders?${params}`, { signal: ac.signal })
         if (res.ok) {
           const data = await res.json()
           setOrders(data.orders)
           setTotal(data.total ?? data.orders.length)
         }
       } catch (error) {
-        console.error('Error fetching orders:', error)
+        if ((error as { name?: string } | null)?.name !== 'AbortError') {
+          console.error('Error fetching orders:', error)
+        }
       } finally {
-        setLoading(false)
+        if (!ac.signal.aborted) setLoading(false)
       }
     }
 
     fetchOrders()
+    return () => ac.abort()
   }, [statusFilter, chargeIssuesOnly, page])
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
@@ -150,7 +255,7 @@ export default function AdminOrdersPage() {
           <Button
             variant={chargeIssuesOnly ? 'primary' : 'outline'}
             size="sm"
-            onClick={() => setChargeIssuesOnly((v) => !v)}
+            onClick={toggleChargeIssues}
             className="gap-2"
             title="Show only orders whose latest edit needs follow-up: failed charge, no card on file, or credit owed back to customer"
           >
@@ -161,7 +266,7 @@ export default function AdminOrdersPage() {
             <Select
               options={statusOptions}
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
+              onChange={(e) => changeStatus(e.target.value as StatusFilter)}
             />
           </div>
         </div>
@@ -307,7 +412,7 @@ export default function AdminOrdersPage() {
               variant="outline"
               size="sm"
               disabled={page === 0}
-              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              onClick={() => changePage(Math.max(0, page - 1))}
               className="gap-1"
             >
               <ChevronLeft className="w-4 h-4" /> Prev
@@ -319,7 +424,7 @@ export default function AdminOrdersPage() {
               variant="outline"
               size="sm"
               disabled={page + 1 >= totalPages}
-              onClick={() => setPage((p) => p + 1)}
+              onClick={() => changePage(page + 1)}
               className="gap-1"
             >
               Next <ChevronRight className="w-4 h-4" />
