@@ -140,7 +140,16 @@ export async function POST(request: NextRequest) {
         role: actor.role,
         isServiceAreaExempt: actor.isServiceAreaExempt ?? false,
       }
-      const sa = await resolveServiceArea({ zip: o.property_zip, user: effectiveUser })
+      const sa = await resolveServiceArea({
+        zip: o.property_zip,
+        user: effectiveUser,
+        address: {
+          street: o.property_address,
+          city: o.property_city,
+          state: o.property_state ?? 'KY',
+          zip: o.property_zip,
+        },
+      })
       if (sa.tier === 'out_of_area') {
         saBlocks.push({
           orderIndex: i,
@@ -166,12 +175,17 @@ export async function POST(request: NextRequest) {
         continue
       }
       // surcharge → push a synthetic OrderItem so it flows through pricing + display.
-      if (sa.tier === 'surcharge' && sa.decidedBy) {
+      // Round 25 fix: see app/api/orders/route.ts — gate on tier+amount only
+      // so the ZIP-override branch (no decidedBy) still injects the line.
+      if (sa.tier === 'surcharge' && sa.surchargeCents > 0) {
         const surchargeDollars = sa.surchargeCents / 100
+        const description = sa.decidedBy
+          ? `Out-of-area service fee – ${sa.decidedBy.centerName} ~${Math.round(sa.decidedBy.driveTimeMinutes)}min`
+          : `Out-of-area service fee – ZIP ${o.property_zip}`
         o.items.push({
           item_type: 'surcharge',
           item_category: undefined,
-          description: `Out-of-area service fee – ${sa.decidedBy.centerName} ~${Math.round(sa.decidedBy.driveTimeMinutes)}min`,
+          description,
           quantity: 1,
           unit_price: surchargeDollars,
           total_price: surchargeDollars,
@@ -369,6 +383,8 @@ export async function POST(request: NextRequest) {
                 ? 0
                 : c.serviceArea.tier === 'surcharge' ? c.serviceArea.surchargeCents : 0,
               serviceAreaCenterId: c.serviceArea.decidedBy?.centerId ?? null,
+              serviceAreaDriveMinutes: c.serviceArea.decidedBy?.driveTimeMinutes ?? null,
+              serviceAreaDriveTimeSource: c.serviceArea.decidedBy?.driveTimeSource ?? null,
               paymentIntentId: null,
               paymentStatus: isInvoiceBilling ? 'pending_invoice' : 'pending',
               paidAt: null,

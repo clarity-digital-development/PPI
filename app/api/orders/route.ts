@@ -175,7 +175,16 @@ export async function POST(request: NextRequest) {
       role: actor.role,
       isServiceAreaExempt: actor.isServiceAreaExempt ?? false,
     }
-    const sa = await resolveServiceArea({ zip: orderData.property_zip, user: effectiveUser })
+    const sa = await resolveServiceArea({
+      zip: orderData.property_zip,
+      user: effectiveUser,
+      address: {
+        street: orderData.property_address,
+        city: orderData.property_city,
+        state: orderData.property_state,
+        zip: orderData.property_zip,
+      },
+    })
     if (sa.tier === 'out_of_area') {
       await audit({
         actor: { id: actor.id, email: actor.email, role: actor.role },
@@ -199,15 +208,24 @@ export async function POST(request: NextRequest) {
       )
     }
     // surcharge → push a synthetic OrderItem so it flows through pricing + display.
-    if (sa.tier === 'surcharge' && sa.decidedBy) {
+    // Round 25 fix: previously gated on sa.decidedBy, which is missing for the
+    // ZIP-override branch — every Danville (40422) order since Round 22's CR1
+    // was silently undercharged because no surcharge line ever made it into
+    // the items[]. Now we inject whenever tier=surcharge with a non-zero
+    // amount, and use centerName/driveMinutes when present (haversine/cache/
+    // address path) or a "ZIP override" description otherwise.
+    if (sa.tier === 'surcharge' && sa.surchargeCents > 0) {
       const surchargeDollars = sa.surchargeCents / 100
+      const description = sa.decidedBy
+        ? `Out-of-area service fee – ${sa.decidedBy.centerName} ~${Math.round(sa.decidedBy.driveTimeMinutes)}min`
+        : `Out-of-area service fee – ZIP ${orderData.property_zip}`
       orderData.items.push({
         // Server-injected: 'surcharge' is intentionally NOT in the client Zod enum
         // (clients can't fake a $0 surcharge line). The outer object cast widens to the
         // route's items[] union; this property cast bridges through `any`.
         item_type: 'surcharge' as never,
         item_category: undefined,
-        description: `Out-of-area service fee – ${sa.decidedBy.centerName} ~${Math.round(sa.decidedBy.driveTimeMinutes)}min`,
+        description,
         quantity: 1,
         unit_price: surchargeDollars,
         total_price: surchargeDollars,
@@ -477,6 +495,8 @@ export async function POST(request: NextRequest) {
         // WHY: persist actual surcharge so reporting + invoice math match what the customer paid.
         serviceAreaSurchargeCents: finalServiceAreaSurchargeCents,
         serviceAreaCenterId: sa.decidedBy?.centerId ?? null,
+        serviceAreaDriveMinutes: sa.decidedBy?.driveTimeMinutes ?? null,
+        serviceAreaDriveTimeSource: sa.decidedBy?.driveTimeSource ?? null,
         promoCodeId,
         paymentIntentId: paymentIntent?.id || null,
         paymentStatus: isInvoiceBilling

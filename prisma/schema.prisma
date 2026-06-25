@@ -424,6 +424,11 @@ model Order {
   // Out-of-area surcharge: $50 (5000 cents) when ZIP falls in surcharge band of nearest center.
   serviceAreaSurchargeCents Int     @default(0) @map("service_area_surcharge_cents")
   serviceAreaCenterId       String? @map("service_area_center_id")
+  // Round 25 audit trail: which drive-time signal decided this order's tier.
+  // Values: 'haversine_estimate' | 'zip_cache' | 'address_lookup' | 'address_cache'.
+  // Null for exempt orders, override-decided orders, and pre-Round-25 rows.
+  serviceAreaDriveMinutes      Int?    @map("service_area_drive_minutes")
+  serviceAreaDriveTimeSource   String? @map("service_area_drive_time_source")
   // CR4 (Round 22): true when this order was priced as a flat-fee order (payer
   // had flatFeeBilling at creation). Frozen on the order so edits recompute as
   // flat (no diff-charge) and invoices/reporting can identify clamped orders.
@@ -1051,6 +1056,46 @@ model ServiceAreaZipOverride {
 
   @@index([isActive])
   @@map("service_area_zip_overrides")
+}
+
+// Drive-time cache (Round 25). Replaces the silent-undercharge problem where
+// haversine × road-factor estimates were systematically low for back-road
+// ZIPs (Berea, Danville). Two layers:
+//
+// 1. ZipDriveTimeCache — one row per (zip, centerId). Seeded in bulk via
+//    scripts/seed-zip-drive-times.ts using Google Routes API; used by the
+//    cart-preview quote endpoint and as the first pass at order POST time.
+// 2. AddressDriveTimeCache — one row per (addressHash, centerId). Populated
+//    on-demand at order POST time when the ZIP estimate lands within
+//    BORDERLINE_WINDOW minutes of either threshold (per Ryan: <35 = trust
+//    ZIP; otherwise ±15 of standardMinutes or surchargeMinutes = upgrade).
+//
+// Both rows are subject to Google Maps Platform Service Terms: drive-time
+// values must be refreshed every 30 days. Resolver and seed script both
+// treat cachedAt + 30 days as the freshness boundary.
+model ZipDriveTimeCache {
+  zip          String   @db.VarChar(5)
+  centerId     String   @map("center_id")
+  driveMinutes Int      @map("drive_minutes")
+  source       String   @default("google_routes")
+  cachedAt     DateTime @default(now()) @map("cached_at")
+
+  @@id([zip, centerId])
+  @@index([cachedAt])
+  @@map("zip_drive_time_cache")
+}
+
+model AddressDriveTimeCache {
+  addressHash  String   @db.VarChar(64) @map("address_hash")
+  centerId     String   @map("center_id")
+  address      String
+  driveMinutes Int      @map("drive_minutes")
+  source       String   @default("google_routes")
+  cachedAt     DateTime @default(now()) @map("cached_at")
+
+  @@id([addressHash, centerId])
+  @@index([cachedAt])
+  @@map("address_drive_time_cache")
 }
 
 // ============================================
