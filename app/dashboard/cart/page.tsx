@@ -49,6 +49,14 @@ export default function CartPage() {
   // misleading "No payment method on file" message during the first ~200ms
   // window when invoiceBilling defaults to false but the real value is true.
   const [profileLoaded, setProfileLoaded] = useState(false)
+  // Role drives the legacy cart-row migration in nextOrderHref: rows in
+  // localStorage from before the placedForMemberId discriminator was added
+  // have agentId set but no placedForMemberId. For team_admins, those rows
+  // came from the gate path (TeamMember.id) and must route via
+  // ?team_member_id= — sending ?on_behalf_of=<TeamMember.id> is exactly
+  // the 403 bug this round fixed. For admins it's the legacy User.id path
+  // and ?on_behalf_of= is correct.
+  const [actorRole, setActorRole] = useState<string | null>(null)
   // Rows where the bump heartbeat returned extended:false — checkout for
   // these is blocked until the user re-picks (we don't auto-reacquire to
   // avoid silently re-grabbing inventory that may have changed hands).
@@ -91,6 +99,7 @@ export default function CartPage() {
         if (res.ok) {
           const data = await res.json()
           setInvoiceBilling(!!data.user?.invoice_billing)
+          setActorRole(data.user?.role ?? null)
         }
       } catch {
         // Default (false) keeps the regular cart behavior on any failure.
@@ -105,13 +114,31 @@ export default function CartPage() {
   const grandTotal = items.reduce((sum, item) => sum + item.estimatedTotal, 0)
 
   // "Next order" → back to the place-order flow to add another order to the
-  // batch. Preserve the on_behalf_of param if this cart was built on behalf of
-  // a specific agent (cart items store it as agentId; team_admins placing under
-  // their own account leave it empty).
-  const onBehalfOfId = items.find(i => i.agentId)?.agentId || ''
-  const nextOrderHref = onBehalfOfId
-    ? `/dashboard/place-order?on_behalf_of=${encodeURIComponent(onBehalfOfId)}`
-    : '/dashboard/place-order'
+  // batch, preserving the agent selection so the team_admin doesn't have to
+  // re-pick from the gate every time. Resolution rules:
+  //   - placedForMemberId is set (gate-path row, post-Round 22) →
+  //     ?team_member_id= so place-order pre-selects that member and fetches
+  //     /api/inventory?member_id=. Previously we mis-stuffed this into
+  //     ?on_behalf_of= which 403s because that expects a User.id.
+  //   - placedForMemberId missing AND agentId set: ambiguous. For team_admin
+  //     actors, treat agentId as a TeamMember.id (gate path is the ONLY way
+  //     a team_admin's cart row gets a non-empty agentId — admin/on_behalf_of
+  //     flow is never used by them). For admin actors, treat agentId as a
+  //     User.id (legacy on_behalf_of path). This migrates pre-Round-22
+  //     localStorage carts that have agentId but no placedForMemberId.
+  //   - Neither set → plain URL.
+  const explicitTeamMember = items.find(i => i.placedForMemberId)?.placedForMemberId
+  const legacyAgentId = items.find(i => i.agentId)?.agentId || ''
+  let nextOrderHref = '/dashboard/place-order'
+  if (explicitTeamMember) {
+    nextOrderHref = `/dashboard/place-order?team_member_id=${encodeURIComponent(explicitTeamMember)}`
+  } else if (legacyAgentId) {
+    if (actorRole === 'team_admin') {
+      nextOrderHref = `/dashboard/place-order?team_member_id=${encodeURIComponent(legacyAgentId)}`
+    } else {
+      nextOrderHref = `/dashboard/place-order?on_behalf_of=${encodeURIComponent(legacyAgentId)}`
+    }
+  }
 
   async function handleCheckoutAll() {
     if (items.length === 0) return

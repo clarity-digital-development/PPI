@@ -22,10 +22,26 @@ import { getOrCreateCartSessionId } from '@/lib/cart-session'
 export interface CartItem {
   /** Stable id for the cart row */
   id: string
-  /** Agent this order is for (used as on_behalf_of_user_id at checkout) */
+  /**
+   * Agent this order is for. Historically used as on_behalf_of_user_id at
+   * checkout, but the value semantics are mixed:
+   *  - team_admin gate path: this is a TeamMember.id (NOT a User.id)
+   *  - legacy admin on_behalf_of= path: this is a User.id
+   * Prefer the discriminated fields below (placedForMemberId vs
+   * onBehalfOfUserId) for new code — agentId is kept for back-compat with
+   * existing localStorage rows.
+   */
   agentId: string
   agentName: string
   agentEmail: string
+  /**
+   * Set when the row was created via the team_admin agent-picker gate.
+   * The TeamMember.id, not a User.id. Used by cart's "Next order" URL to
+   * route back to /dashboard/place-order?team_member_id= so the same
+   * member is pre-selected without re-running the picker, and avoids the
+   * 403 that resulted from stuffing a TeamMember.id into ?on_behalf_of=.
+   */
+  placedForMemberId?: string
   /** Snapshot of the wizard form state at time of "Add to cart" */
   formData: OrderFormData
   /** Items array that the API expects (mirror of what review-step builds) */

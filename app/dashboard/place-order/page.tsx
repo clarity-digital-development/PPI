@@ -55,6 +55,13 @@ function PlaceOrderPageInner() {
   const searchParams = useSearchParams()
   const onBehalfOf = searchParams.get('on_behalf_of') || undefined
   const cartItemId = searchParams.get('cart_item_id') || undefined
+  // Pre-select a team_admin gate member without re-running the picker.
+  // Set by the cart's "Next order" button when the cart was built via the
+  // team_admin agent-picker gate. The value is a TeamMember.id (NOT a
+  // User.id) — must NEVER be passed to /api/inventory?on_behalf_of=,
+  // which expects a User.id and returns 403. We route it through
+  // /api/inventory?member_id= via the existing selectedMember flow.
+  const teamMemberIdParam = searchParams.get('team_member_id') || undefined
 
   // Editing an existing cart row: hydrate the wizard from its snapshot rather
   // than running the agent-picker gate.
@@ -167,7 +174,19 @@ function PlaceOrderPageInner() {
             const teamsData = await teamsRes.json()
             setHasTeam(!!teamsData.team)
             setFreeLockboxInstall(!!teamsData.team?.freeLockboxInstall)
-            setTeamMembers(Array.isArray(teamsData.members) ? teamsData.members : [])
+            const members: TeamMember[] = Array.isArray(teamsData.members) ? teamsData.members : []
+            setTeamMembers(members)
+            // ?team_member_id= in the URL (set by cart's "Next order" link)
+            // pre-selects that member so the admin doesn't have to re-pick
+            // from the gate every time they add a second cart row. Reuses
+            // the existing handleSelectMember flow which scopes the
+            // inventory fetch to /api/inventory?member_id=.
+            if (teamMemberIdParam && !editingItem) {
+              const pre = members.find((m) => m.id === teamMemberIdParam)
+              if (pre) {
+                void handleSelectMember(pre)
+              }
+            }
           }
         }
       } catch (error) {
@@ -182,7 +201,11 @@ function PlaceOrderPageInner() {
     // the wrong inventory scope.
     if (!cartLoaded) return
     fetchData()
-  }, [onBehalfOf, cartLoaded, editingItem?.agentId])
+    // teamMemberIdParam is in deps so a navigation from /cart "Next order"
+    // (which adds ?team_member_id=) re-runs the gate auto-pick. Soft-nav
+    // doesn't remount the page so without this the param would be ignored.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onBehalfOf, cartLoaded, editingItem?.agentId, teamMemberIdParam])
 
   // Load the selected team member's filtered inventory, then drop into the wizard.
   async function handleSelectMember(member: TeamMember) {
@@ -407,7 +430,14 @@ function PlaceOrderPageInner() {
               key={cartItemId || 'new'}
               inventory={inventory}
               paymentMethods={paymentMethods}
-              onBehalfOf={editingItem?.agentId || onBehalfOf}
+              // For gate-path cart rows (placedForMemberId set), the agentId
+              // is a TeamMember.id and must NOT be passed as onBehalfOf —
+              // doing so 403s the review-step's hold POST (which calls
+              // canActOnBehalfOf with that id). Use the URL onBehalfOf only
+              // (undefined for gate-path cart edits) and pass the TeamMember
+              // id via placedForMemberId so the wizard scopes correctly.
+              onBehalfOf={editingItem?.placedForMemberId ? onBehalfOf : (editingItem?.agentId || onBehalfOf)}
+              placedForMemberId={editingItem?.placedForMemberId}
               currentUserRole={currentUserRole}
               initialFormData={editingItem?.formData}
               editingCartItemId={editingItem?.id}

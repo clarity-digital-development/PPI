@@ -561,16 +561,26 @@ export function ReviewStep({
       let holdsExpireAt: string | undefined = existingRow?.holdsExpireAt
       try {
         for (const req of toAcquire) {
+          // Gate path: actor IS the team_admin (no on-behalf-of). Send the
+          // TeamMember.id as assigned_to_member_id_snapshot instead so the
+          // hold is correctly tagged to the agent. Mixing it into
+          // on_behalf_of_user_id would 403 (canActOnBehalfOf would try to
+          // findUnique a User with that TeamMember.id and return false).
+          const holdBody: Record<string, unknown> = {
+            item_type: req.itemType,
+            item_id: req.itemId,
+            cart_session_id: cartSessionId,
+            cart_item_id: cartItemId,
+          }
+          if (placedForMemberId) {
+            holdBody.assigned_to_member_id_snapshot = placedForMemberId
+          } else if (onBehalfOf) {
+            holdBody.on_behalf_of_user_id = onBehalfOf
+          }
           const res = await fetch('/api/inventory/holds', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              item_type: req.itemType,
-              item_id: req.itemId,
-              cart_session_id: cartSessionId,
-              cart_item_id: cartItemId,
-              on_behalf_of_user_id: onBehalfOf || undefined,
-            }),
+            body: JSON.stringify(holdBody),
           })
           if (!res.ok) {
             const errBody = await res.json().catch(() => ({}))
@@ -652,6 +662,10 @@ export function ReviewStep({
           agentId: placedForMemberId || onBehalfOf || '',
           agentName: agentName || 'Unassigned',
           agentEmail,
+          // Discriminated TeamMember.id (gate path only). Lets cart's
+          // "Next order" route back with ?team_member_id= instead of
+          // misusing ?on_behalf_of= which expects a User.id and 403s.
+          placedForMemberId: placedForMemberId || undefined,
           formData,
           items,
           estimatedTotal: displayTotal,
