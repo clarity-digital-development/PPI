@@ -234,9 +234,17 @@ export function ReviewStep({
   }
 
   // WHY: server pushes a synthetic surcharge OrderItem into items[] then sums — mirror that here.
-  const serviceAreaSurcharge = serviceAreaQuote?.tier === 'surcharge'
-    ? serviceAreaQuote.surchargeCents / 100
-    : 0
+  // Flat-fee orders never carry an OOA surcharge (server clamps to FLAT_FEE_BASE on save), so
+  // zero the surcharge for display regardless of what the quote endpoint returns. Belt-and-
+  // suspenders for the admin-edit case where the quote endpoint resolves exemption against
+  // the admin session (not the order owner) and so wrongly returns a surcharge for an exempt
+  // broker. Even after the quote endpoint is payer-aware this stays defensive: if the gate
+  // is ever refactored, the surcharge is already neutralized at source for flat-fee orders.
+  const serviceAreaSurcharge = flatFee
+    ? 0
+    : serviceAreaQuote?.tier === 'surcharge'
+      ? serviceAreaQuote.surchargeCents / 100
+      : 0
   const itemsSubtotal = orderItems.reduce((sum, item) => sum + item.price, 0)
   const subtotal = itemsSubtotal + serviceAreaSurcharge
   // Discountable subtotal excludes items like brochure box purchases
@@ -384,7 +392,14 @@ export function ReviewStep({
     let cancelled = false
     const t = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/service-area/quote?zip=${encodeURIComponent(zip)}`)
+        // In edit mode pass orderId so the server resolves exemption against the
+        // order's payer (broker), not the logged-in user. Critical for admin-as-
+        // support edits of broker orders where admin isn't exempt but the broker
+        // is — without orderId the preview would wrongly show a $50 surcharge.
+        const url = isEdit && orderId
+          ? `/api/service-area/quote?zip=${encodeURIComponent(zip)}&orderId=${encodeURIComponent(orderId)}`
+          : `/api/service-area/quote?zip=${encodeURIComponent(zip)}`
+        const res = await fetch(url)
         if (!res.ok) {
           if (!cancelled) setServiceAreaQuote(null)
           return
@@ -399,7 +414,7 @@ export function ReviewStep({
       cancelled = true
       clearTimeout(t)
     }
-  }, [formData.property_zip])
+  }, [formData.property_zip, isEdit, orderId])
 
   // Handle promo code application
   const handleApplyPromoCode = async () => {

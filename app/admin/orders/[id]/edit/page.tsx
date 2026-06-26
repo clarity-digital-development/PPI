@@ -40,13 +40,22 @@ export default function AdminEditOrderPage() {
   const [inventory, setInventory] = useState<WizardInventory | undefined>()
   const [editMeta, setEditMeta] = useState<{ orderNumber: string; originalTotal: number } | null>(null)
   const [freeLockboxInstall, setFreeLockboxInstall] = useState(false)
+  // Pass into <OrderWizard> so ReviewStep clamps display to FLAT_FEE_BASE
+  // instead of recomputing per-item totals — without this, admin edits of a
+  // flat-fee broker order show a scary "astronomical" total + a phantom $50
+  // OOA line. Server still clamps correctly on save either way.
+  const [flatFee, setFlatFee] = useState(false)
 
   useEffect(() => {
     async function fetchData() {
       try {
-        const [orderRes, inventoryRes] = await Promise.all([
+        // Also fetch /api/teams for the order owner's freeLockboxInstall perk
+        // (mirrors the customer-facing edit shell at dashboard/orders/[id]/edit).
+        // 403 for non-team-admin admins acting on solo orders — handled below.
+        const [orderRes, inventoryRes, teamsRes] = await Promise.all([
           fetch(`/api/orders/${orderId}`),
           fetch('/api/inventory'),
+          fetch('/api/teams'),
         ])
 
         if (!orderRes.ok) {
@@ -54,7 +63,13 @@ export default function AdminEditOrderPage() {
         }
 
         const orderData = await orderRes.json()
-        const order = orderData.order as OrderLike & { id: string; orderNumber: string; status: string; total: number | string }
+        const order = orderData.order as OrderLike & {
+          id: string
+          orderNumber: string
+          status: string
+          total: number | string
+          flatFeeApplied?: boolean
+        }
 
         if (order.status === 'completed' || order.status === 'cancelled') {
           throw new Error('This order can no longer be edited (completed or cancelled).')
@@ -64,6 +79,14 @@ export default function AdminEditOrderPage() {
           ? await inventoryRes.json()
           : undefined
 
+        if (teamsRes.ok) {
+          const teamsData = (await teamsRes.json()) as { team?: { freeLockboxInstall?: boolean } } | null
+          setFreeLockboxInstall(!!teamsData?.team?.freeLockboxInstall)
+        }
+
+        // Set flatFee BEFORE setFormData so the wizard renders with the flat-fee
+        // branch on first paint — avoids a one-render flash of the per-item total.
+        setFlatFee(!!order.flatFeeApplied)
         setInventory(augmentInventoryWithOrder(rawInventory, order))
         setFormData(orderToFormData(order))
         setEditMeta({ orderNumber: order.orderNumber, originalTotal: Number(order.total) })
@@ -170,6 +193,7 @@ export default function AdminEditOrderPage() {
         inventory={inventory}
         editMeta={editMeta ?? undefined}
         lockboxInstallFee={freeLockboxInstall ? 0 : undefined}
+        flatFee={flatFee}
       />
     </div>
   )

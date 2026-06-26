@@ -26,6 +26,10 @@ export default function EditOrderPage() {
   const [editMeta, setEditMeta] = useState<{ orderNumber: string; originalTotal: number } | null>(null)
   // Per-broker perk: owned-lockbox install free for this team (e.g. Semonin).
   const [freeLockboxInstall, setFreeLockboxInstall] = useState(false)
+  // Pass into <OrderWizard> so ReviewStep clamps display to FLAT_FEE_BASE —
+  // without this, flat-fee broker self-edits show a per-item recomputed total
+  // and a phantom $50 OOA line. Server still clamps correctly on save either way.
+  const [flatFee, setFlatFee] = useState(false)
 
   useEffect(() => {
     async function fetchData() {
@@ -52,7 +56,12 @@ export default function EditOrderPage() {
           status: string
           total: number | string
           placedForAgentName?: string | null
+          flatFeeApplied?: boolean
         }
+
+        // Set flatFee BEFORE setFormData so first paint already has the flat-fee
+        // branch — avoids a flash of the per-item total.
+        setFlatFee(!!order.flatFeeApplied)
 
         if (order.status === 'completed' || order.status === 'cancelled') {
           throw new Error('This order can no longer be edited')
@@ -167,6 +176,7 @@ export default function EditOrderPage() {
           inventory={inventory}
           editMeta={editMeta ?? undefined}
           lockboxInstallFee={freeLockboxInstall ? 0 : undefined}
+          flatFee={flatFee}
         />
       </div>
     </div>
