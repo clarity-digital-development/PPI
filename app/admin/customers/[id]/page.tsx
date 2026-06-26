@@ -561,15 +561,22 @@ export default function CustomerDetailPage() {
         </div>
       </div>
 
-      {/* Team Members (only for team_admin customers) */}
-      {data.team && (
+      {/* Team Members — shows for ANY team_admin, including those without a
+          Team row yet. The POST /api/admin/customers/[id]/team-members endpoint
+          auto-creates a "<fullName>'s Team" on first member add, so this card
+          needs to surface the Add button before the team exists — otherwise
+          the only path to bootstrap is the broker's self-service /dashboard/teams
+          page, which is what Ryan caught on the Redfin account. */}
+      {data.customer.role === 'team_admin' && (
         <Card className="mb-6">
           <CardContent className="p-6">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <Users className="w-5 h-5 text-pink-500" />
                 <h2 className="font-semibold text-gray-900">Team Members</h2>
-                <span className="text-sm text-gray-500">{data.team.name}</span>
+                {data.team && (
+                  <span className="text-sm text-gray-500">{data.team.name}</span>
+                )}
               </div>
               <Button
                 size="sm"
@@ -582,7 +589,7 @@ export default function CustomerDetailPage() {
                 Add Member
               </Button>
             </div>
-            {data.team.members.length > 0 ? (
+            {data.team && data.team.members.length > 0 ? (
               <div className={`space-y-2 ${data.team.members.length > 5 ? 'max-h-[300px] overflow-y-auto pr-1' : ''}`}>
                 {data.team.members.map((member) => (
                   <div
@@ -602,7 +609,11 @@ export default function CustomerDetailPage() {
                 ))}
               </div>
             ) : (
-              <p className="text-gray-500 text-sm">No members yet</p>
+              <p className="text-gray-500 text-sm">
+                {data.team
+                  ? 'No members yet'
+                  : 'No team yet — adding the first member will create one.'}
+              </p>
             )}
           </CardContent>
         </Card>
