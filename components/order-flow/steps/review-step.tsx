@@ -1371,6 +1371,11 @@ export function ReviewStep({
             <span className="text-gray-900">{isEdit ? 'New Total' : 'Total'}</span>
             <span className="text-pink-600">${total.toFixed(2)}</span>
           </div>
+          {total > 0 && (
+            <p className="text-xs text-gray-500 italic text-right">
+              Pickup is included &mdash; that&apos;s about ${(total / 2).toFixed(2)} per trip.
+            </p>
+          )}
           {isEdit && editMeta && Math.abs(total - editMeta.originalTotal) >= 0.01 && (
             <div className={cn(
               'flex justify-between text-sm font-medium pt-1',
