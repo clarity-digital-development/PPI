@@ -132,7 +132,7 @@ pink-post-installations/
 The order wizard guides customers through 9 steps:
 
 1. **Property Information** - Address, property type, installation notes
-2. **Post Selection** - White ($55), Black ($55), or Pink ($65)
+2. **Post Selection** - White ($59), Black ($59), or Pink ($65)
 3. **Sign Selection** - Use stored sign, sign at property, or no sign
 4. **Rider Selection** - Categorized accordion selector with 27+ options (Sold, Pending, Coming Soon, bedrooms, property features, and more). Rent for $5 or install own for $2
 5. **Lockbox Selection** - SentriLock, mechanical (own or rental)
@@ -281,8 +281,8 @@ The order wizard guides customers through 9 steps:
 | Item | Price |
 |------|-------|
 | **Posts** | |
-| White Vinyl Post (install & pickup) | $55 |
-| Black Vinyl Post (install & pickup) | $55 |
+| White Vinyl Post (install & pickup) | $59 |
+| Black Vinyl Post (install & pickup) | $59 |
 | Signature Pink Post (install & pickup) | $65 |
 | Reinstallation (weather/natural) | FREE |
 | **Signs** | |
@@ -298,7 +298,7 @@ The order wizard guides customers through 9 steps:
 | Rent brochure box | $5 |
 | Install from storage | $3 |
 | **Fees** | |
-| Fuel Surcharge (all orders) | $2.47 |
+| Fuel Surcharge (all orders) | $3.49 |
 | Expedite Fee (same day) | $50 |
 
 ---

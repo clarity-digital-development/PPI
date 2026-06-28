@@ -8,9 +8,8 @@ import { createPaymentIntent, createCustomer, calculateTax, getStripeErrorMessag
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 import { resolveServiceArea } from '@/lib/service-area'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
-import { computeFlatFeePricing } from '@/lib/orders/pricing'
+import { computeFlatFeePricing, FUEL_SURCHARGE } from '@/lib/orders/pricing'
 
-const FUEL_SURCHARGE = 2.47
 const NO_POST_SURCHARGE = 40
 const FALLBACK_TAX_RATE = 0.06 // Fallback Kentucky 6% sales tax if Stripe Tax unavailable
 

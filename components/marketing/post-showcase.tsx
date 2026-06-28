@@ -7,7 +7,7 @@ import { Star } from 'lucide-react'
 const posts = [
   {
     name: 'White Vinyl',
-    price: 55,
+    price: 59,
     image: '/images/posts/white-post.png',
     description: 'Installation & Pickup',
     accent: 'from-gray-100 to-white',
@@ -24,7 +24,7 @@ const posts = [
   },
   {
     name: 'Black Vinyl',
-    price: 55,
+    price: 59,
     image: '/images/posts/black-post.png',
     description: 'Installation & Pickup',
     accent: 'from-gray-100 to-white',

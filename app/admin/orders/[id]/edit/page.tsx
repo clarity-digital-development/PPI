@@ -194,6 +194,7 @@ export default function AdminEditOrderPage() {
         editMeta={editMeta ?? undefined}
         lockboxInstallFee={freeLockboxInstall ? 0 : undefined}
         flatFee={flatFee}
+        adminView
       />
     </div>
   )

@@ -30,6 +30,7 @@ export function ReviewStep({
   editMeta,
   lockboxInstallFee,
   flatFee,
+  adminView,
   editingCartItemId,
 }: StepProps) {
   // Edit mode reuses this step to save changes to an existing order (PATCH,
@@ -1314,15 +1315,37 @@ export function ReviewStep({
             </div>
           )}
           {serviceAreaSurcharge > 0 && serviceAreaQuote?.tier === 'surcharge' && (
-            <div className="flex justify-between text-sm">
-              <span className="text-gray-600">
-                Out-of-area service fee
-                {serviceAreaQuote.centerName && serviceAreaQuote.driveTimeMinutes != null
-                  ? ` — ${serviceAreaQuote.centerName} (~${serviceAreaQuote.driveTimeMinutes} min)`
-                  : ''}
-              </span>
-              <span className="text-gray-900">${serviceAreaSurcharge.toFixed(2)}</span>
-            </div>
+            <details className="group">
+              {/* The whole <summary> is the native click target — clicking
+                  anywhere on the row toggles the explainer. The "What's this?"
+                  / "Hide" text is a visual hint that swaps via group-open:.
+                  Don't wrap inner <button>s in summary: they steal the click
+                  and break the native toggle (and it's an a11y violation). */}
+              <summary className="flex justify-between text-sm cursor-pointer list-none [&::-webkit-details-marker]:hidden hover:bg-pink-50/50 rounded px-1 -mx-1 py-0.5">
+                <span className="text-gray-600 inline-flex items-center gap-1.5 flex-wrap">
+                  Out-of-area service fee
+                  {/* Internal breadcrumb: which service center triggered the fee
+                      and the estimated drive time. Customer view hides this
+                      because "Bardstown (~51 min)" on a Harrodsburg install
+                      reads like the install routes through Bardstown — caused a
+                      cart cancellation 2026-06-27. Admin edit shell passes
+                      adminView=true so admins still see which center triggered. */}
+                  {adminView && serviceAreaQuote.centerName && serviceAreaQuote.driveTimeMinutes != null
+                    ? ` — ${serviceAreaQuote.centerName} (~${serviceAreaQuote.driveTimeMinutes} min)`
+                    : ''}
+                  <span className="text-pink-600 underline text-xs font-medium group-open:hidden">
+                    What&apos;s this?
+                  </span>
+                  <span className="text-pink-600 underline text-xs font-medium hidden group-open:inline">
+                    Hide
+                  </span>
+                </span>
+                <span className="text-gray-900">${serviceAreaSurcharge.toFixed(2)}</span>
+              </summary>
+              <p className="mt-2 text-xs text-gray-600 leading-relaxed bg-pink-50 rounded-lg p-3 border border-pink-100">
+                Trips that are approx 1 hour+ out of town result in a $25 per trip (there to install and then pickup when sold) for a total of $50. Pink Posts strives to keep prices as low and attainable as possible. When an installer drives 1 hour away, this results in 4 hours (there/back to install, there/back for pickup) it becomes a loss for the company. This out of area fee allows Pink Posts to accommodate even your rural listings just as we do in town.
+              </p>
+            </details>
           )}
           <div className="flex justify-between text-sm">
             <span className="text-gray-600">Fuel Surcharge</span>

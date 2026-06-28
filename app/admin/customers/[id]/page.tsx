@@ -1694,7 +1694,7 @@ export default function CustomerDetailPage() {
             </label>
           </div>
           {/* CR4: flat-fee billing — every order for this account is a flat
-              $66.07 regardless of items chosen. Enforced server-side. */}
+              $67.09 regardless of items chosen. Enforced server-side. */}
           <div>
             <label className="flex items-start gap-2 cursor-pointer">
               <input
@@ -1704,9 +1704,9 @@ export default function CustomerDetailPage() {
                 className="mt-0.5 w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
               />
               <span className="text-sm">
-                <span className="font-medium text-gray-700">Flat-fee billing ($66.07 per order)</span>
+                <span className="font-medium text-gray-700">Flat-fee billing ($67.09 per order)</span>
                 <span className="block text-xs text-gray-500">
-                  Every order for this account is charged a flat <strong>$66.07</strong> ($60 base + $2.47 gas + 6% tax) regardless of what&apos;s selected — expedite, no-post, promo, and out-of-area fees are suppressed. Items still flow to fulfillment and service requests as normal.
+                  Every order for this account is charged a flat <strong>$67.09</strong> ($60 base + $3.49 gas + 6% tax) regardless of what&apos;s selected — expedite, no-post, promo, and out-of-area fees are suppressed. Items still flow to fulfillment and service requests as normal.
                 </span>
               </span>
             </label>

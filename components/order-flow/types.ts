@@ -127,6 +127,13 @@ export interface StepProps {
   // CR4: flat-fee account — review step shows the flat $66.07 breakdown instead
   // of itemized pricing (server clamps the charge regardless).
   flatFee?: boolean
+  // When true, the review step shows internal distance-check breadcrumb info
+  // alongside the out-of-area fee (which service center triggered it + the
+  // estimated drive time). Customer view hides this since seeing "Bardstown
+  // (~51 min)" on a Harrodsburg install was confusing — they thought the
+  // install was routed through Bardstown. Admin edit shell passes true so
+  // admins can still see which center triggered the fee when reviewing an order.
+  adminView?: boolean
   // When set, the review step updates this existing cart row in place
   // (with a hold diff) instead of creating a new one.
   editingCartItemId?: string
@@ -134,8 +141,8 @@ export interface StepProps {
 
 export const PRICING = {
   posts: {
-    'White Vinyl Post': 55,
-    'Black Vinyl Post': 55,
+    'White Vinyl Post': 59,
+    'Black Vinyl Post': 59,
     'Signature Pink Post': 65,
     'Metal Frame Sign': 40,
     'Wood Panel Post': 95,
@@ -153,7 +160,7 @@ export const PRICING = {
   second_post: 25,
   brochure_box_purchase: 24,
   brochure_box_install: 3,
-  fuel_surcharge: 2.47,
+  fuel_surcharge: 3.49,
   expedite_fee: 50,
   tax_rate: 0.06, // Kentucky 6% sales tax
 } as const

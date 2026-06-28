@@ -34,7 +34,7 @@ async function main() {
       create: {
         name: 'White Vinyl Post',
         description: 'Classic white vinyl post with professional installation and pickup',
-        price: 55.00,
+        price: 59.00,
         imageUrl: '/images/posts/white-post.jpg',
         isActive: true,
       },
@@ -45,7 +45,7 @@ async function main() {
       create: {
         name: 'Black Vinyl Post',
         description: 'Sleek black vinyl post with professional installation and pickup',
-        price: 55.00,
+        price: 59.00,
         imageUrl: '/images/posts/black-post.jpg',
         isActive: true,
       },

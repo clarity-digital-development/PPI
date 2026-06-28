@@ -337,7 +337,7 @@ export default function AdminSettingsPage() {
             <div className="space-y-2 text-sm">
               <div className="flex items-center justify-between py-2 border-b border-gray-100">
                 <span className="text-gray-600">Fuel Surcharge</span>
-                <span className="font-semibold text-gray-900">$2.47</span>
+                <span className="font-semibold text-gray-900">$3.49</span>
               </div>
               <div className="flex items-center justify-between py-2 border-b border-gray-100">
                 <span className="text-gray-600">Expedite Fee</span>
@@ -509,7 +509,7 @@ export default function AdminSettingsPage() {
                     }
                     className="w-4 h-4 text-pink-600 border-gray-300 rounded focus:ring-pink-500"
                   />
-                  <span className="text-sm text-gray-700">Waive fuel surcharge ($2.47)</span>
+                  <span className="text-sm text-gray-700">Waive fuel surcharge ($3.49)</span>
                 </label>
                 {promoError && (
                   <p className="text-red-600 text-sm mt-2">{promoError}</p>

@@ -8,7 +8,7 @@ const posts = [
     slug: 'white',
     description:
       'Our classic white PVC post offers timeless elegance that complements any property style. Durable, weather-resistant, and maintenance-free.',
-    installationFee: 55,
+    installationFee: 59,
     imageUrl: '/images/posts/white-post.png',
   },
   {
@@ -16,7 +16,7 @@ const posts = [
     slug: 'black',
     description:
       'Modern sophistication with a sleek black finish. Perfect for upscale listings and agents who want a contemporary look.',
-    installationFee: 55,
+    installationFee: 59,
     imageUrl: '/images/posts/black-post.png',
   },
   {

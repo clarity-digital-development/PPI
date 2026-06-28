@@ -10,14 +10,14 @@ const posts = [
     name: 'White PVC',
     slug: 'white',
     description: 'Classic elegance that complements any property style.',
-    price: 55,
+    price: 59,
     image: '/images/posts/white-post.png',
   },
   {
     name: 'Black PVC',
     slug: 'black',
     description: 'Modern sophistication with a sleek finish.',
-    price: 55,
+    price: 59,
     image: '/images/posts/black-post.png',
   },
   {

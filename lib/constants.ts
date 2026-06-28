@@ -62,14 +62,19 @@ export const INVOICE_STATUS = {
 } as const
 
 // Pricing (in dollars)
+// NOTE: PRICING.posts is currently unused — the canonical source for post
+// installation prices is `components/order-flow/types.ts`'s PRICING.posts
+// (used by the order wizard) and the per-page hardcoded values on the
+// marketing + dashboard post-options pages. Keep these mirrored in case
+// something starts reading them again.
 export const PRICING = {
   posts: {
     white: {
-      installation: 55,
+      installation: 59,
       replacement: 75,
     },
     black: {
-      installation: 55,
+      installation: 59,
       replacement: 75,
     },
     pink: {

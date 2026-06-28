@@ -81,7 +81,7 @@ async function main() {
   // Agent-attributed orders — two editable, one completed.
   const pink = await prisma.postType.findFirst({ where: { name: 'Signature Pink Post' } })
   const metal = await prisma.postType.findFirst({ where: { name: 'Metal Frame Sign' } })
-  const baseProp = { userId: user.id, propertyType: 'house' as const, propertyCity: 'Lexington', propertyState: 'KY', propertyZip: '40502', signOrientation: 'installer_decides', hasMarkerPlaced: true, fuelSurcharge: 2.47 }
+  const baseProp = { userId: user.id, propertyType: 'house' as const, propertyCity: 'Lexington', propertyState: 'KY', propertyZip: '40502', signOrientation: 'installer_decides', hasMarkerPlaced: true, fuelSurcharge: 3.49 }
 
   await prisma.order.create({ data: {
     ...baseProp, orderNumber: orderNo(), placedForAgentName: 'Ashley Carter', postTypeId: pink?.id ?? null,

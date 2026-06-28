@@ -8,7 +8,7 @@ import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
 import { audit, AuditAction } from '@/lib/audit'
 import { chargePaymentMethod, isDetachedPaymentMethodError } from '@/lib/stripe'
 import { resolveEffectivePayer } from '@/lib/orders/effective-payer'
-import { FLAT_FEE_BASE, FUEL_SURCHARGE } from '@/lib/orders/pricing'
+import { FLAT_FEE_BASE } from '@/lib/orders/pricing'
 import { z } from 'zod'
 
 // What happened to the customer's wallet as a result of this edit. The customer
@@ -236,20 +236,23 @@ export async function PATCH(
     // The diff between this new total and the existing order.total is charged
     // (or credit-flagged, or invoice-folded) at save time below — search for
     // "chargeOutcome" — so admins don't have to chase the gap manually.
-    // CR4 (Round 22): a flat-fee order stays at the flat $66.07 total on edit —
-    // never diff-charged. Clamp the money fields (items are still replaced below
-    // for fulfillment). With subtotal=$60 and the other components zeroed, the
-    // existing tax/total formulas yield $3.60 tax and a $66.07 total, so the
-    // diff vs the original flat total is $0 and no charge is attempted.
+    // CR4 (Round 22): a flat-fee order stays at the flat total it was placed at
+    // (currently $67.09; legacy orders may be $66.07 if placed before the fuel
+    // bump on 2026-06-27) — never diff-charged. Clamp money fields (items still
+    // replaced below for fulfillment). With subtotal=$60 and the original
+    // fuelSurcharge preserved, the tax/total formulas yield the same total the
+    // order was charged at, so the diff vs original is $0 and no charge fires.
     const isFlatFee = existingOrder.flatFeeApplied
     if (isFlatFee) noPostSurcharge = 0
     const newSubtotal = isFlatFee
       ? FLAT_FEE_BASE
       : editData.items.reduce((sum, item) => sum + item.total_price, 0)
 
-    // Fuel surcharge is preserved from the existing order (never re-charged);
-    // flat-fee orders always carry the standard $2.47.
-    const fuelSurcharge = isFlatFee ? FUEL_SURCHARGE : Number(existingOrder.fuelSurcharge)
+    // Fuel surcharge is ALWAYS preserved from the existing order — never
+    // re-priced. Customers shouldn't be hit with retroactive fuel-rate hikes
+    // just because they edited an order placed at the old rate. This applies
+    // uniformly to flat-fee and non-flat-fee orders.
+    const fuelSurcharge = Number(existingOrder.fuelSurcharge)
     // Expedite fee follows the (editable) scheduling selection (0 when flat-fee).
     const expediteFee = isFlatFee ? 0 : (editData.is_expedited ? EXPEDITE_FEE : 0)
 

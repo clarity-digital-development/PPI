@@ -88,8 +88,9 @@ model User {
   // until an admin bundles them into an Invoice for collection.
   invoiceBilling      Boolean  @default(false) @map("invoice_billing")
   // CR2 (Round 22): admin-toggle that bills this account a single flat fee per
-  // order ($66.07 = $60 base + $2.47 fuel + 6% tax) regardless of items chosen.
+  // order ($67.09 = $60 base + $3.49 fuel + 6% tax) regardless of items chosen.
   // Enforced server-side at order create/edit; items still flow to fulfillment.
+  // (Fuel went 2.47 → 3.49 on 2026-06-27 per Ryan.)
   flatFeeBilling      Boolean  @default(false) @map("flat_fee_billing")
   // Optional billing-contact email — when set, bundled-invoice emails go
   // here instead of the broker's account email. Lets a broker route bills
@@ -419,7 +420,7 @@ model Order {
 
   // Pricing
   subtotal                  Decimal @db.Decimal(10, 2)
-  fuelSurcharge             Decimal @default(2.47) @map("fuel_surcharge") @db.Decimal(10, 2)
+  fuelSurcharge             Decimal @default(3.49) @map("fuel_surcharge") @db.Decimal(10, 2)
   noPostSurcharge           Decimal @default(0) @map("no_post_surcharge") @db.Decimal(10, 2)
   // Out-of-area surcharge: $50 (5000 cents) when ZIP falls in surcharge band of nearest center.
   serviceAreaSurchargeCents Int     @default(0) @map("service_area_surcharge_cents")
