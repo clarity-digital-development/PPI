@@ -55,22 +55,20 @@ function toSelectedRider(selection: RiderSelection): SelectedRider | null {
   }
 
   if (!rider) {
-    // No catalog match. If we have a customer_rider_id, this is a real
-    // inventory item — broker accounts (e.g. Semonin) have admin-managed
-    // riders like agent-name labels ("Robert Butler w Photo") and custom
-    // slogans ("Distinctive Homes") that don't appear in the RIDERS
-    // catalog. Synthesize a SelectedRider keyed by the slug so the rider
-    // survives the round-trip into the edit wizard instead of being
-    // silently dropped. SelectedRidersList humanizes the slug for display.
-    if (selection.customer_rider_id) {
-      return {
-        riderId: selection.rider_type,
-        source,
-        price,
-        customValue: selection.custom_value,
-      }
+    // No catalog match — synthesize a SelectedRider keyed by the slug so the
+    // rider survives round-trip into the edit wizard instead of being
+    // silently dropped. Covers admin-managed name labels ("Robert Butler w
+    // Photo"), custom slogans ("Distinctive Homes"), and one-off name riders
+    // ("Sarah Arvin") which may or may not have a matching customerRider
+    // inventory id — the admin-add UI doesn't always link them, so requiring
+    // customer_rider_id here was silently dropping unlinked admin items on
+    // customer self-edit. SelectedRidersList humanizes the slug for display.
+    return {
+      riderId: selection.rider_type,
+      source,
+      price,
+      customValue: selection.custom_value,
     }
-    return null
   }
 
   return {

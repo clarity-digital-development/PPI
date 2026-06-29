@@ -1004,6 +1004,19 @@ export function ReviewStep({
     try {
       const items = buildItems()
 
+      // Tell the server which customer-inventory ids the form's pickers had
+      // rendered (or could render). Anything on the existing order that's
+      // NOT in this set AND NOT in items[] is treated as "form silently
+      // dropped" and preserved server-side. Without this, an admin-added
+      // rider like "Sarah Arvin" (no catalog match, sometimes no inventory
+      // link) would silently disappear on customer self-edit.
+      const clientAwareInventory = {
+        sign_ids: (inventory?.signs ?? []).map(s => s.id),
+        rider_ids: (inventory?.riders ?? []).map(r => r.id),
+        lockbox_ids: (inventory?.lockboxes ?? []).map(l => l.id),
+        brochure_box_ids: [] as string[],
+      }
+
       const response = await fetch(`/api/orders/${orderId}/edit`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -1032,6 +1045,7 @@ export function ReviewStep({
           // two admins editing the same order can't silently overwrite
           // each other or charge against stale baselines.
           expected_total: editMeta?.originalTotal,
+          client_aware_inventory: clientAwareInventory,
         }),
       })
 

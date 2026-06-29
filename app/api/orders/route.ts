@@ -277,20 +277,31 @@ export async function POST(request: NextRequest) {
     const noPostSurcharge = !orderData.post_type ? NO_POST_SURCHARGE : 0
     const actualFuelSurcharge = fuelSurchargeWaived ? 0 : FUEL_SURCHARGE
     const discountedSubtotal = Math.max(0, subtotal - discount)
-    const taxableAmount = discountedSubtotal + expediteFee + noPostSurcharge // Fuel surcharge typically not taxed
+    // Out-of-area service-area surcharge is NOT taxed (KY non-taxable: a pure
+    // service fee with no physical post attached, same rule as standalone
+    // service trips per commit a047770). Subtract its value from the tax base
+    // so Stripe Tax and the fallback agree. Ryan 2026-06-29: confirmed.
+    const ooaSurchargeAmount = orderData.items
+      .filter(i => (i.item_type as string) === 'surcharge')
+      .reduce((sum, i) => sum + i.total_price, 0)
+    const taxableAmount = Math.max(0, discountedSubtotal - ooaSurchargeAmount) + expediteFee + noPostSurcharge // Fuel + OOA surcharges not taxed
 
     // Calculate tax using Stripe Tax (with fallback to hardcoded rate)
     let tax = 0
     let taxCalculationMethod = 'fallback'
 
     try {
-      // Build line items for Stripe Tax calculation
-      const taxLineItems = orderData.items.map((item, index) => ({
-        amount: Math.round(item.total_price * 100), // Convert to cents
-        reference: `item_${index}_${item.item_type}`,
-        // Use general services tax code - Stripe will apply appropriate rate
-        tax_code: 'txcd_99999999',
-      }))
+      // Build line items for Stripe Tax calculation — EXCLUDE itemType
+      // 'surcharge' (OOA service fee) so Stripe doesn't tax it. See the
+      // taxableAmount comment above for the KY non-taxable rule.
+      const taxLineItems = orderData.items
+        .filter(item => (item.item_type as string) !== 'surcharge')
+        .map((item, index) => ({
+          amount: Math.round(item.total_price * 100), // Convert to cents
+          reference: `item_${index}_${item.item_type}`,
+          // Use general services tax code - Stripe will apply appropriate rate
+          tax_code: 'txcd_99999999',
+        }))
 
       // Add expedite fee as a line item if applicable
       if (expediteFee > 0) {

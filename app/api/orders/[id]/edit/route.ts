@@ -57,6 +57,19 @@ const editOrderSchema = z.object({
   // Optional for backwards compat: older clients without the token bypass the
   // check, accepting the last-write-wins behavior they have today.
   expected_total: z.number().optional(),
+  // Customer inventory ids the form was AWARE of (rendered in its picker or
+  // available to render — i.e. the customer had a chance to de-select them).
+  // The server uses this to distinguish "customer intentionally removed this
+  // rider" (in this set, not in items[]) from "form silently dropped a line
+  // it couldn't represent" (NOT in this set, NOT in items[]). The latter get
+  // preserved unchanged. Without this signal an admin-added rider like "Sarah
+  // Arvin" (no catalog match) silently disappears on customer self-edit.
+  client_aware_inventory: z.object({
+    sign_ids: z.array(z.string()).default([]),
+    rider_ids: z.array(z.string()).default([]),
+    lockbox_ids: z.array(z.string()).default([]),
+    brochure_box_ids: z.array(z.string()).default([]),
+  }).optional(),
 })
 
 const NO_POST_SURCHARGE = 40
@@ -241,9 +254,67 @@ export async function PATCH(
     // order was charged at, so the diff vs original is $0 and no charge fires.
     const isFlatFee = existingOrder.flatFeeApplied
     if (isFlatFee) noPostSurcharge = 0
+
+    // ---- Preserve admin-added items the customer's form couldn't render ----
+    // Server-side defense-in-depth for the inventory-linked round-trip: any
+    // existing OrderItem with a customer_*_id NOT in the payload AND NOT in
+    // the form's client_aware_inventory set is re-attached unchanged. This
+    // prevents data loss when the form silently drops a line it couldn't
+    // represent (e.g. a non-catalog rider like "Sarah Arvin" with no
+    // customerRider link from the admin-add path).
+    //
+    // Skipped for admin role (admin's edit is authoritative — if admin omits
+    // an item, treat as intentional removal) and skipped when the client did
+    // NOT send client_aware_inventory (backwards-compat: an older client that
+    // doesn't know about the awareness signal would have every customer_*_id
+    // item force-preserved, blocking legitimate removal).
+    //
+    // Flat-fee orders STILL preserve for fulfillment fidelity (the install
+    // crew needs the full items list) even though item totals don't affect
+    // the clamped total — the FLAT_FEE_BASE branch below ignores
+    // preservedSubtotal so money is unaffected.
+    const preservationActive = user.role !== 'admin' && editData.client_aware_inventory !== undefined
+    const aware = editData.client_aware_inventory ?? { sign_ids: [], rider_ids: [], lockbox_ids: [], brochure_box_ids: [] }
+    const payloadSignIds = new Set(editData.items.map(i => i.customer_sign_id).filter((x): x is string => !!x))
+    const payloadRiderIds = new Set(editData.items.map(i => i.customer_rider_id).filter((x): x is string => !!x))
+    const payloadLockboxIds = new Set(editData.items.map(i => i.customer_lockbox_id).filter((x): x is string => !!x))
+    const payloadBrochureIds = new Set(editData.items.map(i => i.customer_brochure_box_id).filter((x): x is string => !!x))
+    const awareSignIds = new Set(aware.sign_ids ?? [])
+    const awareRiderIds = new Set(aware.rider_ids ?? [])
+    const awareLockboxIds = new Set(aware.lockbox_ids ?? [])
+    const awareBrochureIds = new Set(aware.brochure_box_ids ?? [])
+    const preserveItems = !preservationActive
+      ? []
+      : existingOrder.orderItems.filter(item => {
+          // OOA service-area surcharge has no customer form UI; always round-
+          // trip it so admin's items list still shows the "Out-of-area service
+          // fee" line after a customer self-edit.
+          if (item.itemType === 'surcharge') return true
+          // Inventory-linked items the form was unaware of (couldn't render →
+          // couldn't intentionally drop).
+          if (item.customerSignId) return !payloadSignIds.has(item.customerSignId) && !awareSignIds.has(item.customerSignId)
+          if (item.customerRiderId) return !payloadRiderIds.has(item.customerRiderId) && !awareRiderIds.has(item.customerRiderId)
+          if (item.customerLockboxId) return !payloadLockboxIds.has(item.customerLockboxId) && !awareLockboxIds.has(item.customerLockboxId)
+          if (item.customerBrochureBoxId) return !payloadBrochureIds.has(item.customerBrochureBoxId) && !awareBrochureIds.has(item.customerBrochureBoxId)
+          return false
+        })
+    const preservedSubtotal = preserveItems.reduce((sum, it) => sum + Number(it.totalPrice), 0)
+
+    // OOA service-area surcharge is preserved from the existing order (locked
+    // at placement time — never re-resolved). Normally the surcharge line is
+    // picked up by preserveItems above, but if the original surcharge line is
+    // somehow missing (legacy data, dropped by an earlier bug), fall back to
+    // the locked cents value on the Order row so total still reflects it.
+    // Flat-fee orders clear it because the flat total absorbs all fees.
+    const preservedSurchargeFromLines = preserveItems
+      .filter(it => it.itemType === 'surcharge')
+      .reduce((sum, it) => sum + Number(it.totalPrice), 0)
+    const lockedSurcharge = isFlatFee ? 0 : (existingOrder.serviceAreaSurchargeCents ?? 0) / 100
+    const surchargeShortfall = Math.max(0, lockedSurcharge - preservedSurchargeFromLines)
+
     const newSubtotal = isFlatFee
       ? FLAT_FEE_BASE
-      : editData.items.reduce((sum, item) => sum + item.total_price, 0)
+      : editData.items.reduce((sum, item) => sum + item.total_price, 0) + preservedSubtotal + surchargeShortfall
 
     // Fuel surcharge is ALWAYS preserved from the existing order — never
     // re-priced. Customers shouldn't be hit with retroactive fuel-rate hikes
@@ -267,7 +338,19 @@ export async function PATCH(
 
     if (isFlatFee) discount = 0
     const discountedSubtotal = Math.max(0, newSubtotal - discount)
-    const taxableAmount = discountedSubtotal + expediteFee + noPostSurcharge
+    // Tax base EXCLUDES any itemType 'surcharge' line AND any shortfall
+    // surcharge added back from the locked value. Everything else taxable
+    // stays in: regular items, preserved inventory items, expedite fee,
+    // no-post service-trip fee. Fuel surcharge is excluded as before. KY
+    // non-taxable rule: pure service charges with no physical post attached
+    // aren't sales-taxable (matches commit a047770 for standalone service
+    // trips). Ryan 2026-06-29: confirmed OOA fee follows the same rule.
+    const nonTaxableItemTotal = editData.items
+      .filter(i => i.item_type === 'surcharge' as never)
+      .reduce((sum, i) => sum + i.total_price, 0)
+      + preservedSurchargeFromLines
+      + surchargeShortfall
+    const taxableAmount = Math.max(0, discountedSubtotal - nonTaxableItemTotal) + expediteFee + noPostSurcharge
     const tax = Math.round(taxableAmount * FALLBACK_TAX_RATE * 100) / 100
     const total = discountedSubtotal + fuelSurcharge + expediteFee + noPostSurcharge + tax
 
@@ -275,16 +358,22 @@ export async function PATCH(
     // All existing line items are being replaced. Restore any inventory they
     // referenced back to inStorage:true, UNLESS the new items reference them too
     // (then they stay out). Then lock everything the new items reference.
-    const newSignIds = new Set(editData.items.map(i => i.customer_sign_id).filter(Boolean) as string[])
-    const newRiderIds = new Set(editData.items.map(i => i.customer_rider_id).filter(Boolean) as string[])
-    const newLockboxIds = new Set(editData.items.map(i => i.customer_lockbox_id).filter(Boolean) as string[])
-    const newBrochureIds = new Set(editData.items.map(i => i.customer_brochure_box_id).filter(Boolean) as string[])
+    // Preserved items also count as "still referenced" — their inventory must
+    // stay locked since they remain on the order post-edit.
+    const newSignIds = payloadSignIds
+    const newRiderIds = payloadRiderIds
+    const newLockboxIds = payloadLockboxIds
+    const newBrochureIds = payloadBrochureIds
+    const preservedSignIds = new Set(preserveItems.map(i => i.customerSignId).filter((x): x is string => !!x))
+    const preservedRiderIds = new Set(preserveItems.map(i => i.customerRiderId).filter((x): x is string => !!x))
+    const preservedLockboxIds = new Set(preserveItems.map(i => i.customerLockboxId).filter((x): x is string => !!x))
+    const preservedBrochureIds = new Set(preserveItems.map(i => i.customerBrochureBoxId).filter((x): x is string => !!x))
 
     const idsToRestore = {
-      signs: existingOrder.orderItems.map(i => i.customerSignId).filter((x): x is string => !!x && !newSignIds.has(x)),
-      riders: existingOrder.orderItems.map(i => i.customerRiderId).filter((x): x is string => !!x && !newRiderIds.has(x)),
-      lockboxes: existingOrder.orderItems.map(i => i.customerLockboxId).filter((x): x is string => !!x && !newLockboxIds.has(x)),
-      brochureBoxes: existingOrder.orderItems.map(i => i.customerBrochureBoxId).filter((x): x is string => !!x && !newBrochureIds.has(x)),
+      signs: existingOrder.orderItems.map(i => i.customerSignId).filter((x): x is string => !!x && !newSignIds.has(x) && !preservedSignIds.has(x)),
+      riders: existingOrder.orderItems.map(i => i.customerRiderId).filter((x): x is string => !!x && !newRiderIds.has(x) && !preservedRiderIds.has(x)),
+      lockboxes: existingOrder.orderItems.map(i => i.customerLockboxId).filter((x): x is string => !!x && !newLockboxIds.has(x) && !preservedLockboxIds.has(x)),
+      brochureBoxes: existingOrder.orderItems.map(i => i.customerBrochureBoxId).filter((x): x is string => !!x && !newBrochureIds.has(x) && !preservedBrochureIds.has(x)),
     }
 
     // Resolve property fields, falling back to the existing order when omitted.
@@ -328,6 +417,55 @@ export async function PATCH(
           customValue: item.custom_value || null,
         })),
       })
+
+      // Re-attach preserved items (the form silently dropped these — see the
+      // preserveItems computation above for the heuristic). Re-emit with the
+      // same shape, just minted as a fresh row since the original was wiped
+      // by the deleteMany above.
+      if (preserveItems.length > 0) {
+        await tx.orderItem.createMany({
+          data: preserveItems.map((item) => ({
+            orderId: id,
+            itemType: item.itemType,
+            itemCategory: item.itemCategory,
+            description: item.description,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            totalPrice: item.totalPrice,
+            customerSignId: item.customerSignId,
+            customerRiderId: item.customerRiderId,
+            customerLockboxId: item.customerLockboxId,
+            customerBrochureBoxId: item.customerBrochureBoxId,
+            customValue: item.customValue,
+          })),
+        })
+      }
+
+      // Materialize a surcharge line when surchargeShortfall > 0 and no
+      // surcharge line is present in either the payload or preserveItems.
+      // This catches the admin-edit case (preservation disabled) and the
+      // legacy-data case (Order has serviceAreaSurchargeCents > 0 but no
+      // matching surcharge OrderItem). Without this, the new total includes
+      // the OOA cents but sum(orderItems) does not — admin order detail and
+      // the bundled invoice from a047770 would show subtotal > line-item
+      // sum with no line to explain the gap.
+      const hasSurchargeInPayload = editData.items.some(i => (i.item_type as string) === 'surcharge')
+      const hasSurchargeInPreserved = preserveItems.some(it => it.itemType === 'surcharge')
+      if (surchargeShortfall > 0 && !hasSurchargeInPayload && !hasSurchargeInPreserved) {
+        const original = existingOrder.orderItems.find(it => it.itemType === 'surcharge')
+        await tx.orderItem.create({
+          data: {
+            orderId: id,
+            itemType: 'surcharge',
+            itemCategory: original?.itemCategory ?? null,
+            description: original?.description ?? `Out-of-area service fee (preserved)`,
+            quantity: 1,
+            unitPrice: surchargeShortfall,
+            totalPrice: surchargeShortfall,
+            customValue: original?.customValue ?? null,
+          },
+        })
+      }
 
       // Restore inventory referenced only by the OLD order
       if (idsToRestore.signs.length)

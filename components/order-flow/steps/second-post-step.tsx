@@ -45,19 +45,16 @@ function toSelectedRider(selection: RiderSelection): SelectedRider | null {
     rider = RIDERS.find(r => r.slug === selection.rider_type)
   }
   if (!rider) {
-    // Same fix as rider-step.tsx: non-catalog rider with a real
-    // customer_rider_id (e.g., Semonin agent-name + custom-slogan riders)
-    // gets a synthetic SelectedRider so it doesn't disappear on edit
-    // round-trip. See rider-step.tsx for the full rationale.
-    if (selection.customer_rider_id) {
-      return {
-        riderId: selection.rider_type,
-        source,
-        price,
-        customValue: selection.custom_value,
-      }
+    // Mirror rider-step.tsx exactly: always synthesize a SelectedRider for
+    // non-catalog riders so they round-trip even when there's no
+    // customer_rider_id link (admin-add UI doesn't always set it). See
+    // rider-step.tsx for the full rationale.
+    return {
+      riderId: selection.rider_type,
+      source,
+      price,
+      customValue: selection.custom_value,
     }
-    return null
   }
   return {
     riderId: rider.id,
