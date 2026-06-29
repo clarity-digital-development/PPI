@@ -426,12 +426,16 @@ export async function PATCH(
     //      collection: the original wasn't paid so charging just the diff
     //      would leave the original total unbilled
     //   3. diff < 0 → accumulate into pendingCreditCents; admin refunds
-    //      manually via Stripe dashboard. Stays on the order so the NEXT
-    //      positive diff nets against it (no overcharge on add-after-remove)
-    //   4. diff > 0 → net against pendingCreditCents first, then charge the
-    //      net to the EFFECTIVE PAYER's card (team_admin if on-behalf-of,
-    //      else order owner) with an idempotency key keyed on
-    //      (orderId, originalCents, newCents) so double-saves collapse
+    //      manually via Stripe dashboard. Stays on the order as the running
+    //      refund-owed balance — admin reconciles via Stripe.
+    //   4. diff > 0 → charge the FULL positive diff to the EFFECTIVE PAYER's
+    //      card (team_admin if on-behalf-of, else order owner) with an
+    //      idempotency key keyed on (orderId, originalCents, newCents) so
+    //      double-saves collapse. NO netting against pendingCreditCents —
+    //      that was removed 2026-06-29 because it created a refund-replay
+    //      window (edit cheaper → admin manual refund → edit back → diff
+    //      eaten by stale pendingCreditCents → customer pocketed refund).
+    //      Do NOT add netting back; admin reconciles manually instead.
     const originalTotalCents = Math.round(Number(existingOrder.total) * 100)
     const newTotalCents = Math.round(Number(updatedOrder.total) * 100)
     const originalTotal = originalTotalCents / 100
@@ -460,34 +464,26 @@ export async function PATCH(
         chargeOutcome = { kind: 'credit_pending', diff, pendingCreditCentsAfter }
         newEditChargeStatus = 'credit_pending'
       } else {
-        // diff > 0 and paymentStatus === 'succeeded'. Net against any prior
-        // unresolved credit so admin doesn't get a double-charge complaint
-        // when a remove-then-add edit nets to zero.
+        // diff > 0 and paymentStatus === 'succeeded'. Charge the FULL positive
+        // diff to the card on file — no netting against pendingCreditCents.
+        // Per Ryan 2026-06-29: each edit should charge fresh based on the
+        // order's current total, not be reduced by some accumulated unresolved
+        // credit balance. The previous netting created a refund-replay window
+        // (edit cheaper → admin issues manual refund → edit back to original
+        // → diff charge gets eaten by the stale pendingCreditCents = $0 net
+        // → customer pockets the refund) that this design closes. The
+        // accumulated pendingCreditCents stays as the admin's running ledger
+        // of refunds-to-issue; positive diffs no longer touch it. Admin
+        // reconciles any net balance manually via Stripe.
         const diffCents = Math.round(diff * 100)
-        const creditToApplyCents = Math.min(diffCents, existingPendingCreditCents)
-        const netDiffCents = diffCents - creditToApplyCents
-        pendingCreditCentsAfter = existingPendingCreditCents - creditToApplyCents
+        pendingCreditCentsAfter = existingPendingCreditCents
 
-        if (netDiffCents === 0) {
-          // Pending credit fully covered the diff — no Stripe call.
-          chargeOutcome = {
-            kind: 'charged_diff',
-            diff,
-            paymentIntentId: 'credit_offset',
-            cardLast4: null,
-            cardBrand: null,
-            netDiff: 0,
-            appliedCreditCents: creditToApplyCents,
-          }
-          newEditChargeStatus = 'charged_diff'
-          newLastEditChargedAt = new Date()
-        } else if (!payer || !payer.stripeCustomerId) {
+        if (!payer || !payer.stripeCustomerId) {
           chargeOutcome = { kind: 'no_payment_method', diff }
           newEditChargeStatus = 'no_payment_method'
           newEditChargeLastError = !payer
             ? 'Could not resolve order payer (orphaned placedByUserId/userId).'
             : `Payer ${payer.email} has no Stripe customer on file.`
-          pendingCreditCentsAfter = existingPendingCreditCents
         } else {
           const defaultPaymentMethod = await prisma.paymentMethod.findFirst({
             where: { userId: payer.id, isDefault: true },
@@ -496,7 +492,6 @@ export async function PATCH(
             chargeOutcome = { kind: 'no_payment_method', diff }
             newEditChargeStatus = 'no_payment_method'
             newEditChargeLastError = `${payer.isBroker ? 'Broker' : 'Customer'} ${payer.email} has no card on file.`
-            pendingCreditCentsAfter = existingPendingCreditCents
           } else {
             // Idempotency key uniquely identifies the (order, before, after)
             // transition — Stripe dedupes within 24h so admin double-clicks
@@ -506,7 +501,7 @@ export async function PATCH(
               const paymentIntent = await chargePaymentMethod(
                 payer.stripeCustomerId,
                 defaultPaymentMethod.stripePaymentMethodId,
-                netDiffCents,
+                diffCents,
                 `Order ${updatedOrder.orderNumber} edit — diff charge`,
                 {
                   orderId: updatedOrder.id,
@@ -515,7 +510,6 @@ export async function PATCH(
                   originalTotal: originalTotal.toFixed(2),
                   newTotal: Number(updatedOrder.total).toFixed(2),
                   payerUserId: payer.id,
-                  appliedCreditCents: creditToApplyCents.toString(),
                 },
                 idempotencyKey,
               )
@@ -525,8 +519,11 @@ export async function PATCH(
                 paymentIntentId: paymentIntent.id,
                 cardLast4: defaultPaymentMethod.last4 ?? null,
                 cardBrand: defaultPaymentMethod.brand ?? null,
-                netDiff: netDiffCents / 100,
-                appliedCreditCents: creditToApplyCents,
+                // netDiff equals diff and appliedCreditCents is always 0 now
+                // that we don't net — kept on the type so consumers (email,
+                // dashboard toast) don't need to change.
+                netDiff: diff,
+                appliedCreditCents: 0,
               }
               newEditChargeStatus = 'charged_diff'
               newLastEditPaymentIntentId = paymentIntent.id

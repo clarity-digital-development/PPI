@@ -255,7 +255,7 @@ export default function OrderDetailsPage() {
             )}
             {editChargeToast.kind === 'credit_pending' && (
               <p className="text-sm">
-                <strong>Saved.</strong> Refund of ${Math.abs(editChargeToast.diff ?? 0).toFixed(2)} coming back to the card on file within 3–5 business days.
+                <strong>Saved.</strong> Refund of ${Math.abs(editChargeToast.diff ?? 0).toFixed(2)} coming back — the Pink Posts team will issue this manually to your card in the next few business days. Reach out at 859-395-8188 if you don&apos;t see it within a week.
               </p>
             )}
             {editChargeToast.kind === 'invoice_billing_skip' && (

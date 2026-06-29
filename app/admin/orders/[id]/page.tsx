@@ -834,8 +834,11 @@ export default function AdminOrderDetailPage() {
                 )}
 
                 {/* Pending credit balance (non-zero) — separate from
-                    editChargeStatus because a credit_pending can be partially
-                    consumed by a later positive diff, leaving a residual. */}
+                    editChargeStatus so it surfaces even when the most-recent
+                    edit didn't itself produce a credit (e.g. legacy balance
+                    from a prior negative-diff edit). As of 2026-06-29 positive
+                    diffs no longer auto-net against this balance, so it only
+                    decreases when admin manually issues the Stripe refund. */}
                 {order.pendingCreditCents > 0 && order.editChargeStatus !== 'credit_pending' && (
                   <div className="pt-4 border-t border-gray-100">
                     <p className="text-sm font-medium text-gray-900 mb-2">Unresolved credit</p>
