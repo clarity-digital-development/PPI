@@ -238,7 +238,7 @@ export async function sendOrderConfirmationEmail({
         </table>
 
         <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid #eee; text-align: center;">
-          <p style="color: #666; margin: 0; font-size: 14px;">Questions? Contact us at support@pinkposts.com</p>
+          <p style="color: #666; margin: 0; font-size: 14px;">Questions? Contact us at contact@pinkposts.com</p>
           <p style="color: #999; margin: 8px 0 0; font-size: 12px;">&copy; ${new Date().getFullYear()} Pink Posts Installations. All rights reserved.</p>
         </div>
       </div>
@@ -248,6 +248,7 @@ export async function sendOrderConfirmationEmail({
 
   return getResend().emails.send({
     from: 'Pink Posts Installations <orders@pinkposts.com>',
+    reply_to: 'Pink Posts Installations <contact@pinkposts.com>',
     to: customerEmail,
     subject: isEditedBySupport
       ? `Order Updated by Support - ${orderNumber}`
@@ -485,6 +486,7 @@ View order details in the admin dashboard.
   try {
     const result = await getResend().emails.send({
       from: 'Pink Posts Installations <orders@pinkposts.com>',
+      reply_to: 'Pink Posts Installations <contact@pinkposts.com>',
       to: adminEmail,
       // Edited orders get a clear "[EDITED]" prefix so admin can spot the
       // re-send in their inbox vs the original placement email.
@@ -623,7 +625,7 @@ export async function sendInvoiceEmail({
         <p style="color: #666; font-size: 13px; text-align: center;">All bundled items will be marked paid once the Stripe payment clears.</p>
 
         <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid #eee; text-align: center;">
-          <p style="color: #666; margin: 0; font-size: 14px;">Questions? Contact us at support@pinkposts.com</p>
+          <p style="color: #666; margin: 0; font-size: 14px;">Questions? Contact us at contact@pinkposts.com</p>
           <p style="color: #999; margin: 8px 0 0; font-size: 12px;">&copy; ${new Date().getFullYear()} Pink Posts Installations. All rights reserved.</p>
         </div>
       </div>
@@ -639,6 +641,7 @@ export async function sendInvoiceEmail({
 
   return getResend().emails.send({
     from: fromOverride ?? 'Pink Posts Installations <orders@pinkposts.com>',
+    reply_to: 'Pink Posts Installations <contact@pinkposts.com>',
     to: customerEmail,
     subject: subjectOverride ?? `Invoice ${invoiceNumber} — $${total.toFixed(2)}`,
     html,
@@ -791,6 +794,7 @@ export async function sendAdminServiceRequestNotification({
 
   return getResend().emails.send({
     from: 'Pink Posts Installations <orders@pinkposts.com>',
+    reply_to: 'Pink Posts Installations <contact@pinkposts.com>',
     to: adminEmail,
     subject: `New Service Request: ${requestType} - ${installationAddress}`,
     text: lines.join('\n'),
@@ -894,7 +898,7 @@ export async function sendServiceRequestConfirmationEmail({
         ` : ''}
 
         <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid #eee; text-align: center;">
-          <p style="color: #666; margin: 0; font-size: 14px;">Questions? <a href="mailto:support@pinkposts.com" style="color: #E84A7A;">support@pinkposts.com</a> or 859-395-8188</p>
+          <p style="color: #666; margin: 0; font-size: 14px;">Questions? <a href="mailto:contact@pinkposts.com" style="color: #E84A7A;">contact@pinkposts.com</a> or 859-395-8188</p>
           <p style="color: #999; margin: 8px 0 0; font-size: 12px;">&copy; ${new Date().getFullYear()} Pink Posts Installations. All rights reserved.</p>
         </div>
       </div>
@@ -904,6 +908,7 @@ export async function sendServiceRequestConfirmationEmail({
 
   return getResend().emails.send({
     from: 'Pink Posts Installations <orders@pinkposts.com>',
+    reply_to: 'Pink Posts Installations <contact@pinkposts.com>',
     to: customerEmail,
     subject: `Service Request Received - ${requestId}`,
     html,
@@ -950,6 +955,7 @@ export async function sendServiceRequestCompletedEmail({
   try {
     const result = await getResend().emails.send({
       from: 'Pink Posts Installations <orders@pinkposts.com>',
+      reply_to: 'Pink Posts Installations <contact@pinkposts.com>',
       to: customerEmail,
       subject: `${friendlyType} complete: ${address}`,
       text,
@@ -1066,7 +1072,7 @@ export async function sendServiceRequestStatusEmail({
         ` : ''}
 
         <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid #eee; text-align: center;">
-          <p style="color: #666; margin: 0; font-size: 14px;">Questions? Contact us at support@pinkposts.com</p>
+          <p style="color: #666; margin: 0; font-size: 14px;">Questions? Contact us at contact@pinkposts.com</p>
           <p style="color: #999; margin: 8px 0 0; font-size: 12px;">&copy; ${new Date().getFullYear()} Pink Posts Installations. All rights reserved.</p>
         </div>
       </div>
@@ -1077,6 +1083,7 @@ export async function sendServiceRequestStatusEmail({
   try {
     const result = await getResend().emails.send({
       from: 'Pink Posts Installations <orders@pinkposts.com>',
+      reply_to: 'Pink Posts Installations <contact@pinkposts.com>',
       to: customerEmail,
       subject: `Service Request ${statusLabel} - ${requestId}`,
       html,
@@ -1135,6 +1142,7 @@ export async function sendInstallationCompleteEmail(
 
   return getResend().emails.send({
     from: 'Pink Posts Installations <orders@pinkposts.com>',
+    reply_to: 'Pink Posts Installations <contact@pinkposts.com>',
     to: customerEmail,
     subject: 'Your Sign Installation is Complete!',
     html,
@@ -1195,7 +1203,7 @@ export async function sendRefundConfirmationEmail(props: RefundConfirmationEmail
             ${props.refundReason ? `<p style="margin:8px 0 0"><strong>Reason:</strong> ${escapeHtml(props.refundReason)}</p>` : ''}
           </div>
           <p style="color:#666;font-size:14px">${processingCopy}</p>
-          <p>Questions? Contact us at <a href="mailto:support@pinkposts.com" style="color:#E84A7A">support@pinkposts.com</a> or 859-395-8188.</p>
+          <p>Questions? Contact us at <a href="mailto:contact@pinkposts.com" style="color:#E84A7A">contact@pinkposts.com</a> or 859-395-8188.</p>
         </div>
         <div style="padding:16px;text-align:center;color:#999;font-size:12px;border-top:1px solid #eee">
           Pink Posts Installations
@@ -1206,6 +1214,7 @@ export async function sendRefundConfirmationEmail(props: RefundConfirmationEmail
 
   return getResend().emails.send({
     from: 'Pink Posts Installations <orders@pinkposts.com>',
+    reply_to: 'Pink Posts Installations <contact@pinkposts.com>',
     to: props.recipientEmail,
     subject: `Refund Confirmation - ${props.orderNumber}`,
     html,
@@ -1289,7 +1298,7 @@ export async function sendPostRentalChargeReceipt(
             <p style="margin:0"><strong>Charged on:</strong> ${escapeHtml(chargedAtStr)}</p>
           </div>
           <p style="color:#666;font-size:14px">Your initial installation included the first 6 months of post rent. After that, we charge $18 every 3 months for months 7-12, then $6/month thereafter — until pickup is scheduled. Pickup ends the rental clock automatically.</p>
-          <p>Questions? Contact us at <a href="mailto:support@pinkposts.com" style="color:#E84A7A">support@pinkposts.com</a> or 859-395-8188.</p>
+          <p>Questions? Contact us at <a href="mailto:contact@pinkposts.com" style="color:#E84A7A">contact@pinkposts.com</a> or 859-395-8188.</p>
         </div>
         <div style="padding:16px;text-align:center;color:#999;font-size:12px;border-top:1px solid #eee">
           Pink Posts Installations
@@ -1300,6 +1309,7 @@ export async function sendPostRentalChargeReceipt(
 
   return getResend().emails.send({
     from: 'Pink Posts Installations <orders@pinkposts.com>',
+    reply_to: 'Pink Posts Installations <contact@pinkposts.com>',
     to: props.recipientEmail,
     subject: `Post rental charge — Order ${props.orderNumber}`,
     html,
@@ -1354,6 +1364,7 @@ This alert was generated by the post-rental billing cron. The charge has been re
   try {
     return await getResend().emails.send({
       from: 'Pink Posts Installations <orders@pinkposts.com>',
+      reply_to: 'Pink Posts Installations <contact@pinkposts.com>',
       to: adminEmail,
       subject: `${subjectPrefix}[PPI] Post rental charge failed — ${props.orderNumber}`,
       text,
