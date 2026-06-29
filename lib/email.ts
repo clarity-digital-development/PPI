@@ -751,6 +751,16 @@ interface AdminServiceRequestNotificationProps {
   installedItems?: string // For removal requests: what was originally installed at the address
   // On-site lockboxes — rendered when SR is tied to an existing installation.
   existingLockboxes?: ExistingLockboxSummary[]
+  // True when this notification is being re-sent because the customer EDITED
+  // an existing service request. Adds "[EDITED]" prefix to the subject and
+  // a banner line so admin spots the re-send in their inbox vs the original
+  // placement email — without it, the dispatch crew works off stale dates,
+  // notes, or descriptions. Mirrors the isEdited pattern on sendAdminOrderNotification.
+  isEdited?: boolean
+  // True when this notification represents a customer CANCELLATION via PATCH.
+  // Admin gets a clear "[CANCELLED]" prefix so they don't dispatch a trip
+  // that was just called off. Mutually exclusive with isEdited.
+  isCancelled?: boolean
 }
 
 export async function sendAdminServiceRequestNotification({
@@ -764,6 +774,8 @@ export async function sendAdminServiceRequestNotification({
   installationAddress,
   installedItems,
   existingLockboxes,
+  isEdited,
+  isCancelled,
 }: AdminServiceRequestNotificationProps) {
   const adminEmail = process.env.ADMIN_EMAIL
   if (!adminEmail) {
@@ -776,8 +788,14 @@ export async function sendAdminServiceRequestNotification({
     ? `Existing lockboxes at this property:\n${existingLockboxes.map(lb => `  - ${formatExistingLockboxLine(lb)}`).join('\n')}`
     : null
 
+  const headerLine = isCancelled
+    ? '❌ SERVICE REQUEST CANCELLED — the customer cancelled this request. Do not dispatch.'
+    : isEdited
+      ? '✏️ SERVICE REQUEST EDITED — use this snapshot, NOT the original email. Date, notes, or description may have changed since placement.'
+      : 'New Service Request Received!'
+
   const lines = [
-    'New Service Request Received!',
+    headerLine,
     '',
     `Customer: ${customerName}`,
     customerEmail ? `Email: ${customerEmail}` : null,
@@ -792,11 +810,22 @@ export async function sendAdminServiceRequestNotification({
     lockboxBlock,
   ].filter(Boolean)
 
+  const subjectPrefix = isCancelled
+    ? '❌ [CANCELLED] '
+    : isEdited
+      ? '✏️ [EDITED] '
+      : ''
+  const subjectLabel = isCancelled
+    ? 'Cancelled Service Request'
+    : isEdited
+      ? 'Edited Service Request'
+      : 'New Service Request'
+
   return getResend().emails.send({
     from: 'Pink Posts Installations <orders@pinkposts.com>',
     reply_to: 'Pink Posts Installations <contact@pinkposts.com>',
     to: adminEmail,
-    subject: `New Service Request: ${requestType} - ${installationAddress}`,
+    subject: `${subjectPrefix}${subjectLabel}: ${requestType} - ${installationAddress}`,
     text: lines.join('\n'),
   })
 }
@@ -816,6 +845,10 @@ interface ServiceRequestConfirmationEmailProps {
   recipientUserId?: string | null
   // Optional inline prefs to skip a DB roundtrip when caller already has them.
   recipientPrefs?: UserEmailPrefs | null
+  // True when this is being re-sent because the customer EDITED their request.
+  // Subject becomes "Service Request Updated" and body copy shifts to
+  // "We received your updated request" instead of the first-time language.
+  isEdited?: boolean
 }
 
 // Friendly label for request type — matches customer-facing copy elsewhere.
@@ -851,6 +884,7 @@ export async function sendServiceRequestConfirmationEmail({
   existingLockboxes,
   recipientUserId,
   recipientPrefs,
+  isEdited,
 }: ServiceRequestConfirmationEmailProps) {
   // Pref gate — opt-out short-circuits before any Resend call.
   if (!(await shouldSendEmail(recipientUserId, 'emailServiceRequests', recipientPrefs))) {
@@ -859,22 +893,27 @@ export async function sendServiceRequestConfirmationEmail({
   }
   const friendlyType = labelRequestType(requestType)
 
+  const headerLabel = isEdited ? 'Service Request Updated' : 'Service Request Received'
+  const introCopy = isEdited
+    ? 'We received your updates. The latest details are below — use this snapshot instead of the original confirmation.'
+    : 'Thank you for your request. Our team has been notified and will be in touch shortly.'
+
   const html = `
     <!DOCTYPE html>
     <html>
     <head>
       <meta charset="utf-8">
-      <title>Service Request Received - Pink Posts Installations</title>
+      <title>${headerLabel} - Pink Posts Installations</title>
     </head>
     <body style="font-family: 'Poppins', Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #FFF0F3;">
       <div style="background-color: white; border-radius: 12px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
         <div style="text-align: center; margin-bottom: 24px;">
           <h1 style="color: #E84A7A; margin: 0;">Pink Posts Installations</h1>
-          <p style="color: #666; margin: 8px 0 0;">Service Request Received</p>
+          <p style="color: #666; margin: 8px 0 0;">${escapeHtml(headerLabel)}</p>
         </div>
 
         <p style="color: #333;">Hi ${escapeHtml(customerName)},</p>
-        <p style="color: #333;">Thank you for your request. Our team has been notified and will be in touch shortly.</p>
+        <p style="color: #333;">${escapeHtml(introCopy)}</p>
 
         <div style="background-color: #FFF0F3; border-radius: 8px; padding: 16px; margin: 24px 0;">
           <p style="margin: 0; color: #666;"><strong>Request ID:</strong> ${escapeHtml(requestId)}</p>
@@ -910,7 +949,7 @@ export async function sendServiceRequestConfirmationEmail({
     from: 'Pink Posts Installations <orders@pinkposts.com>',
     reply_to: 'Pink Posts Installations <contact@pinkposts.com>',
     to: customerEmail,
-    subject: `Service Request Received - ${requestId}`,
+    subject: `${isEdited ? '✏️ ' : ''}${headerLabel} - ${requestId}`,
     html,
   })
 }

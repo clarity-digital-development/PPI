@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { createServiceRequestNotification } from '@/lib/notifications'
-import { sendServiceRequestCompletedEmail, sendServiceRequestStatusEmail } from '@/lib/email'
+import { sendServiceRequestCompletedEmail, sendServiceRequestStatusEmail, sendServiceRequestConfirmationEmail } from '@/lib/email'
 
 export async function GET(
   request: NextRequest,
@@ -179,6 +179,16 @@ export async function PUT(
       }
     }
 
+    // Detect a silent date change: admin set scheduled_date on an SR whose
+    // status DIDN'T transition (e.g. already 'scheduled' → admin shifts the
+    // date). Previously this fired no customer email — the same class of
+    // gap Ryan reported on 2026-06-29 for customer self-edits. Triggers a
+    // [EDITED] confirmation email below so the customer sees the new date.
+    const dateSilentlyChanged = scheduled_date
+      && !statusChanged
+      && updateData.requestedDate instanceof Date
+      && (!serviceRequest.requestedDate || serviceRequest.requestedDate.getTime() !== updateData.requestedDate.getTime())
+
     // Email the customer when status actually transitions. Completed stays on
     // sendServiceRequestCompletedEmail; the other states use the new helper.
     if (statusChanged) {
@@ -248,6 +258,41 @@ export async function PUT(
         }
       } catch (emailError) {
         console.error('Error sending status email:', emailError)
+      }
+    }
+
+    // Silent-date-change fallback: admin shifted the date without flipping
+    // status (already-scheduled SR moved to a new day). The block above only
+    // fires on status transitions, so without this the customer would never
+    // see the new date.
+    if (dateSilentlyChanged) {
+      try {
+        const customer = await prisma.user.findUnique({
+          where: { id: updated.userId },
+          select: { email: true, fullName: true, name: true },
+        })
+        if (customer?.email) {
+          const fullAddress = updated.installation
+            ? `${updated.installation.propertyAddress}, ${updated.installation.propertyCity}, ${updated.installation.propertyState} ${updated.installation.propertyZip}`
+            : updated.unlistedAddress
+              ? `${updated.unlistedAddress}, ${updated.unlistedCity}, ${updated.unlistedState} ${updated.unlistedZip}`
+              : '(unlisted address)'
+          const customerName = customer.fullName || customer.name || 'there'
+          await sendServiceRequestConfirmationEmail({
+            customerName,
+            customerEmail: customer.email,
+            requestId: updated.id,
+            requestType: updated.type,
+            description: updated.description ?? undefined,
+            notes: undefined, // adminNotes are internal — don't surface to customer
+            requestedDate: updated.requestedDate ? updated.requestedDate.toISOString().slice(0, 10) : undefined,
+            propertyAddress: fullAddress,
+            recipientUserId: updated.userId,
+            isEdited: true,
+          })
+        }
+      } catch (emailError) {
+        console.error('Failed to send admin-edited SR confirmation:', emailError)
       }
     }
 
