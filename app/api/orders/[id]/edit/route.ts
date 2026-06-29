@@ -130,33 +130,30 @@ export async function PATCH(
     // as order creation at app/api/orders/route.ts:217 — a pre-existing
     // codebase-wide trust we have not yet untangled). For admin edits that
     // trust is acceptable: admin is staff and authorized to set prices. For
-    // customer self-edits it is NOT acceptable because the diff feeds Stripe.
-    // Two specific attack shapes are blocked here as defense-in-depth until
-    // server-side price recomputation lands in a follow-up PR:
+    // customer self-edits it is still NOT fully validated server-side, so we
+    // keep ONE defense-in-depth bound until server-side price recomputation
+    // lands in a follow-up PR:
     //
-    //   1. Negative diff (refund manufacture): a customer could submit
-    //      items with total_price near 0, producing a large negative diff
-    //      that becomes a credit_pending refund obligation against their card.
-    //   2. Implausible inflation: a customer could also push the total to
-    //      something extreme and either game the netting or simply create
-    //      garbage data — blocked by a 2x-of-original sanity bound below.
+    //   • Implausible inflation: a customer could push the total to something
+    //     extreme — bounded at 2× original + $50. Still blocked.
     //
-    // Admin role bypasses both checks (admin can refund or restructure freely).
+    // Negative-diff (cheaper-on-edit) used to be blocked too with the message
+    // "self-edits cannot reduce the total" because it would manufacture a
+    // refund obligation. That block was lifted on 2026-06-29 per Ryan: the
+    // existing credit_pending pipeline already flags the order, surfaces the
+    // dollar amount on /admin/orders + the order-detail page, AND emails the
+    // customer with a "refund coming" notice — so admins can issue the manual
+    // Stripe refund whenever, without the agent's edit being blocked. Ryan
+    // explicitly accepted the small refund-fraud risk (real-estate agents
+    // would lose their account; not worth blocking the legit edit-then-credit
+    // flow that was breaking the date-change UX). Admin role still bypasses
+    // the inflation bound — admin can refund or restructure freely.
     if (user.role !== 'admin') {
       const claimedSubtotal = editData.items.reduce((sum, item) => sum + item.total_price, 0)
       const originalTotal = Number(existingOrder.total)
       // Approximate new total before tax/fees just for the sanity bound. Real
       // total recomputation happens further down; this is a fast pre-check.
       const claimedTotalApprox = claimedSubtotal + Number(existingOrder.fuelSurcharge)
-      if (claimedTotalApprox < originalTotal) {
-        return NextResponse.json(
-          {
-            error: 'Please contact Pink Posts at 859-395-8188 to remove items from a paid order — self-edits cannot reduce the total.',
-            code: 'self_edit_negative_diff_blocked',
-          },
-          { status: 403 }
-        )
-      }
       if (claimedTotalApprox > originalTotal * 2 + 50) {
         return NextResponse.json(
           {

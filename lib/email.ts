@@ -55,8 +55,11 @@ function renderEditChargeBlock(outcome: EditChargeOutcome | undefined, originalT
       break
     case 'credit_pending':
       // Refund-coming = blue (informational, good news) — NOT amber, which we
-      // reserve for "Pink Posts needs to act" / "customer owes money".
-      actionLine = `<strong>Refund of $${absDiff.toFixed(2)} coming your way.</strong> We'll process it to your card on file within 3-5 business days. Reply or call 859-395-8188 if you don't see it.`
+      // reserve for "Pink Posts needs to act" / "customer owes money". Copy
+      // says "manually" because admin issues the refund through Stripe by
+      // hand — not auto-processed — so the customer doesn't expect it in
+      // 3-5 business days like a typical card refund.
+      actionLine = `<strong>Refund of $${absDiff.toFixed(2)} coming your way.</strong> The Pink Posts team will issue this manually to your card on file in the next few business days. Reply or call 859-395-8188 if you don't see it.`
       accent = { bg: '#EFF6FF', border: '#BFDBFE', text: '#1E3A8A' }
       break
     case 'invoice_billing_skip':
