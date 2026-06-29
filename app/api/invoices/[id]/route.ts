@@ -48,6 +48,10 @@ export async function GET(
       range_start: invoice.rangeStart.toISOString(),
       range_end: invoice.rangeEnd.toISOString(),
       subtotal: Number(invoice.subtotal),
+      // Subtotal split for the dashboard totals box — orders are the taxable
+      // base, service trips bill flat with no tax. Sum to `subtotal`.
+      orders_subtotal: invoice.orders.reduce((s, o) => s + Number(o.subtotal ?? 0), 0),
+      service_requests_subtotal: invoice.serviceRequests.reduce((s, sr) => s + Number(sr.invoiceAmount ?? 0), 0),
       total: Number(invoice.total),
       fuel_total: invoice.orders.reduce((s, o) => s + Number(o.fuelSurcharge ?? 0), 0),
       tax_total: invoice.orders.reduce((s, o) => s + Number(o.tax ?? 0), 0),

@@ -61,6 +61,15 @@ export interface InvoiceDetail {
   range_start: string
   range_end: string
   subtotal: number
+  // Split of `subtotal` — orders are the taxable base (each order's tax was
+  // computed at order time and rolls up via `tax_total`); service trips bill at
+  // a flat amount with no tax field (standalone labor sans post rental isn't
+  // sales-taxable in KY per Ryan 2026-06-28). Showing the split makes the math
+  // legible to brokers (otherwise the displayed Sales Tax line looks too low
+  // versus subtotal × 6%). Always: orders_subtotal + service_requests_subtotal
+  // === subtotal.
+  orders_subtotal: number
+  service_requests_subtotal: number
   total: number
   // Aggregated across the bundled orders so the totals box can explain the
   // gap between Subtotal and Total (fuel + tax + fees), instead of an
@@ -345,7 +354,23 @@ export function buildInvoicePdfDoc(invoice: InvoiceDetail): jsPDF {
     rowY += 16
   }
 
-  detailRow('Subtotal', invoice.subtotal)
+  // Subtotal split — render two rows when service trips exist so the broker
+  // can see WHY the Sales Tax line below isn't 6% × Subtotal (service trips
+  // aren't taxable). Each row is independently > 0-gated so an SR-only invoice
+  // doesn't render a confusing "Orders subtotal $0.00" line, and an order-only
+  // invoice falls through to the single Subtotal line below — preserving the
+  // exact prior layout for invoices without service trips. Note: don't append
+  // "(taxable)" to the Orders row — when a discount/expedite/no-post-surcharge
+  // is present, 6% × orders_subtotal ≠ tax_total (the real taxable base nets
+  // discounts and adds fees). The "(non-taxable)" parenthetical on the service-
+  // trips row is what carries the explanation; leaving the orders row neutral
+  // keeps it honest across all invoice shapes.
+  if (invoice.service_requests_subtotal > 0) {
+    if (invoice.orders_subtotal > 0) detailRow('Orders subtotal', invoice.orders_subtotal)
+    detailRow('Service trips (non-taxable)', invoice.service_requests_subtotal)
+  } else {
+    detailRow('Subtotal', invoice.subtotal)
+  }
   if (invoice.discount_total > 0) detailRow('Discount', invoice.discount_total, true)
   if (invoice.no_post_total > 0) detailRow('Service Trip Fee (no post)', invoice.no_post_total)
   if (invoice.expedite_total > 0) detailRow('Expedite Fee', invoice.expedite_total)

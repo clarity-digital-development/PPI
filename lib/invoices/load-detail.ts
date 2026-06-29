@@ -22,6 +22,13 @@ export async function loadInvoiceDetailForPdf(invoiceId: string): Promise<Invoic
   if (!invoice) return null
   const orderSum = (key: 'fuelSurcharge' | 'tax' | 'expediteFee' | 'noPostSurcharge' | 'discount') =>
     invoice.orders.reduce((s, o) => s + Number((o as Record<string, unknown>)[key] ?? 0), 0)
+  // Subtotal split — orders are the taxable base (per-order tax was computed at
+  // order time and lives in tax_total); service trips bill at a flat amount
+  // with no tax field (KY: standalone service labor sans post rental = not
+  // taxable per Ryan 2026-06-28). Splitting them on the invoice lets the
+  // customer see why total tax isn't 6% of the grand subtotal.
+  const orders_subtotal = invoice.orders.reduce((s, o) => s + Number(o.subtotal ?? 0), 0)
+  const service_requests_subtotal = invoice.serviceRequests.reduce((s, sr) => s + Number(sr.invoiceAmount ?? 0), 0)
   return {
     id: invoice.id,
     invoice_number: invoice.invoiceNumber,
@@ -29,6 +36,8 @@ export async function loadInvoiceDetailForPdf(invoiceId: string): Promise<Invoic
     range_start: invoice.rangeStart.toISOString(),
     range_end: invoice.rangeEnd.toISOString(),
     subtotal: Number(invoice.subtotal),
+    orders_subtotal,
+    service_requests_subtotal,
     total: Number(invoice.total),
     fuel_total: orderSum('fuelSurcharge'),
     tax_total: orderSum('tax'),

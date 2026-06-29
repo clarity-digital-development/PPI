@@ -347,10 +347,34 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
         <Card>
           <CardContent className="p-6">
             <div className="space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span className="text-gray-500">Subtotal</span>
-                <span className="text-gray-900">{formatCurrency(invoice.subtotal)}</span>
-              </div>
+              {/* Split when service trips exist so the broker sees why Sales
+                  Tax below isn't 6% × Subtotal — service trips aren't taxable.
+                  Each row independently > 0-gated so an SR-only invoice doesn't
+                  render a confusing "Orders subtotal $0.00" line. Order-only
+                  invoices fall through to the single Subtotal line, preserving
+                  the prior layout exactly. "(non-taxable)" carries the
+                  explanation; the orders row stays neutral because discounts/
+                  fees mean 6% × orders_subtotal ≠ tax_total in the general
+                  case. */}
+              {invoice.service_requests_subtotal > 0 ? (
+                <>
+                  {invoice.orders_subtotal > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Orders subtotal</span>
+                      <span className="text-gray-900">{formatCurrency(invoice.orders_subtotal)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Service trips (non-taxable)</span>
+                    <span className="text-gray-900">{formatCurrency(invoice.service_requests_subtotal)}</span>
+                  </div>
+                </>
+              ) : (
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Subtotal</span>
+                  <span className="text-gray-900">{formatCurrency(invoice.subtotal)}</span>
+                </div>
+              )}
               {invoice.discount_total > 0 && (
                 <div className="flex justify-between text-green-600">
                   <span>Discount</span><span>-{formatCurrency(invoice.discount_total)}</span>
