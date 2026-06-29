@@ -25,6 +25,21 @@ export async function POST(
       )
     }
 
+    // Date is required so admin has a dispatch signal — the client modals
+    // already gate the submit, this is defense-in-depth for any direct API
+    // caller / cached old client. Added 2026-06-29 per Ryan. Also validates
+    // the string parses to a real Date so whitespace / "yesterday" / etc.
+    // can't slip past and fall into a generic 500 downstream.
+    const parsedDate = typeof requested_date === 'string' && requested_date.trim()
+      ? new Date(requested_date + 'T12:00:00Z')
+      : null
+    if (!parsedDate || isNaN(parsedDate.getTime())) {
+      return NextResponse.json(
+        { error: 'A valid preferred date is required for service requests.' },
+        { status: 400 }
+      )
+    }
+
     // Validate type
     const validTypes = ['removal', 'service', 'repair', 'replacement']
     if (!validTypes.includes(type)) {
@@ -75,7 +90,9 @@ export async function POST(
         userId: user.id,
         type,
         description,
-        requestedDate: requested_date ? new Date(requested_date + 'T12:00:00Z') : null,
+        // Use the pre-parsed date from the validation guard above (already
+        // trimmed + Date-validated; can't be null here).
+        requestedDate: parsedDate,
         notes,
       },
     })

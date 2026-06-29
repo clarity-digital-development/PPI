@@ -75,11 +75,24 @@ export async function PATCH(
     const updateData: any = {}
 
     if (requested_date !== undefined) {
-      // Store at noon UTC so the calendar date is stable across timezones
-      // (mirrors POST /api/service-requests and the admin PUT).
-      updateData.requestedDate = requested_date
+      // Mirror the POST-create guard added 2026-06-29 per Ryan: the customer
+      // edit path can no longer clear the date to null on an existing SR
+      // either. Without this, an agent could create with a date then PATCH it
+      // away — leaving admin with no dispatch signal, which is exactly the
+      // failure Ryan reported. To genuinely cancel a service request, use the
+      // status=cancelled path; to change the date, supply a new one.
+      const parsed = typeof requested_date === 'string' && requested_date.trim()
         ? new Date(requested_date + 'T12:00:00Z')
         : null
+      if (!parsed || isNaN(parsed.getTime())) {
+        return NextResponse.json(
+          { error: 'A valid preferred date is required for service requests.' },
+          { status: 400 }
+        )
+      }
+      // Store at noon UTC so the calendar date is stable across timezones
+      // (mirrors POST /api/service-requests and the admin PUT).
+      updateData.requestedDate = parsed
     }
 
     if (notes !== undefined) {

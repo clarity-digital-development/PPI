@@ -24,6 +24,21 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Date is required so admin has a dispatch signal — the client modals
+    // already gate the submit, this is defense-in-depth for any direct API
+    // caller / cached old client. Added 2026-06-29 per Ryan. Also validates
+    // the string parses to a real Date so whitespace / "yesterday" / etc.
+    // can't slip past and fall into a generic 500 downstream.
+    const parsedDate = typeof requested_date === 'string' && requested_date.trim()
+      ? new Date(requested_date + 'T12:00:00Z')
+      : null
+    if (!parsedDate || isNaN(parsedDate.getTime())) {
+      return NextResponse.json(
+        { error: 'A valid preferred date is required for service requests.' },
+        { status: 400 }
+      )
+    }
+
     // Try to attach this request to an existing installation at the same address.
     // If we can't find one and the customer supplied an address, we create a
     // standalone (unlisted-address) request — admin sees the address fields
@@ -82,9 +97,11 @@ export async function POST(request: NextRequest) {
         userId: user.id,
         type: type as any,
         description: fullDescription,
-        // Store at noon UTC so admin sees the same calendar date the customer picked,
-        // regardless of timezone (matches the order-creation fix in /api/orders)
-        requestedDate: requested_date ? new Date(requested_date + 'T12:00:00Z') : null,
+        // Use the pre-parsed date from the validation guard above — the
+        // string version was already trimmed and Date-validated, so we avoid
+        // re-parsing (and avoid a stale fallback to null that the guard
+        // would never let through anyway).
+        requestedDate: parsedDate,
         notes: notes || null,
         // Persist the unlisted address on the request itself so admin can see
         // and act on it without parsing it out of the description string

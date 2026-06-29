@@ -110,6 +110,14 @@ export function ScheduleTripModal({
       setError('Please fill in the address')
       return
     }
+    // Date is required — agents were submitting service trips with no date,
+    // leaving admin no signal for when to dispatch. Browser `required` attr
+    // is the primary enforcement; this mirrors it for paste-disabled/custom
+    // submit paths.
+    if (!preferredDate) {
+      setError('Please pick a preferred date for the trip.')
+      return
+    }
 
     setLoading(true)
     setError(null)
@@ -407,6 +415,7 @@ export function ScheduleTripModal({
               value={preferredDate}
               onChange={(e) => handlePreferredDateChange(e.target.value)}
               min={minDate}
+              required
               helperText="Next-day after 4pm EST is the soonest. We're closed Sundays."
             />
 

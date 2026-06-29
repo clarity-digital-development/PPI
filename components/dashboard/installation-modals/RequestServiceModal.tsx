@@ -38,6 +38,15 @@ export function RequestServiceModal({
 
     if (!installationId) return
 
+    // Date is required — agents were submitting service requests with no
+    // date, leaving the admin no signal for when the customer actually needs
+    // the trip. Browser `required` attr is the primary enforcement; this
+    // mirrors it so paste-disabled or custom-submit paths still bounce.
+    if (!preferredDate) {
+      setError('Please pick a preferred date for the service.')
+      return
+    }
+
     setLoading(true)
     setError(null)
 
@@ -126,10 +135,11 @@ export function RequestServiceModal({
 
             <Input
               type="date"
-              label="Preferred Date (Optional)"
+              label="Preferred Date"
               value={preferredDate}
               onChange={(e) => setPreferredDate(e.target.value)}
               min={minDate}
+              required
             />
 
             <div>
