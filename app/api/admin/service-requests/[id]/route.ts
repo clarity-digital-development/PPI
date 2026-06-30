@@ -249,7 +249,14 @@ export async function PUT(
               newStatus: status,
               scheduledDate: status === 'scheduled' ? updated.requestedDate : null,
               propertyAddress: fullAddress,
-              notes: updated.adminNotes,
+              // adminNotes is INTERNAL — never surface to the customer. The
+              // status email's `notes` param is for customer-facing content
+              // only (currently nothing — future enhancement could add a
+              // "customer_message" field on the SR for genuinely-shareable
+              // context like "rescheduled due to weather"). The leak that
+              // surfaced these as "Notes from our team" shipped pre-Round 27
+              // and was caught by the 2026-06-29 QA sweep.
+              notes: undefined,
               existingLockboxes: existingLockboxes.length ? existingLockboxes : undefined,
               // Pref gate — SR status emails are emailServiceRequests traffic.
               recipientUserId: updated.userId,

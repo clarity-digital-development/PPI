@@ -124,6 +124,16 @@ interface OrderConfirmationEmailProps {
   // edit receipt" and the banner uses neutral "you updated this order"
   // wording instead of "by support". Mutually exclusive with isEditedBySupport.
   isSelfEdited?: boolean
+  // Set when this email is being sent to the order's PAYER (not the editor).
+  // This is the team_admin-on-behalf-of pattern: broker pays for the agent's
+  // order, agent edits, broker's card moves but broker didn't do the edit.
+  // Subject + banner shift to "Order edited on your behalf by EDITOR_NAME —
+  // your card was charged". Mutually exclusive with isSelfEdited /
+  // isEditedBySupport (those describe the editor's own receipt copy; this
+  // describes the payer's notification copy). The 2026-06-29 QA sweep caught
+  // the pre-existing bug where the broker got "you updated this order" copy
+  // for an edit they didn't make and the agent got nothing.
+  editorName?: string
   // Original (pre-edit) total — drives the change-summary block on edit
   // emails so accountants can reconcile the diff vs. the new total above.
   originalTotal?: number
@@ -147,6 +157,7 @@ export async function sendOrderConfirmationEmail({
   isInvoiceBilling,
   isEditedBySupport,
   isSelfEdited,
+  editorName,
   originalTotal,
   editChargeOutcome,
 }: OrderConfirmationEmailProps) {
@@ -177,10 +188,15 @@ export async function sendOrderConfirmationEmail({
       <div style="background-color: white; border-radius: 12px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
         <div style="text-align: center; margin-bottom: 24px;">
           <h1 style="color: #E84A7A; margin: 0;">Pink Posts Installations</h1>
-          <p style="color: #666; margin: 8px 0 0;">${isEditedBySupport ? 'Order Updated by Support' : isSelfEdited ? 'Order Edit Receipt' : 'Order Confirmation'}</p>
+          <p style="color: #666; margin: 8px 0 0;">${editorName ? 'Order Edited on Your Behalf' : isEditedBySupport ? 'Order Updated by Support' : isSelfEdited ? 'Order Edit Receipt' : 'Order Confirmation'}</p>
         </div>
 
-        ${isEditedBySupport ? `
+        ${editorName ? `
+        <div style="background-color: #DBEAFE; border: 1px solid #93C5FD; color: #1E3A8A; padding: 14px 16px; border-radius: 8px; margin-bottom: 24px; font-size: 14px;">
+          <strong>${escapeHtml(editorName)} edited this order.</strong> You're receiving this because your card is on file for it. The latest details are below — please use this snapshot instead of the original order confirmation.
+        </div>
+        ${renderEditChargeBlock(editChargeOutcome, originalTotal, total)}
+        ` : isEditedBySupport ? `
         <div style="background-color: #DBEAFE; border: 1px solid #93C5FD; color: #1E3A8A; padding: 14px 16px; border-radius: 8px; margin-bottom: 24px; font-size: 14px;">
           <strong>Order updated by Pink Posts support.</strong> A member of our team made an adjustment to this order on your behalf. The latest details are below — please use this snapshot instead of the original order confirmation.
         </div>
@@ -194,13 +210,15 @@ export async function sendOrderConfirmationEmail({
 
         <p style="color: #333;">Hi ${customerName},</p>
         <p style="color: #333;">${
-          isEditedBySupport
-            ? `We just updated order ${orderNumber} on your behalf. Here's the current state:`
-            : isSelfEdited
-              ? `Your edits to order ${orderNumber} are saved. Here's the current state:`
-              : (isInvoiceBilling
-                  ? `This order has been added to your account and will appear on your next invoice. No payment has been collected yet.`
-                  : `Thank you for your order! We've received your request and will begin processing it shortly.`)
+          editorName
+            ? `${escapeHtml(editorName)} edited order ${orderNumber} on your behalf. Here's the current state:`
+            : isEditedBySupport
+              ? `We just updated order ${orderNumber} on your behalf. Here's the current state:`
+              : isSelfEdited
+                ? `Your edits to order ${orderNumber} are saved. Here's the current state:`
+                : (isInvoiceBilling
+                    ? `This order has been added to your account and will appear on your next invoice. No payment has been collected yet.`
+                    : `Thank you for your order! We've received your request and will begin processing it shortly.`)
         }</p>
 
         <div style="background-color: #FFF0F3; border-radius: 8px; padding: 16px; margin: 24px 0;">
@@ -250,13 +268,15 @@ export async function sendOrderConfirmationEmail({
     from: 'Pink Posts Installations <orders@pinkposts.com>',
     reply_to: 'Pink Posts Installations <contact@pinkposts.com>',
     to: customerEmail,
-    subject: isEditedBySupport
-      ? `Order Updated by Support - ${orderNumber}`
-      : isSelfEdited
-        ? `Order Edit Receipt - ${orderNumber}`
-        : isInvoiceBilling
-          ? `Order Added to Invoice - ${orderNumber}`
-          : `Order Confirmation - ${orderNumber}`,
+    subject: editorName
+      ? `Order Edited on Your Behalf - ${orderNumber}`
+      : isEditedBySupport
+        ? `Order Updated by Support - ${orderNumber}`
+        : isSelfEdited
+          ? `Order Edit Receipt - ${orderNumber}`
+          : isInvoiceBilling
+            ? `Order Added to Invoice - ${orderNumber}`
+            : `Order Confirmation - ${orderNumber}`,
     html,
   })
 }

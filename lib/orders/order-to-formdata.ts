@@ -48,7 +48,16 @@ export interface OrderLike {
   discount: number | string
   noPostSurcharge: number | string
   postType?: { name: string } | null
-  promoCode?: { code: string } | null
+  // Wider shape so the review-step's live-recompute path has the promo's
+  // rate/value to recompute discount against the current items on edit.
+  // Backward-compatible: callers passing just { code } still type-check;
+  // the populated fields default to undefined in orderToFormData below.
+  promoCode?: {
+    code: string
+    id?: string
+    discountType?: string
+    discountValue?: number | string
+  } | null
   orderItems: OrderItemLike[]
 }
 
@@ -331,8 +340,19 @@ export function orderToFormData(order: OrderLike): OrderFormData {
     // Payment — not used in edit mode (orders are not re-charged on edit)
     payment_method_id: undefined,
     save_payment_method: false,
-    // Promo — carried for display only; the server recomputes the discount
+    // Promo — carried for display AND live recompute. The id + discountType +
+    // discountValue let the review-step recompute the dollar discount as the
+    // customer changes items in edit mode (so display matches the server's
+    // recomputation on save). Without these the recompute falls back to the
+    // frozen `discount` value, drifting silently from the server total.
     promo_code: order.promoCode?.code,
+    promo_code_id: order.promoCode?.id,
+    promo_discount_type: order.promoCode?.discountType === 'percentage' || order.promoCode?.discountType === 'fixed'
+      ? order.promoCode.discountType
+      : undefined,
+    promo_discount_value: order.promoCode?.discountValue !== undefined
+      ? Number(order.promoCode.discountValue)
+      : undefined,
     discount: num(order.discount) || undefined,
     fuel_surcharge_waived: num(order.fuelSurcharge) === 0,
     placed_for_agent_name: '',

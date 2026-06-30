@@ -11,7 +11,7 @@ import { useCart } from '@/lib/cart'
 import { lockboxDescriptionSuffix } from '@/lib/orders/lockbox-description'
 import type { StepProps } from '../types'
 import { PRICING } from '../types'
-import { FLAT_FEE_BASE } from '@/lib/orders/pricing'
+import { FLAT_FEE_BASE, computeOrderPricing, computeDiscountableSubtotal, type OrderItemForPricing } from '@/lib/orders/pricing'
 
 // Post type values are now the display names themselves
 
@@ -247,20 +247,62 @@ export function ReviewStep({
       ? serviceAreaQuote.surchargeCents / 100
       : 0
   const itemsSubtotal = orderItems.reduce((sum, item) => sum + item.price, 0)
-  const subtotal = itemsSubtotal + serviceAreaSurcharge
-  // Discountable subtotal excludes items like brochure box purchases
-  const discountableSubtotal = orderItems.filter(item => !item.excludeFromDiscount).reduce((sum, item) => sum + item.price, 0) + serviceAreaSurcharge
-  const expediteFee = formData.schedule_type === 'expedited' ? PRICING.expedite_fee : 0
-  const discount = formData.discount || 0
   const fuelSurchargeWaived = formData.fuel_surcharge_waived || false
-  const fuelSurcharge = fuelSurchargeWaived ? 0 : PRICING.fuel_surcharge
-  const discountedSubtotal = Math.max(0, subtotal - discount)
-  const taxableAmount = discountedSubtotal + expediteFee + noPostSurcharge // Fuel surcharge typically not taxed
 
-  // Use calculated tax from Stripe Tax API, or fallback to default rate
-  const fallbackTax = Math.round(taxableAmount * PRICING.tax_rate * 100) / 100
-  const tax = calculatedTax !== null ? calculatedTax : fallbackTax
-  const total = discountedSubtotal + fuelSurcharge + expediteFee + noPostSurcharge + tax
+  // Build the items array for the shared pricing helper. Mirror the server's
+  // items[] shape — only item_type + item_category matter to the helper:
+  //   - itemType='surcharge' → excluded from tax base (OOA non-taxable rule)
+  //   - itemType='brochure_box' AND itemCategory='purchase' → excluded from
+  //     discountable subtotal (Ryan's policy)
+  // Other items pass through as 'item' / undefined — the helper sums them
+  // into subtotal + tax base equally regardless of their tag.
+  const pricingItemsTagged: OrderItemForPricing[] = [
+    ...orderItems.map(item => item.excludeFromDiscount
+      ? { item_type: 'brochure_box', item_category: 'purchase', total_price: item.price }
+      : { item_type: 'item', total_price: item.price }
+    ),
+    ...(serviceAreaSurcharge > 0
+      ? [{ item_type: 'surcharge', total_price: serviceAreaSurcharge }]
+      : []),
+  ]
+
+  // Recompute the live discount from the stored promo type+value (set at
+  // apply-promo time). Pre-Round 27 this came from `formData.discount` which
+  // was frozen at apply time, so the displayed total drifted away from the
+  // server's recomputation whenever items changed afterwards.
+  const discountableSubtotal = computeDiscountableSubtotal(pricingItemsTagged)
+  let discount = 0
+  if (formData.promo_code_id && formData.promo_discount_type && formData.promo_discount_value !== undefined) {
+    if (formData.promo_discount_type === 'percentage') {
+      discount = discountableSubtotal * (Number(formData.promo_discount_value) / 100)
+    } else {
+      discount = Math.min(Number(formData.promo_discount_value), discountableSubtotal)
+    }
+    discount = Math.round(discount * 100) / 100
+  } else if (formData.discount) {
+    // Legacy fallback: formData.discount was set without the type+value
+    // captured (e.g., the form was opened on an order placed before this fix).
+    // Use the stale value rather than display $0.
+    discount = formData.discount
+  }
+
+  const pricing = computeOrderPricing({
+    items: pricingItemsTagged,
+    hasPostType: !!formData.post_type,
+    isExpedited: formData.schedule_type === 'expedited',
+    discount,
+    fuelSurchargeWaived,
+    // The helper computes 6% fallback tax; if the server's Stripe Tax preview
+    // returned a different value, override here so the display matches.
+    taxOverride: calculatedTax !== null ? calculatedTax : undefined,
+  })
+
+  const subtotal = pricing.subtotal
+  const expediteFee = pricing.expediteFee
+  const fuelSurcharge = pricing.fuelSurcharge
+  const discountedSubtotal = Math.max(0, subtotal - discount)
+  const tax = pricing.tax
+  const total = pricing.total
 
   // CR4: flat-fee accounts are billed a fixed amount per order regardless of
   // items. The server is authoritative (it clamps on create/edit); this only
@@ -448,6 +490,11 @@ export function ReviewStep({
         promo_code: data.promoCode.code,
         promo_code_id: data.promoCode.id,
         discount: data.discount,
+        // Capture the promo's rate/value so the review-step can recompute the
+        // dollar discount as items change. Without these, formData.discount
+        // stays frozen at apply-time and drifts from the server's recomputation.
+        promo_discount_type: data.promoCode.discountType,
+        promo_discount_value: data.promoCode.discountValue,
         fuel_surcharge_waived: data.promoCode.waiveFuelSurcharge || false,
       })
       const savings = data.discount + (data.promoCode.waiveFuelSurcharge ? PRICING.fuel_surcharge : 0)
@@ -465,6 +512,8 @@ export function ReviewStep({
       promo_code: undefined,
       promo_code_id: undefined,
       discount: undefined,
+      promo_discount_type: undefined,
+      promo_discount_value: undefined,
       fuel_surcharge_waived: false,
     })
     setPromoCodeInput('')

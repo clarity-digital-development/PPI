@@ -33,7 +33,13 @@ export async function GET(
       include: {
         orderItems: true,
         postType: true,
-        promoCode: { select: { code: true } },
+        // Wider select so the edit-page hydration can populate the new
+        // promo_discount_type + promo_discount_value fields on OrderFormData.
+        // Without this, the review-step's live-recompute path can't fire in
+        // edit mode and the displayed discount stays frozen at the order's
+        // original-placement value while the server recomputes against the
+        // new subtotal — silent display vs. saved-total drift.
+        promoCode: { select: { code: true, id: true, discountType: true, discountValue: true } },
       },
     })
 

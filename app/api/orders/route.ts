@@ -8,10 +8,7 @@ import { createPaymentIntent, createCustomer, calculateTax, getStripeErrorMessag
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 import { resolveServiceArea } from '@/lib/service-area'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
-import { computeFlatFeePricing, FUEL_SURCHARGE } from '@/lib/orders/pricing'
-
-const NO_POST_SURCHARGE = 40
-const FALLBACK_TAX_RATE = 0.06 // Fallback Kentucky 6% sales tax if Stripe Tax unavailable
+import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal } from '@/lib/orders/pricing'
 
 export async function GET(request: NextRequest) {
   try {
@@ -231,13 +228,10 @@ export async function POST(request: NextRequest) {
       } as typeof orderData.items[number])
     }
 
-    // Calculate totals
-    const subtotal = orderData.items.reduce((sum, item) => sum + item.total_price, 0)
-    // Discountable subtotal excludes brochure box purchases (they should not be discounted)
-    const discountableSubtotal = orderData.items
-      .filter(item => !(item.item_type === 'brochure_box' && item.item_category === 'purchase'))
-      .reduce((sum, item) => sum + item.total_price, 0)
-    const expediteFee = orderData.is_expedited ? 50 : 0
+    // Compute the discount base — shared with the edit route so create + edit
+    // apply % promos to the same eligible-items subtotal (brochure-box
+    // purchases are excluded; see lib/orders/pricing.ts for the rationale).
+    const discountableSubtotal = computeDiscountableSubtotal(orderData.items)
 
     // Handle promo code discount
     let discount = 0
@@ -274,26 +268,26 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const noPostSurcharge = !orderData.post_type ? NO_POST_SURCHARGE : 0
-    const actualFuelSurcharge = fuelSurchargeWaived ? 0 : FUEL_SURCHARGE
-    const discountedSubtotal = Math.max(0, subtotal - discount)
-    // Out-of-area service-area surcharge is NOT taxed (KY non-taxable: a pure
-    // service fee with no physical post attached, same rule as standalone
-    // service trips per commit a047770). Subtract its value from the tax base
-    // so Stripe Tax and the fallback agree. Ryan 2026-06-29: confirmed.
-    const ooaSurchargeAmount = orderData.items
-      .filter(i => (i.item_type as string) === 'surcharge')
-      .reduce((sum, i) => sum + i.total_price, 0)
-    const taxableAmount = Math.max(0, discountedSubtotal - ooaSurchargeAmount) + expediteFee + noPostSurcharge // Fuel + OOA surcharges not taxed
+    // First-pass pricing using the shared helper (6% fallback tax). Stripe
+    // Tax may override below if it returns > 0; if so we re-compute via the
+    // helper with `taxOverride` so all totals stay consistent.
+    const fallbackPricing = computeOrderPricing({
+      items: orderData.items,
+      hasPostType: !!orderData.post_type,
+      isExpedited: orderData.is_expedited,
+      discount,
+      fuelSurchargeWaived,
+    })
 
-    // Calculate tax using Stripe Tax (with fallback to hardcoded rate)
-    let tax = 0
+    // Try Stripe Tax for a more accurate rate. If it returns 0 (e.g., the
+    // service classification yielded non-taxable) or throws, the fallback's
+    // 6% is the business-policy floor.
+    let taxOverride: number | undefined
     let taxCalculationMethod = 'fallback'
-
     try {
       // Build line items for Stripe Tax calculation — EXCLUDE itemType
-      // 'surcharge' (OOA service fee) so Stripe doesn't tax it. See the
-      // taxableAmount comment above for the KY non-taxable rule.
+      // 'surcharge' (OOA service fee) so Stripe doesn't tax it. KY non-
+      // taxable rule, mirrors the helper's tax-base logic.
       const taxLineItems = orderData.items
         .filter(item => (item.item_type as string) !== 'surcharge')
         .map((item, index) => ({
@@ -304,9 +298,9 @@ export async function POST(request: NextRequest) {
         }))
 
       // Add expedite fee as a line item if applicable
-      if (expediteFee > 0) {
+      if (fallbackPricing.expediteFee > 0) {
         taxLineItems.push({
-          amount: Math.round(expediteFee * 100),
+          amount: Math.round(fallbackPricing.expediteFee * 100),
           reference: 'expedite_fee',
           tax_code: 'txcd_99999999',
         })
@@ -331,22 +325,29 @@ export async function POST(request: NextRequest) {
       // If Stripe Tax returns 0 (e.g., services classified as non-taxable), use fallback
       // Pink Posts charges 6% on all orders as a business decision
       if (stripeTax > 0) {
-        tax = stripeTax
+        taxOverride = stripeTax
         taxCalculationMethod = 'stripe_tax'
-        console.log('Stripe Tax calculated:', { tax, breakdown: taxResult.taxBreakdown })
+        console.log('Stripe Tax calculated:', { tax: stripeTax, breakdown: taxResult.taxBreakdown })
       } else {
-        tax = Math.round(taxableAmount * FALLBACK_TAX_RATE * 100) / 100
-        taxCalculationMethod = 'fallback'
-        console.log('Stripe Tax returned 0, using fallback:', { tax })
+        console.log('Stripe Tax returned 0, using fallback:', { tax: fallbackPricing.tax })
       }
     } catch (taxError) {
       // Fallback to manual calculation if Stripe Tax fails
       console.warn('Stripe Tax calculation failed, using fallback rate:', taxError)
-      tax = Math.round(taxableAmount * FALLBACK_TAX_RATE * 100) / 100
-      taxCalculationMethod = 'fallback'
     }
 
-    const computedTotal = discountedSubtotal + actualFuelSurcharge + expediteFee + noPostSurcharge + tax
+    // Final pricing: re-run the helper with the Stripe Tax override if one
+    // was returned, so the total is consistent with the actual tax used.
+    const pricing = taxOverride !== undefined
+      ? computeOrderPricing({
+          items: orderData.items,
+          hasPostType: !!orderData.post_type,
+          isExpedited: orderData.is_expedited,
+          discount,
+          fuelSurchargeWaived,
+          taxOverride,
+        })
+      : fallbackPricing
 
     // CR4 (Round 22): flat-fee accounts pay a fixed $66.07 regardless of items
     // selected. Enforced HERE on the server (item totals are client-trusted, so
@@ -355,13 +356,13 @@ export async function POST(request: NextRequest) {
     // no-post, promo discount, and the out-of-area surcharge.
     const isFlatFee = !!payer.flatFeeBilling
     const flat = isFlatFee ? computeFlatFeePricing() : null
-    const finalSubtotal = flat ? flat.subtotal : subtotal
+    const finalSubtotal = flat ? flat.subtotal : pricing.subtotal
     const finalDiscount = flat ? 0 : discount
-    const finalFuelSurcharge = flat ? flat.fuelSurcharge : actualFuelSurcharge
-    const finalNoPostSurcharge = flat ? 0 : noPostSurcharge
-    const finalExpediteFee = flat ? 0 : expediteFee
-    const finalTax = flat ? flat.tax : tax
-    const total = flat ? flat.total : computedTotal
+    const finalFuelSurcharge = flat ? flat.fuelSurcharge : pricing.fuelSurcharge
+    const finalNoPostSurcharge = flat ? 0 : pricing.noPostSurcharge
+    const finalExpediteFee = flat ? 0 : pricing.expediteFee
+    const finalTax = flat ? flat.tax : pricing.tax
+    const total = flat ? flat.total : pricing.total
     const finalServiceAreaSurchargeCents = flat ? 0 : (sa.tier === 'surcharge' ? sa.surchargeCents : 0)
 
     // Invoice-billing payers skip the Stripe charge at checkout — their orders
@@ -658,13 +659,13 @@ export async function POST(request: NextRequest) {
               hasMarkerPlaced: orderData.has_marker_placed,
               signOrientation: orderData.sign_orientation || undefined,
               signOrientationOther: orderData.sign_orientation_other || undefined,
-              subtotal,
+              subtotal: pricing.subtotal,
               discount,
               promoCode: orderData.promo_code || undefined,
-              fuelSurcharge: actualFuelSurcharge,
-              noPostSurcharge,
-              expediteFee,
-              tax,
+              fuelSurcharge: pricing.fuelSurcharge,
+              noPostSurcharge: pricing.noPostSurcharge,
+              expediteFee: pricing.expediteFee,
+              tax: pricing.tax,
               assignedAgentName: assignedAgent?.name ?? null,
               assignedAgentPhone: assignedAgent?.phone ?? null,
               isInvoiceBilling,

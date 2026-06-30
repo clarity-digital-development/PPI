@@ -184,8 +184,28 @@ export default function ServiceRequestsPage() {
     setEditError(null)
   }
 
+  // Min-date for the picker = tomorrow (matches the create-modal convention from
+  // RequestServiceModal / ScheduleTripModal). Keeps the customer from saving a
+  // request dated in the past, which would silently bounce server-side.
+  const editMinDate = (() => {
+    const t = new Date()
+    t.setDate(t.getDate() + 1)
+    return t.toISOString().split('T')[0]
+  })()
+
   const saveEdit = async () => {
     if (!editing) return
+
+    // Required-date guard. Mirrors RequestServiceModal + ScheduleTripModal
+    // (added in commit b325590 per Ryan: "admin needs a dispatch signal").
+    // The b325590 server guard already 400s on null/empty date — without
+    // this client guard, the customer hits a generic API error instead of
+    // a form-level validation message.
+    if (!editDate || !editDate.trim()) {
+      setEditError('Please pick a preferred date for this service.')
+      return
+    }
+
     setSaving(true)
     setEditError(null)
 
@@ -194,7 +214,7 @@ export default function ServiceRequestsPage() {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          requested_date: editDate || null,
+          requested_date: editDate,
           notes: editNotes,
           description: editDescription,
         }),
@@ -531,6 +551,8 @@ export default function ServiceRequestsPage() {
             label="Requested Date"
             value={editDate}
             onChange={(e) => setEditDate(e.target.value)}
+            min={editMinDate}
+            required
           />
 
           <div>

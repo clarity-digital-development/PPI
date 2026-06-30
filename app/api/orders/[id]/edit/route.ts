@@ -8,7 +8,7 @@ import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
 import { audit, AuditAction } from '@/lib/audit'
 import { chargePaymentMethod, isDetachedPaymentMethodError } from '@/lib/stripe'
 import { resolveEffectivePayer } from '@/lib/orders/effective-payer'
-import { FLAT_FEE_BASE } from '@/lib/orders/pricing'
+import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, NO_POST_SURCHARGE, type OrderItemForPricing } from '@/lib/orders/pricing'
 import { z } from 'zod'
 
 // What happened to the customer's wallet as a result of this edit. The customer
@@ -72,9 +72,6 @@ const editOrderSchema = z.object({
   }).optional(),
 })
 
-const NO_POST_SURCHARGE = 40
-const EXPEDITE_FEE = 50
-const FALLBACK_TAX_RATE = 0.06
 
 const VALID_PROPERTY_TYPES = ['residential', 'commercial', 'land', 'multi_family', 'house', 'construction', 'bare_land']
 
@@ -298,13 +295,11 @@ export async function PATCH(
           if (item.customerBrochureBoxId) return !payloadBrochureIds.has(item.customerBrochureBoxId) && !awareBrochureIds.has(item.customerBrochureBoxId)
           return false
         })
-    const preservedSubtotal = preserveItems.reduce((sum, it) => sum + Number(it.totalPrice), 0)
-
     // OOA service-area surcharge is preserved from the existing order (locked
     // at placement time — never re-resolved). Normally the surcharge line is
-    // picked up by preserveItems above, but if the original surcharge line is
-    // somehow missing (legacy data, dropped by an earlier bug), fall back to
-    // the locked cents value on the Order row so total still reflects it.
+    // picked up by preserveItems above; if the original surcharge OrderItem
+    // is somehow missing (legacy data, dropped by an earlier bug), fall back
+    // to the locked cents value on the Order row so total still reflects it.
     // Flat-fee orders clear it because the flat total absorbs all fees.
     const preservedSurchargeFromLines = preserveItems
       .filter(it => it.itemType === 'surcharge')
@@ -312,47 +307,82 @@ export async function PATCH(
     const lockedSurcharge = isFlatFee ? 0 : (existingOrder.serviceAreaSurchargeCents ?? 0) / 100
     const surchargeShortfall = Math.max(0, lockedSurcharge - preservedSurchargeFromLines)
 
-    const newSubtotal = isFlatFee
-      ? FLAT_FEE_BASE
-      : editData.items.reduce((sum, item) => sum + item.total_price, 0) + preservedSubtotal + surchargeShortfall
+    // Unified items array for the shared pricing helper. Three sources:
+    //   - editData.items: what the customer's form sent
+    //   - preserveItems: server-preserved admin-added riders + original
+    //     surcharge OrderItem (b6099f2 / 8e1c6e1 fix)
+    //   - synthetic shortfall: when the locked OOA cents > preserved lines
+    //     (rare; usually 0), inject a synthetic surcharge so the total
+    //     reflects the locked value even when the OrderItem is missing.
+    // The helper's tax-base logic excludes itemType='surcharge' so the OOA
+    // fee rides into subtotal + total but never into the tax base.
+    const pricingItems: OrderItemForPricing[] = [
+      ...editData.items.map(i => ({
+        item_type: i.item_type as string,
+        item_category: i.item_category,
+        total_price: i.total_price,
+      })),
+      ...preserveItems.map(it => ({
+        item_type: it.itemType,
+        item_category: it.itemCategory ?? undefined,
+        total_price: Number(it.totalPrice),
+      })),
+      ...(surchargeShortfall > 0
+        ? [{ item_type: 'surcharge', total_price: surchargeShortfall }]
+        : []),
+    ]
 
-    // Fuel surcharge is ALWAYS preserved from the existing order — never
-    // re-priced. Customers shouldn't be hit with retroactive fuel-rate hikes
-    // just because they edited an order placed at the old rate. This applies
-    // uniformly to flat-fee and non-flat-fee orders.
-    const fuelSurcharge = Number(existingOrder.fuelSurcharge)
-    // Expedite fee follows the (editable) scheduling selection (0 when flat-fee).
-    const expediteFee = isFlatFee ? 0 : (editData.is_expedited ? EXPEDITE_FEE : 0)
-
-    // Recompute discount from the order's existing promo code (promo can't be
-    // changed during an edit).
+    // Discount logic — shared eligible-subtotal with the create route via
+    // computeDiscountableSubtotal (excludes brochure_box+purchase). Pre-Round
+    // 27 edit used `newSubtotal` directly, which silently shifted the discount
+    // every time customer had a brochure-box-purchase line. Standardized
+    // 2026-06-30 per the QA sweep.
+    //
+    // Promo-deactivation policy: if the original promo is no longer active
+    // but the order has a saved discount, preserve the dollar amount (clamped
+    // to current eligible subtotal). Without this, a customer who edits after
+    // admin deactivates their code silently loses the discount and gets
+    // re-charged — Ryan's preference is "customer keeps the promo they got".
+    const discountableSubtotal = computeDiscountableSubtotal(pricingItems)
     let discount = 0
     if (existingOrder.promoCode && existingOrder.promoCode.isActive) {
       if (existingOrder.promoCode.discountType === 'percentage') {
-        discount = newSubtotal * (Number(existingOrder.promoCode.discountValue) / 100)
+        discount = discountableSubtotal * (Number(existingOrder.promoCode.discountValue) / 100)
       } else {
-        discount = Math.min(Number(existingOrder.promoCode.discountValue), newSubtotal)
+        discount = Math.min(Number(existingOrder.promoCode.discountValue), discountableSubtotal)
       }
       discount = Math.round(discount * 100) / 100
+    } else if (existingOrder.promoCode && Number(existingOrder.discount) > 0) {
+      discount = Math.min(Number(existingOrder.discount), discountableSubtotal)
+      discount = Math.round(discount * 100) / 100
     }
-
     if (isFlatFee) discount = 0
-    const discountedSubtotal = Math.max(0, newSubtotal - discount)
-    // Tax base EXCLUDES any itemType 'surcharge' line AND any shortfall
-    // surcharge added back from the locked value. Everything else taxable
-    // stays in: regular items, preserved inventory items, expedite fee,
-    // no-post service-trip fee. Fuel surcharge is excluded as before. KY
-    // non-taxable rule: pure service charges with no physical post attached
-    // aren't sales-taxable (matches commit a047770 for standalone service
-    // trips). Ryan 2026-06-29: confirmed OOA fee follows the same rule.
-    const nonTaxableItemTotal = editData.items
-      .filter(i => i.item_type === 'surcharge' as never)
-      .reduce((sum, i) => sum + i.total_price, 0)
-      + preservedSurchargeFromLines
-      + surchargeShortfall
-    const taxableAmount = Math.max(0, discountedSubtotal - nonTaxableItemTotal) + expediteFee + noPostSurcharge
-    const tax = Math.round(taxableAmount * FALLBACK_TAX_RATE * 100) / 100
-    const total = discountedSubtotal + fuelSurcharge + expediteFee + noPostSurcharge + tax
+
+    // Flat-fee short-circuits to the canonical flat breakdown. Non-flat-fee
+    // routes through the shared helper, which mirrors the create route's math
+    // exactly — preventing the create/edit drift that the QA sweep flagged.
+    // `fuelSurchargeOverride` preserves the LOCKED rate from the order's
+    // original placement so legacy customers don't pay retroactive bumps.
+    const hasPostType = !!editData.post_type && editData.post_type !== 'none'
+    const pricing = isFlatFee
+      ? computeFlatFeePricing(Number(existingOrder.fuelSurcharge))
+      : computeOrderPricing({
+          items: pricingItems,
+          hasPostType,
+          isExpedited: !!editData.is_expedited,
+          discount,
+          fuelSurchargeOverride: Number(existingOrder.fuelSurcharge),
+        })
+
+    const newSubtotal = pricing.subtotal
+    const fuelSurcharge = pricing.fuelSurcharge
+    const expediteFee = pricing.expediteFee
+    const tax = pricing.tax
+    const total = pricing.total
+    // The helper recomputes noPostSurcharge from hasPostType; for flat-fee it
+    // returns 0. Mirror that into the existing variable used by the DB save
+    // block below so the downstream consumers don't change.
+    noPostSurcharge = pricing.noPostSurcharge
 
     // ---- Inventory bookkeeping ----
     // All existing line items are being replaced. Restore any inventory they
@@ -835,59 +865,99 @@ export async function PATCH(
         console.error('Admin edit notification email failed:', adminEmailErr)
       }
 
-      try {
-        // Customer email send conditions:
-        //   1. Admin edited another user's order — original "by support" path
-        //   2. ANY edit that moved the customer's wallet (card charged,
-        //      credit owed, charge failed, no PM) — they need a receipt.
-        //      Without this, a customer self-edit charges their card with
-        //      zero confirmation email — a chargeback magnet.
-        // For invoice-billing skips (no Stripe call) and no_change (no $
-        // delta), self-edits don't get a separate email.
-        const isAdminEditingOther = user.role === 'admin' && fullOrder.userId !== user.id
-        const isWalletImpact =
-          chargeOutcome.kind === 'charged_diff' ||
-          chargeOutcome.kind === 'credit_pending' ||
-          chargeOutcome.kind === 'charge_failed' ||
-          chargeOutcome.kind === 'no_payment_method'
+      // Customer email send conditions:
+      //   1. Admin edited another user's order — "by support" copy to owner
+      //   2. ANY edit that moved the customer's wallet (card charged, credit
+      //      owed, charge failed, no PM) — owner needs a receipt.
+      //      Without this, a customer self-edit charges their card with zero
+      //      confirmation email — a chargeback magnet.
+      // For invoice-billing skips (no Stripe call) and no_change (no $ delta),
+      // self-edits don't get a separate email.
+      //
+      // Recipient routing — three roles to keep straight:
+      //   - actor: the logged-in user who clicked Save (= `user`)
+      //   - owner: the order's `userId` (= fullOrder.user)
+      //   - payer: who got charged (resolveEffectivePayer; = team_admin for
+      //     on-behalf-of orders, else == owner)
+      //
+      // The OWNER always gets the receipt (their order; they're the contact
+      // accountants will reach out to). If the PAYER is a different person
+      // (team_admin-on-behalf-of pattern: broker pays for the agent's order),
+      // they also get a notification — but with editorName copy that makes
+      // clear THEY didn't do the edit. Pre-2026-06-29 the broker got the
+      // existing "you updated this order" receipt while the agent who
+      // actually edited got nothing.
+      const isAdminEditingOther = user.role === 'admin' && fullOrder.userId !== user.id
+      const isWalletImpact =
+        chargeOutcome.kind === 'charged_diff' ||
+        chargeOutcome.kind === 'credit_pending' ||
+        chargeOutcome.kind === 'charge_failed' ||
+        chargeOutcome.kind === 'no_payment_method'
 
-        if (isAdminEditingOther || isWalletImpact) {
-          // Route the receipt to the effective PAYER, not always the order
-          // owner. For team_admin-on-behalf-of orders, the broker paid and
-          // should get the receipt — they're the human accountants will ask.
-          // Falls back to order owner when payer == owner (solo customer).
-          const useBrokerRecipient = !!payer && payer.id !== fullOrder.userId
-          const recipientName = useBrokerRecipient
-            ? payer.fullName
-            : (fullOrder.user.fullName || fullOrder.user.name || '')
-          const recipientEmail = useBrokerRecipient
-            ? payer.email
-            : fullOrder.user.email
-          const recipientUserId = useBrokerRecipient ? payer.id : fullOrder.userId
+      if (isAdminEditingOther || isWalletImpact) {
+        // Fall through to email when fullName/name are blank — Pink Posts has
+        // SSO/imported users where email is the only populated identifier.
+        // Without this fallback, the broker secondary email's editorName
+        // becomes '' which the email function reads as falsy and silently
+        // degrades to the generic "Order Confirmation" copy (defeating the
+        // entire purpose of Fix 2 for those edge-case agents).
+        const ownerName = fullOrder.user.fullName || fullOrder.user.name || fullOrder.user.email
+        const ownerEmail = fullOrder.user.email
+        const propertyAddressLine = `${fullOrder.propertyAddress}, ${fullOrder.propertyCity}, ${fullOrder.propertyState} ${fullOrder.propertyZip}`
+        const itemsForEmail = fullOrder.orderItems.map((it) => ({
+          description: it.description,
+          quantity: it.quantity,
+          total_price: Number(it.totalPrice),
+        }))
 
+        try {
+          // PRIMARY: receipt to the order owner. "by support" copy if admin
+          // edited on their behalf, otherwise neutral "you updated this".
           await sendOrderConfirmationEmail({
-            customerName: recipientName,
-            customerEmail: recipientEmail,
+            customerName: ownerName,
+            customerEmail: ownerEmail,
             orderNumber: fullOrder.orderNumber,
-            propertyAddress: `${fullOrder.propertyAddress}, ${fullOrder.propertyCity}, ${fullOrder.propertyState} ${fullOrder.propertyZip}`,
+            propertyAddress: propertyAddressLine,
             total: Number(fullOrder.total),
-            items: fullOrder.orderItems.map((it) => ({
-              description: it.description,
-              quantity: it.quantity,
-              total_price: Number(it.totalPrice),
-            })),
+            items: itemsForEmail,
             requestedDate: fullOrder.scheduledDate?.toISOString(),
             installationNotes: fullOrder.propertyNotes || undefined,
-            recipientUserId,
+            recipientUserId: fullOrder.userId,
             isInvoiceBilling: fullOrder.paymentStatus === 'pending_invoice',
             isEditedBySupport: isAdminEditingOther,
             isSelfEdited: !isAdminEditingOther,
             originalTotal,
             editChargeOutcome: chargeOutcome,
           })
+        } catch (ownerEmailErr) {
+          console.error('Owner edit receipt email failed:', ownerEmailErr)
         }
-      } catch (customerEmailErr) {
-        console.error('Customer edit notification email failed:', customerEmailErr)
+
+        // SECONDARY: notify the payer if they're not the owner. Broker-pays-
+        // for-agent-order pattern. editorName copy explains who actually did
+        // the edit so the broker doesn't read it as their own action.
+        if (payer && payer.id !== fullOrder.userId) {
+          const editorName = isAdminEditingOther ? 'Pink Posts support' : ownerName
+          try {
+            await sendOrderConfirmationEmail({
+              customerName: payer.fullName || '',
+              customerEmail: payer.email,
+              orderNumber: fullOrder.orderNumber,
+              propertyAddress: propertyAddressLine,
+              total: Number(fullOrder.total),
+              items: itemsForEmail,
+              requestedDate: fullOrder.scheduledDate?.toISOString(),
+              installationNotes: fullOrder.propertyNotes || undefined,
+              recipientUserId: payer.id,
+              isInvoiceBilling: fullOrder.paymentStatus === 'pending_invoice',
+              editorName,
+              originalTotal,
+              editChargeOutcome: chargeOutcome,
+            })
+          } catch (payerEmailErr) {
+            console.error('Payer edit notification email failed:', payerEmailErr)
+          }
+        }
       }
     }
 

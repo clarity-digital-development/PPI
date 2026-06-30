@@ -79,7 +79,18 @@ export interface OrderFormData {
   // Promo Code
   promo_code?: string
   promo_code_id?: string
+  // Stored discount amount as last computed. Stays in sync with the live
+  // items via the review-step's recompute (uses promo_discount_type +
+  // promo_discount_value below). Pre-Round 27 this was set once at promo-
+  // apply time and never re-derived — silently drifting whenever the
+  // customer changed items afterwards.
   discount?: number
+  // Promo's rate/value, captured at apply time so the review-step can
+  // recompute the dollar discount as items change. Mirrors the columns on
+  // the PromoCode model that the server uses to recompute at create/edit
+  // time, so client preview and server save stay aligned.
+  promo_discount_type?: 'percentage' | 'fixed'
+  promo_discount_value?: number
   fuel_surcharge_waived?: boolean
 
   // Team-admin only: the name of the agent on the team who sold this property.
