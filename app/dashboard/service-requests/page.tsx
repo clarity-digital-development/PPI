@@ -86,6 +86,11 @@ export default function ServiceRequestsPage() {
   const [saving, setSaving] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
   const [cancellingId, setCancellingId] = useState<string | null>(null)
+  // In-page cancel confirmation (replaces window.confirm, which iOS Safari
+  // silently blocks in some contexts — PWA mode, prior "prevent additional
+  // dialogs" state, or content-blocker extensions — leaving the customer
+  // with a button that appears to do nothing when tapped).
+  const [pendingCancel, setPendingCancel] = useState<ServiceRequest | null>(null)
 
   // team_admin only: roster (members with logins) for the "filter by agent"
   // control, which narrows to one member's requests.
@@ -234,11 +239,10 @@ export default function ServiceRequestsPage() {
     }
   }
 
-  const cancelRequest = async (request: ServiceRequest) => {
-    if (!window.confirm('Cancel this service request? This cannot be undone.')) {
-      return
-    }
-
+  const confirmCancel = async () => {
+    if (!pendingCancel) return
+    const request = pendingCancel
+    setPendingCancel(null)
     setCancellingId(request.id)
     try {
       const res = await fetch(`/api/service-requests/${request.id}`, {
@@ -367,7 +371,7 @@ export default function ServiceRequestsPage() {
                     size="sm"
                     className="text-red-600 hover:text-red-700 hover:bg-red-50"
                     isLoading={cancellingId === request.id}
-                    onClick={() => cancelRequest(request)}
+                    onClick={() => setPendingCancel(request)}
                   >
                     <Ban className="w-4 h-4 mr-1.5" />
                     Cancel request
@@ -591,6 +595,27 @@ export default function ServiceRequestsPage() {
             </Button>
             <Button onClick={saveEdit} isLoading={saving}>
               Save Changes
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Cancel Confirmation Modal */}
+      <Modal
+        isOpen={!!pendingCancel}
+        onClose={() => setPendingCancel(null)}
+        title="Cancel Service Request?"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-700">
+            This will cancel your service request. This cannot be undone.
+          </p>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={() => setPendingCancel(null)}>
+              Keep request
+            </Button>
+            <Button variant="danger" onClick={confirmCancel}>
+              Yes, cancel it
             </Button>
           </div>
         </div>
