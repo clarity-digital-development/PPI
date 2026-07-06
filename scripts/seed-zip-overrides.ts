@@ -1,4 +1,16 @@
 /**
+ * DEPRECATED — Round 27 (Tanner, 2026-07-06) retired the ZIP-override
+ * table as a fee decider. resolveServiceArea() no longer consults it;
+ * every checkout with an address runs Google Routes for a precise
+ * drive-time reading, so the haversine-under-estimate cases the
+ * overrides were patching (Danville, etc.) are now measured directly.
+ *
+ * The table + Prisma model are left in place so no migration is needed
+ * and future block-list use cases (unserved counties) can reuse the
+ * mechanism if wired back in. For now this script is a no-op.
+ *
+ * Original doc left for context:
+ *
  * Seed the service-area ZIP overrides (CR1 / Round 22).
  *
  * The straight-line haversine drive-time model under-predicts for some rural
@@ -42,18 +54,12 @@ interface ZipOverrideSeed {
   note: string
 }
 
-// D6 (Round 22): Danville + neighboring far ZIPs observed escaping the fee.
-// 40475 Richmond removed 2026-07-06 after Ryan reported Andi Kelley (34-min
-// drive, 28mi) charged $50 by the blanket zip rule — 40475 covers close-to-Lex
-// addresses too, so the override was over-broad. Now falls through to the
-// distance model like every non-listed ZIP. Broader OOA overhaul (retire the
-// override table entirely, address→drive-time on every checkout) queued for
-// Tanner's direction — see the audit report.
-const OVERRIDES: ZipOverrideSeed[] = [
-  { zip: '40422', tier: 'surcharge', surchargeCents: 5000, note: 'Danville KY — ~53min real drive (model est ~34min). CR1.' },
-  { zip: '40468', tier: 'surcharge', surchargeCents: 5000, note: 'Perryville KY — far from Lexington center.' },
-  { zip: '40444', tier: 'surcharge', surchargeCents: 5000, note: 'Lancaster KY — far from Lexington center.' },
-]
+// Round 27: empty. Overrides retired — Google Routes on every checkout
+// with an address supersedes the manual patchwork. 40475 Richmond was
+// pulled first (2026-07-06 after Andi Kelley's false $50); the remaining
+// three (40422 Danville, 40444 Lancaster, 40468 Perryville) went out
+// same day after Tanner approved the full overhaul.
+const OVERRIDES: ZipOverrideSeed[] = []
 
 async function main() {
   console.log(`ZIP-override seed — ${APPLY ? 'APPLY (writing)' : 'DRY-RUN (no writes; pass --apply to write)'}`)

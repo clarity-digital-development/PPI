@@ -204,17 +204,14 @@ export async function POST(request: NextRequest) {
       )
     }
     // surcharge → push a synthetic OrderItem so it flows through pricing + display.
-    // Round 25 fix: previously gated on sa.decidedBy, which is missing for the
-    // ZIP-override branch — every Danville (40422) order since Round 22's CR1
-    // was silently undercharged because no surcharge line ever made it into
-    // the items[]. Now we inject whenever tier=surcharge with a non-zero
-    // amount, and use centerName/driveMinutes when present (haversine/cache/
-    // address path) or a "ZIP override" description otherwise.
+    // Round 27 (per Tanner 2026-07-06): customer-facing description is just
+    // "Out of Area Service Fee" — no ZIP, no center name, no drive minutes.
+    // The internal signal (winning center + drive time + source) is still
+    // persisted on the Order row (serviceAreaCenterId / DriveMinutes /
+    // DriveTimeSource) so admin can audit without leaking to the customer.
     if (sa.tier === 'surcharge' && sa.surchargeCents > 0) {
       const surchargeDollars = sa.surchargeCents / 100
-      const description = sa.decidedBy
-        ? `Out-of-area service fee – ${sa.decidedBy.centerName} ~${Math.round(sa.decidedBy.driveTimeMinutes)}min`
-        : `Out-of-area service fee – ZIP ${orderData.property_zip}`
+      const description = 'Out of Area Service Fee'
       orderData.items.push({
         // Server-injected: 'surcharge' is intentionally NOT in the client Zod enum
         // (clients can't fake a $0 surcharge line). The outer object cast widens to the

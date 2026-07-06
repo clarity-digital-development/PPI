@@ -4,28 +4,31 @@
  * / out_of_area). Exempt users (team_admin or admin-flagged exempt
  * customers) bypass the whole pipeline.
  *
- * Algorithm (Round 25 — extends Ryan's 2026-06-02 spec):
+ * Algorithm (Round 27 — retires the ZIP-override table per Tanner
+ * 2026-07-06 after Ryan flagged 40475 Richmond falsely charging Andi
+ * Kelley $50 on a 34-min drive):
  *  1. Exempt fast-path (no DB hit).
  *  2. Normalize ZIP (trim, slice 0..5, /^\d{5}$/).
- *  3. ZIP override table (authoritative manual patch).
- *  4. ZIP centroid lookup via `us-zips` dataset.
- *  5. Load all active ServiceCenters from DB.
- *  6. For each center: drive-time minutes via THIS PRECEDENCE:
+ *  3. ZIP centroid lookup via `us-zips` dataset.
+ *  4. Load all active ServiceCenters from DB.
+ *  5. For each center: drive-time minutes via THIS PRECEDENCE:
  *     a. ZipDriveTimeCache row (Google Routes seed)        ← Round 25
  *     b. else haversine miles × ROAD_FACTOR / AVG_SPEED_MPH (estimate)
- *  7. Per-center tier from standard/surcharge bands.
- *  8. Borderline check: if estimate >= LOOKUP_FLOOR_MINUTES (35) and the
- *     ZIP estimate is within BORDERLINE_WINDOW_MINUTES (15) of either
- *     band edge, AND we have the full property address, AND Google API
- *     key is configured — call Routes API with the address, cache it,
- *     and re-tier the winner.                              ← Round 25
- *  9. Best-tier wins (Standard > Surcharge > Out). Track winning center.
+ *  6. Per-center tier from standard/surcharge bands (haversine baseline).
+ *  7. Address-level upgrade: if input.address is supplied AND Google API
+ *     key is configured — call Routes API with the address for every
+ *     center, cache it, and re-tier. Every checkout with an address hits
+ *     Google Routes now — no LOOKUP_FLOOR gate, because that gate was
+ *     what let close-to-Lex properties in over-broad "far ZIPs"
+ *     (40475 Richmond) get patched-in via override rather than measured.
+ *  8. Best-tier wins (Standard > Surcharge > Out). Track winning center.
  *
  * Drive-time model fallback: haversine miles × 1.18 road-factor / 65 mph
  * × 60. Calibrated against Ryan's reference drives (Lex→Cincy 80m,
  * Lex→Lou 75m, Lex→Bardstown 65m). Underestimates back-road drives
- * (Berea 48m → ~36m estimate) — which is why Round 25 layers the Google
- * Routes API on top for borderline cases.
+ * (Berea 48m → ~36m estimate) — Google Routes API on top for every
+ * addressed order covers this. When address is missing (cart-preview
+ * quote endpoint) haversine is the only signal available.
  */
 
 import { prisma } from '@/lib/prisma'
@@ -46,17 +49,15 @@ export const DEFAULT_PHONE = '859-395-8188'
 const ROAD_FACTOR = 1.18
 const AVG_SPEED_MPH = 65
 
-// Round 25 borderline tuning (per Ryan, 2026-06-25):
-// Trust ZIP estimate when it's clearly in-area (under LOOKUP_FLOOR_MINUTES).
-// Anything at-or-above the floor triggers an address-level upgrade when an
-// address is provided — Ryan's original spec was a ±15 window around each
-// band edge, but adversarial review caught two "dead zone" cases that the
-// strict-edge rule missed (mid-band estimates that could still flip tiers
-// when the haversine error is large; over-band estimates that silently
-// block a real-surcharge customer because the haversine over-shoots). The
-// any-estimate-≥35 rule eliminates both dead zones while staying easily
-// inside Google's 10K/month free element tier at PPI's volume.
-export const LOOKUP_FLOOR_MINUTES = 35
+// Round 27 (per Tanner, 2026-07-06): drop the LOOKUP_FLOOR gate. Every
+// checkout with an address goes to Google Routes. The floor was Round
+// 25's cost-control move (only upgrade when haversine ≥ 35 min), but it
+// left close-to-Lex properties inside "far" ZIPs uncorrected — which was
+// exactly the Andi Kelley failure mode. At PPI's ~200 orders/month
+// unconditional upgrade sits inside Google's 10K/month free tier with
+// two orders of magnitude of headroom.
+// Constant kept exported for backwards compat with any external caller.
+export const LOOKUP_FLOOR_MINUTES = 0
 
 export type Tier = 'standard' | 'surcharge' | 'out_of_area' | 'exempt'
 
@@ -66,7 +67,6 @@ export type ResolveReason =
   | 'zip_not_in_centroid_dataset'
   | 'no_active_centers'
   | 'all_centers_out_of_area'
-  | 'zip_override'
 
 export interface ResolveAddress {
   street: string
@@ -156,8 +156,10 @@ function tierForCenter(minutes: number, center: ServiceCenterRow): CenterTier {
   return 'out_of_area'
 }
 
-/** True when the ZIP estimate is at-or-above LOOKUP_FLOOR_MINUTES and
- *  therefore worth verifying with a precise address-level lookup. */
+/** Retained for backwards compat — Round 27 always upgrades when an
+ *  address is provided (LOOKUP_FLOOR_MINUTES = 0), so this is now a
+ *  no-op filter. Kept as a hook in case a future gate needs to skip
+ *  centers on other criteria (e.g. per-center opt-out). */
 function shouldUpgrade(minutes: number): boolean {
   return minutes >= LOOKUP_FLOOR_MINUTES
 }
@@ -264,23 +266,13 @@ export async function resolveServiceArea(input: ResolveInput): Promise<ResolveRe
     return { tier: 'out_of_area', surchargeCents: 0, contactPhone: DEFAULT_PHONE, reason: 'zip_invalid_format' }
   }
 
-  // 2b. Explicit ZIP override (CR1 / Round 22). Authoritative for ZIPs the
-  // straight-line model gets wrong (e.g. Danville 40422 ~53min real drive but
-  // ~34 estimated). Consulted before the distance model; exempt users above
-  // already bypassed it. A missing/inactive row falls through to the model.
-  // Round 25 layered the drive-time cache below this so existing overrides
-  // still win — Ryan's manual patches are always authoritative.
-  const override = await prisma.serviceAreaZipOverride.findUnique({ where: { zip } })
-  if (override && override.isActive) {
-    if (override.tier === 'out_of_area') {
-      return { tier: 'out_of_area', surchargeCents: 0, contactPhone: DEFAULT_PHONE, reason: 'zip_override' }
-    }
-    if (override.tier === 'standard') {
-      return { tier: 'standard', surchargeCents: 0, reason: 'zip_override' }
-    }
-    // default: 'surcharge'
-    return { tier: 'surcharge', surchargeCents: override.surchargeCents, reason: 'zip_override' }
-  }
+  // Round 27: ZIP override lookup retired per Tanner 2026-07-06 — the
+  // override rows were patches for haversine's back-road underestimate
+  // (Danville 40422 ~53min real vs ~34min est), but they were too coarse
+  // (Richmond 40475 covers 34-min-close addresses too). Address-level
+  // Google Routes upgrade below now handles both cases correctly for
+  // every checkout that has an address. Cart-preview quote (no address)
+  // still uses haversine only — accepted per Tanner 2026-07-06.
 
   // 3. ZIP centroid lookup.
   const zipLL = getZipCentroid(zip)

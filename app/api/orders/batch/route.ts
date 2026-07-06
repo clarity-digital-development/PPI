@@ -175,13 +175,13 @@ export async function POST(request: NextRequest) {
         continue
       }
       // surcharge → push a synthetic OrderItem so it flows through pricing + display.
-      // Round 25 fix: see app/api/orders/route.ts — gate on tier+amount only
-      // so the ZIP-override branch (no decidedBy) still injects the line.
+      // Round 27 (per Tanner 2026-07-06): customer-facing description is just
+      // "Out of Area Service Fee" — no ZIP, no center name, no drive minutes.
+      // Mirrors the single-order create route; adversarial review 2026-07-06
+      // caught that this batch path was still emitting the old leaky text.
       if (sa.tier === 'surcharge' && sa.surchargeCents > 0) {
         const surchargeDollars = sa.surchargeCents / 100
-        const description = sa.decidedBy
-          ? `Out-of-area service fee – ${sa.decidedBy.centerName} ~${Math.round(sa.decidedBy.driveTimeMinutes)}min`
-          : `Out-of-area service fee – ZIP ${o.property_zip}`
+        const description = 'Out of Area Service Fee'
         o.items.push({
           item_type: 'surcharge',
           item_category: undefined,

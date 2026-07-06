@@ -9,6 +9,7 @@ import { audit, AuditAction } from '@/lib/audit'
 import { chargePaymentMethod, isDetachedPaymentMethodError } from '@/lib/stripe'
 import { resolveEffectivePayer } from '@/lib/orders/effective-payer'
 import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, NO_POST_SURCHARGE, type OrderItemForPricing } from '@/lib/orders/pricing'
+import { resolveServiceArea } from '@/lib/service-area'
 import { z } from 'zod'
 
 // What happened to the customer's wallet as a result of this edit. The customer
@@ -90,10 +91,18 @@ export async function PATCH(
 
     // Owner-OR-admin gate. Admins can edit any pending order on a customer's
     // behalf so they don't have to email the agent and ask for changes (per
-    // Ryan's ask). The audit log at the end already records actor.role, so
-    // admin edits are distinguishable from self-edits without further work.
+    // Ryan's ask). team_admins can edit their own on-behalf-of orders (they're
+    // the wallet holder via placedByUserId) — mirrors the GET route's OR
+    // condition; without this, a team_admin who placed an OOA order sees it in
+    // their dashboard but hits 404 on Edit. The audit log at the end already
+    // records actor.role, so all three edit shapes are distinguishable.
     const existingOrder = await prisma.order.findFirst({
-      where: user.role === 'admin' ? { id } : { id, userId: user.id },
+      where:
+        user.role === 'admin'
+          ? { id }
+          : user.role === 'team_admin'
+            ? { id, OR: [{ userId: user.id }, { placedByUserId: user.id }] }
+            : { id, userId: user.id },
       include: { orderItems: true, promoCode: true },
     })
 
@@ -252,6 +261,92 @@ export async function PATCH(
     const isFlatFee = existingOrder.flatFeeApplied
     if (isFlatFee) noPostSurcharge = 0
 
+    // ---- Re-resolve service area when address changed ----
+    // Round 27 (per Tanner 2026-07-06): if the customer edits FROM an
+    // OOA zip TO an in-area address (or vice versa) we must re-run the
+    // service-area resolver so the fee moves accordingly. Previously
+    // the OOA charge was locked at placement — a customer stuck with
+    // Andi's $50 could not remove it by editing their address to
+    // Lexington, and inversely someone editing INTO an unserved area
+    // bypassed the block entirely. Flat-fee accounts stay exempt
+    // regardless of address per Ryan's policy.
+    //
+    // Trigger: any of property_address / property_city / property_state
+    // / property_zip changed AND not flat-fee AND payer is not exempt.
+    // resolveServiceArea handles the exempt fast-path internally, but
+    // we still short-circuit when isFlatFee so we don't waste a Google
+    // Routes call on flat-fee edits.
+    //
+    // Empty-string coerce (adversarial review 2026-07-06): the wizard's
+    // form state defaults these to '' and a customer can clear a field
+    // then navigate to Review via numbered nav. Without coercing '' →
+    // undefined, `??` doesn't fall back to the DB value and we (a)
+    // trigger a spurious re-resolve on blank submit, (b) 400 with "we
+    // don't currently service ZIP ." (empty), and (c) stamp '' into the
+    // Order row's address columns overwriting real data.
+    const zipInput = editData.property_zip?.trim() || undefined
+    const streetInput = editData.property_address?.trim() || undefined
+    const cityInput = editData.property_city?.trim() || undefined
+    const stateInput = editData.property_state?.trim() || undefined
+    const zipChanged = zipInput !== undefined && zipInput !== existingOrder.propertyZip
+    const streetChanged = streetInput !== undefined && streetInput !== existingOrder.propertyAddress
+    const cityChanged = cityInput !== undefined && cityInput !== existingOrder.propertyCity
+    const stateChanged = stateInput !== undefined && stateInput !== existingOrder.propertyState
+    const propertyLocationChanged = zipChanged || streetChanged || cityChanged || stateChanged
+
+    // Payer for OOA is the wallet holder — mirrors create route (line 169-173).
+    // For self-edits actor === payer; for admin-editing-other the OOA exemption
+    // still belongs to the WALLET, not the acting admin.
+    const payerForOOA = await prisma.user.findUnique({
+      where: { id: existingOrder.placedByUserId ?? existingOrder.userId },
+      select: { id: true, role: true, isServiceAreaExempt: true },
+    })
+
+    // Exempt-promotion guard (adversarial review 2026-07-06): if the payer
+    // is NOW exempt (team_admin promotion / admin toggled isServiceAreaExempt)
+    // and the order was placed with a locked OOA surcharge, skip the
+    // re-resolve so we don't silently zero-out the historical charge and
+    // accrue a phantom refund in pendingCreditCents. Address-into-standard
+    // for a still-non-exempt customer still fires correctly. If Ryan
+    // explicitly wants retroactive refunds for promoted customers, undo
+    // this guard — but the default matches his tight-refund pattern.
+    const wouldFastPathExempt = !!payerForOOA && (payerForOOA.role === 'team_admin' || payerForOOA.isServiceAreaExempt)
+    const hadPaidSurcharge = (existingOrder.serviceAreaSurchargeCents ?? 0) > 0
+    const skipReresolveForExemptPromoted = wouldFastPathExempt && hadPaidSurcharge
+
+    let resolvedSurchargeCents: number | null = null
+    let resolvedCenterId: string | null | undefined = undefined
+    let resolvedDriveMinutes: number | null | undefined = undefined
+    let resolvedDriveTimeSource: string | null | undefined = undefined
+    if (propertyLocationChanged && !isFlatFee && !skipReresolveForExemptPromoted) {
+      const newZip = zipInput ?? existingOrder.propertyZip
+      const newStreet = streetInput ?? existingOrder.propertyAddress
+      const newCity = cityInput ?? existingOrder.propertyCity
+      const newState = stateInput ?? existingOrder.propertyState
+      const sa = await resolveServiceArea({
+        zip: newZip,
+        user: payerForOOA
+          ? { id: payerForOOA.id, role: payerForOOA.role, isServiceAreaExempt: payerForOOA.isServiceAreaExempt ?? false }
+          : null,
+        address: { street: newStreet, city: newCity, state: newState, zip: newZip },
+      })
+      if (sa.tier === 'out_of_area') {
+        return NextResponse.json(
+          {
+            error: `We don't currently service ZIP ${newZip}. Please call ${sa.contactPhone} to discuss options.`,
+            code: 'service_area_unavailable',
+            contactPhone: sa.contactPhone,
+          },
+          { status: 400 }
+        )
+      }
+      // exempt / standard → 0; surcharge → resolved cents.
+      resolvedSurchargeCents = sa.tier === 'surcharge' ? sa.surchargeCents : 0
+      resolvedCenterId = sa.decidedBy?.centerId ?? null
+      resolvedDriveMinutes = sa.decidedBy?.driveTimeMinutes ?? null
+      resolvedDriveTimeSource = sa.decidedBy?.driveTimeSource ?? null
+    }
+
     // ---- Preserve admin-added items the customer's form couldn't render ----
     // Server-side defense-in-depth for the inventory-linked round-trip: any
     // existing OrderItem with a customer_*_id NOT in the payload AND NOT in
@@ -283,10 +378,12 @@ export async function PATCH(
     const preserveItems = !preservationActive
       ? []
       : existingOrder.orderItems.filter(item => {
-          // OOA service-area surcharge has no customer form UI; always round-
-          // trip it so admin's items list still shows the "Out-of-area service
-          // fee" line after a customer self-edit.
-          if (item.itemType === 'surcharge') return true
+          // OOA service-area surcharge has no customer form UI; round-trip it
+          // so admin's items list still shows the fee line after a customer
+          // self-edit — UNLESS we re-resolved OOA above, in which case the
+          // resolved value is canonical and the old line must be dropped so
+          // a stale $50 doesn't stick around when the new tier is 'standard'.
+          if (item.itemType === 'surcharge') return resolvedSurchargeCents === null
           // Inventory-linked items the form was unaware of (couldn't render →
           // couldn't intentionally drop).
           if (item.customerSignId) return !payloadSignIds.has(item.customerSignId) && !awareSignIds.has(item.customerSignId)
@@ -295,16 +392,24 @@ export async function PATCH(
           if (item.customerBrochureBoxId) return !payloadBrochureIds.has(item.customerBrochureBoxId) && !awareBrochureIds.has(item.customerBrochureBoxId)
           return false
         })
-    // OOA service-area surcharge is preserved from the existing order (locked
-    // at placement time — never re-resolved). Normally the surcharge line is
-    // picked up by preserveItems above; if the original surcharge OrderItem
-    // is somehow missing (legacy data, dropped by an earlier bug), fall back
-    // to the locked cents value on the Order row so total still reflects it.
-    // Flat-fee orders clear it because the flat total absorbs all fees.
+    // Locked-surcharge source of truth:
+    //   - Flat-fee: 0 (flat total absorbs all fees).
+    //   - Re-resolved on this edit (address/zip changed, non-flat-fee):
+    //     resolvedSurchargeCents wins — the resolver just measured the new
+    //     address and its answer is canonical.
+    //   - Else: existing serviceAreaSurchargeCents (locked at placement).
+    // The synthetic-shortfall / surcharge-line injection logic below then
+    // makes sure the OrderItems reflect the locked value, whether it came
+    // from preservation, the resolver, or the fallback.
     const preservedSurchargeFromLines = preserveItems
       .filter(it => it.itemType === 'surcharge')
       .reduce((sum, it) => sum + Number(it.totalPrice), 0)
-    const lockedSurcharge = isFlatFee ? 0 : (existingOrder.serviceAreaSurchargeCents ?? 0) / 100
+    const lockedSurchargeCents = isFlatFee
+      ? 0
+      : (resolvedSurchargeCents !== null
+          ? resolvedSurchargeCents
+          : (existingOrder.serviceAreaSurchargeCents ?? 0))
+    const lockedSurcharge = lockedSurchargeCents / 100
     const surchargeShortfall = Math.max(0, lockedSurcharge - preservedSurchargeFromLines)
 
     // Unified items array for the shared pricing helper. Three sources:
@@ -483,12 +588,22 @@ export async function PATCH(
       const hasSurchargeInPreserved = preserveItems.some(it => it.itemType === 'surcharge')
       if (surchargeShortfall > 0 && !hasSurchargeInPayload && !hasSurchargeInPreserved) {
         const original = existingOrder.orderItems.find(it => it.itemType === 'surcharge')
+        // Description precedence: when we just re-resolved OOA on this edit,
+        // use the Round 27 canonical label "Out of Area Service Fee" (no ZIP,
+        // no drive minutes) — the resolver already computed the new value and
+        // any stale text on the original OrderItem would misdescribe it. Else
+        // fall back to the original line's description (locked-at-placement
+        // legacy behavior) or the "(preserved)" fallback when there's no
+        // original at all.
+        const description = resolvedSurchargeCents !== null
+          ? 'Out of Area Service Fee'
+          : (original?.description ?? 'Out-of-area service fee (preserved)')
         await tx.orderItem.create({
           data: {
             orderId: id,
             itemType: 'surcharge',
             itemCategory: original?.itemCategory ?? null,
-            description: original?.description ?? `Out-of-area service fee (preserved)`,
+            description,
             quantity: 1,
             unitPrice: surchargeShortfall,
             totalPrice: surchargeShortfall,
@@ -528,10 +643,13 @@ export async function PATCH(
           postTypeId: newPostTypeId,
           // Property
           propertyType: propertyType as never,
-          propertyAddress: editData.property_address ?? existingOrder.propertyAddress,
-          propertyCity: editData.property_city ?? existingOrder.propertyCity,
-          propertyState: editData.property_state ?? existingOrder.propertyState,
-          propertyZip: editData.property_zip ?? existingOrder.propertyZip,
+          // Use the trimmed-to-undefined variants so a blank field ('' from a
+          // stale wizard form state) doesn't overwrite the row with '' —
+          // matches the coerce at re-resolve above.
+          propertyAddress: streetInput ?? existingOrder.propertyAddress,
+          propertyCity: cityInput ?? existingOrder.propertyCity,
+          propertyState: stateInput ?? existingOrder.propertyState,
+          propertyZip: zipInput ?? existingOrder.propertyZip,
           installationLocation: editData.installation_location ?? existingOrder.installationLocation,
           installationLocationImage: editData.installation_location_image ?? existingOrder.installationLocationImage,
           propertyNotes: editData.installation_notes ?? existingOrder.propertyNotes,
@@ -550,6 +668,17 @@ export async function PATCH(
           discount,
           tax,
           total,
+          // OOA snapshot — only when we re-resolved this edit. Undefined
+          // fields are omitted by Prisma so the existing locked-at-placement
+          // values stay untouched on address-unchanged edits.
+          ...(resolvedSurchargeCents !== null
+            ? {
+                serviceAreaSurchargeCents: resolvedSurchargeCents,
+                serviceAreaCenterId: resolvedCenterId,
+                serviceAreaDriveMinutes: resolvedDriveMinutes,
+                serviceAreaDriveTimeSource: resolvedDriveTimeSource,
+              }
+            : {}),
         },
       })
       if (updateResult.count === 0) {
