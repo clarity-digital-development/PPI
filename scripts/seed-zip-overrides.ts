@@ -43,11 +43,16 @@ interface ZipOverrideSeed {
 }
 
 // D6 (Round 22): Danville + neighboring far ZIPs observed escaping the fee.
+// 40475 Richmond removed 2026-07-06 after Ryan reported Andi Kelley (34-min
+// drive, 28mi) charged $50 by the blanket zip rule — 40475 covers close-to-Lex
+// addresses too, so the override was over-broad. Now falls through to the
+// distance model like every non-listed ZIP. Broader OOA overhaul (retire the
+// override table entirely, address→drive-time on every checkout) queued for
+// Tanner's direction — see the audit report.
 const OVERRIDES: ZipOverrideSeed[] = [
   { zip: '40422', tier: 'surcharge', surchargeCents: 5000, note: 'Danville KY — ~53min real drive (model est ~34min). CR1.' },
   { zip: '40468', tier: 'surcharge', surchargeCents: 5000, note: 'Perryville KY — far from Lexington center.' },
   { zip: '40444', tier: 'surcharge', surchargeCents: 5000, note: 'Lancaster KY — far from Lexington center.' },
-  { zip: '40475', tier: 'surcharge', surchargeCents: 5000, note: 'Richmond KY — far from Lexington center.' },
 ]
 
 async function main() {
