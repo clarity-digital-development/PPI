@@ -104,6 +104,20 @@ export async function PATCH(
         },
       })
 
+      // Cancelling a removal SR must release the parent installation, or the
+      // UI keeps hiding "Schedule Removal" (active-posts-table.tsx:111 gates
+      // on status === 'active') and admin only sees "Request Service" — the
+      // exact stuck-state Ryan reported 2026-07-06 for Willie/Semonin on
+      // 12604 Razor Court. Guard on the current status so we never flip an
+      // already-'removed' install back to 'active' if an admin force-cancels
+      // a completed SR.
+      if (existing.type === 'removal' && existing.installationId) {
+        await prisma.installation.updateMany({
+          where: { id: existing.installationId, status: 'removal_scheduled' },
+          data: { status: 'active', removalDate: null },
+        })
+      }
+
       // Admin notification — without this admin doesn't know the customer
       // cancelled and the dispatch crew may show up to a job that's off.
       // Per Ryan 2026-06-29 ("SR edits aren't coming through as email") —

@@ -163,6 +163,19 @@ export async function PUT(
       }
     }
 
+    // Symmetric release for cancellation. Without this the Installation
+    // stays stuck at 'removal_scheduled' after admin cancels the SR, and
+    // active-posts-table.tsx:111 hides "Schedule Removal" — the exact
+    // stuck-state Ryan reported 2026-07-06 for Willie/Semonin on 12604
+    // Razor Court. Guard on 'removal_scheduled' current status so we don't
+    // flip 'removed' back to 'active' if a completed SR is force-cancelled.
+    if (status === 'cancelled' && serviceRequest.type === 'removal' && serviceRequest.installationId) {
+      await prisma.installation.updateMany({
+        where: { id: serviceRequest.installationId, status: 'removal_scheduled' },
+        data: { status: 'active', removalDate: null },
+      })
+    }
+
     // Create notification for status change
     const notifiableStatuses = ['acknowledged', 'scheduled', 'completed']
     const statusChanged = status && status !== serviceRequest.status
