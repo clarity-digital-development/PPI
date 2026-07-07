@@ -26,15 +26,20 @@ export async function GET(request: NextRequest) {
     let statusCounts: Record<string, number> = {}
     let pendingInvoiceCount = 0
 
+    // WHERE clause is shared between findMany (page slice) and count (total)
+    // so pagination math never drifts from the actual filter set.
+    const whereClause = {
+      ...(status ? { status: status as any } : {}),
+      ...(type ? { type: type as any } : {}),
+      // Lets admin click the "Pending invoice" tile to narrow the list
+      // to only SRs queued for the next bundled invoice.
+      ...(invoiceStatus ? { invoiceStatus } : {}),
+    }
+
+    let filteredTotal = 0
     try {
       serviceRequests = await prisma.serviceRequest.findMany({
-        where: {
-          ...(status ? { status: status as any } : {}),
-          ...(type ? { type: type as any } : {}),
-          // Lets admin click the "Pending invoice" tile to narrow the list
-          // to only SRs queued for the next bundled invoice.
-          ...(invoiceStatus ? { invoiceStatus } : {}),
-        },
+        where: whereClause,
         include: {
           user: {
             select: {
@@ -74,6 +79,12 @@ export async function GET(request: NextRequest) {
         skip: offset,
       })
 
+      // Total across the filtered set (not just the current page) so the
+      // client can compute totalPages. Ryan 2026-07-06: SR list was capped
+      // at the first 50 because no UI ever sent a non-zero offset — 113
+      // completed SRs but the visible list ended around 6/19.
+      filteredTotal = await prisma.serviceRequest.count({ where: whereClause })
+
       // Get counts for dashboard
       const counts = await prisma.serviceRequest.groupBy({
         by: ['status'],
@@ -96,10 +107,15 @@ export async function GET(request: NextRequest) {
       serviceRequests = []
       statusCounts = {}
       pendingInvoiceCount = 0
+      filteredTotal = 0
     }
 
     return NextResponse.json({
       serviceRequests,
+      // Filtered-page total drives the UI's Prev/Next math. Keep it
+      // sibling to `serviceRequests` (not inside `counts`) so it stays
+      // orthogonal to the dashboard tiles' status counts.
+      total: filteredTotal,
       counts: {
         pending: statusCounts.pending || 0,
         acknowledged: statusCounts.acknowledged || 0,
@@ -108,7 +124,7 @@ export async function GET(request: NextRequest) {
         completed: statusCounts.completed || 0,
         cancelled: statusCounts.cancelled || 0,
         pending_invoice: pendingInvoiceCount,
-        total: serviceRequests.length,
+        total: filteredTotal,
       },
     })
   } catch (error) {

@@ -23,8 +23,15 @@ import {
   AlertCircle,
   Eye,
   DollarSign,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react'
 import { formatDate } from '@/lib/utils'
+
+// Match the orders admin list page size — Ryan asked for the SR list to
+// paginate "like orders" (2026-07-06) so he can find old service requests
+// past the historical first-50 cap.
+const PAGE_SIZE = 25
 
 interface ServiceRequest {
   id: string
@@ -108,6 +115,8 @@ const typeFilterOptions = [
 export default function ServiceRequestsPage() {
   const [requests, setRequests] = useState<ServiceRequest[]>([])
   const [counts, setCounts] = useState<Counts | null>(null)
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(0)
   const [loading, setLoading] = useState(true)
   const [filterStatus, setFilterStatus] = useState<string>('')
   const [filterType, setFilterType] = useState<string>('')
@@ -139,9 +148,22 @@ export default function ServiceRequestsPage() {
     }
   }, [needsInvoiceAmount])
 
+  // Filter changes reset the page cursor — otherwise flipping from
+  // Completed (page 3) to Pending would try to open Pending's page 3 which
+  // may not exist, and the client-side page state would show empty despite
+  // matching records existing on page 0.
+  useEffect(() => {
+    setPage(0)
+  }, [filterStatus, filterType, filterInvoiceStatus])
+
   useEffect(() => {
     fetchRequests()
-  }, [filterStatus, filterType, filterInvoiceStatus])
+    // fetchRequests is defined at component scope and closes over the same
+    // deps — safe to omit from the array. Adding it triggers a fresh
+    // reference every render, which loops. Matches the pre-existing pattern
+    // used elsewhere in this file for the same reason.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterStatus, filterType, filterInvoiceStatus, page])
 
   const fetchRequests = async () => {
     setLoading(true)
@@ -150,12 +172,15 @@ export default function ServiceRequestsPage() {
       if (filterStatus) params.set('status', filterStatus)
       if (filterType) params.set('type', filterType)
       if (filterInvoiceStatus) params.set('invoiceStatus', filterInvoiceStatus)
+      params.set('limit', String(PAGE_SIZE))
+      params.set('offset', String(page * PAGE_SIZE))
 
       const res = await fetch(`/api/admin/service-requests?${params.toString()}`)
       if (res.ok) {
         const data = await res.json()
         setRequests(data.serviceRequests)
         setCounts(data.counts)
+        setTotal(typeof data.total === 'number' ? data.total : (data.serviceRequests?.length ?? 0))
       }
     } catch (error) {
       console.error('Error fetching service requests:', error)
@@ -163,6 +188,8 @@ export default function ServiceRequestsPage() {
       setLoading(false)
     }
   }
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   const handleViewRequest = (request: ServiceRequest) => {
     setSelectedRequest(request)
@@ -467,6 +494,41 @@ export default function ServiceRequestsPage() {
               </CardContent>
             </Card>
           ))}
+        </div>
+      )}
+
+      {/* Pagination — mirrors the orders admin list. Shown whenever any
+          filtered result exists so admin can page through history past the
+          first 25 records (fixes the "list ends 6/19 with 113 completed"
+          truncation Ryan reported 2026-07-06). */}
+      {!loading && total > 0 && (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 mt-4">
+          <p className="text-sm text-gray-500">
+            Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of {total} service requests
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page === 0}
+              onClick={() => setPage(Math.max(0, page - 1))}
+              className="gap-1"
+            >
+              <ChevronLeft className="w-4 h-4" /> Prev
+            </Button>
+            <span className="text-sm text-gray-600">
+              Page {page + 1} of {totalPages}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page + 1 >= totalPages}
+              onClick={() => setPage(page + 1)}
+              className="gap-1"
+            >
+              Next <ChevronRight className="w-4 h-4" />
+            </Button>
+          </div>
         </div>
       )}
 
