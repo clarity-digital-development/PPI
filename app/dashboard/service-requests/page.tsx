@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { Header } from '@/components/dashboard'
 import { Card, CardContent, Badge, Tabs, TabsList, TabsTrigger, TabsContent, Button, Modal, Input, Select } from '@/components/ui'
-import { ScheduleTripModal } from '@/components/dashboard/installation-modals'
+import { ScheduleTripModal, ScheduleRemovalModal } from '@/components/dashboard/installation-modals'
 import {
   Loader2,
   MapPin,
@@ -79,6 +79,7 @@ export default function ServiceRequestsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showTripModal, setShowTripModal] = useState(false)
+  const [showRemovalModal, setShowRemovalModal] = useState(false)
   const [editing, setEditing] = useState<ServiceRequest | null>(null)
   const [editDate, setEditDate] = useState('')
   const [editNotes, setEditNotes] = useState('')
@@ -438,10 +439,16 @@ export default function ServiceRequestsPage() {
           ) : (
             <div />
           )}
-          <Button onClick={() => setShowTripModal(true)}>
-            <Truck className="w-4 h-4 mr-2" />
-            Schedule a Trip
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => setShowRemovalModal(true)}>
+              <Trash2 className="w-4 h-4 mr-2" />
+              Schedule Removal
+            </Button>
+            <Button onClick={() => setShowTripModal(true)}>
+              <Truck className="w-4 h-4 mr-2" />
+              Schedule a Trip
+            </Button>
+          </div>
         </div>
 
         {/* Summary Cards */}
@@ -543,6 +550,19 @@ export default function ServiceRequestsPage() {
         onClose={() => setShowTripModal(false)}
         onSuccess={() => {
           setShowTripModal(false)
+          fetchRequests()
+        }}
+      />
+
+      {/* Schedule Removal Modal — installationId=null puts it in picker mode
+          since no installation row is selected on this page. */}
+      <ScheduleRemovalModal
+        isOpen={showRemovalModal}
+        onClose={() => setShowRemovalModal(false)}
+        installationId={null}
+        installationAddress=""
+        onSuccess={() => {
+          setShowRemovalModal(false)
           fetchRequests()
         }}
       />

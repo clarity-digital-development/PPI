@@ -1,12 +1,24 @@
 'use client'
 
-import { useState } from 'react'
-import { Modal, Button, Input } from '@/components/ui'
+import { useState, useEffect } from 'react'
+import { Modal, Button, Input, Select } from '@/components/ui'
 import { Calendar, Loader2, AlertCircle, CheckCircle } from 'lucide-react'
+
+interface PickerInstallation {
+  id: string
+  propertyAddress: string
+  propertyCity: string
+  status: string
+}
 
 interface ScheduleRemovalModalProps {
   isOpen: boolean
   onClose: () => void
+  // Pass a fixed installationId when the caller already knows which
+  // installation this is for (e.g. the 3-dots menu on an installation row).
+  // Pass null to have the modal fetch the customer's active installations
+  // and show a picker first — used by the standalone "Schedule Removal"
+  // entry point on /dashboard/service-requests where no row is selected yet.
   installationId: string | null
   installationAddress: string
   onSuccess?: () => void
@@ -19,29 +31,62 @@ export function ScheduleRemovalModal({
   installationAddress,
   onSuccess,
 }: ScheduleRemovalModalProps) {
+  const pickerMode = installationId === null
+
+  const [pickedId, setPickedId] = useState('')
+  const [installations, setInstallations] = useState<PickerInstallation[]>([])
+  const [loadingInstallations, setLoadingInstallations] = useState(false)
+
   const [removalDate, setRemovalDate] = useState('')
   const [notes, setNotes] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
 
+  // Picker mode: load the customer's active installations once the modal opens.
+  // Only 'active' is eligible — matches the 3-dots menu's own gate
+  // (active-posts-table.tsx), so a customer can't pick one that already has
+  // a removal scheduled or was already removed.
+  useEffect(() => {
+    if (isOpen && pickerMode) {
+      setLoadingInstallations(true)
+      fetch('/api/installations')
+        .then((res) => (res.ok ? res.json() : { installations: [] }))
+        .then((data) => {
+          const eligible = (data.installations || []).filter(
+            (inst: PickerInstallation) => inst.status === 'active'
+          )
+          setInstallations(eligible)
+        })
+        .catch(() => setInstallations([]))
+        .finally(() => setLoadingInstallations(false))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, pickerMode])
+
+  const selected = installations.find((i) => i.id === pickedId)
+  const effectiveId = pickerMode ? pickedId || null : installationId
+  const effectiveAddress = pickerMode
+    ? (selected ? `${selected.propertyAddress}, ${selected.propertyCity}` : '')
+    : installationAddress
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
-    if (!installationId || !removalDate) return
+    if (!effectiveId || !removalDate) return
 
     setLoading(true)
     setError(null)
 
     try {
-      const res = await fetch(`/api/installations/${installationId}/service-request`, {
+      const res = await fetch(`/api/installations/${effectiveId}/service-request`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: 'removal',
           requested_date: removalDate,
           notes,
-          description: `Removal requested for ${installationAddress}`,
+          description: `Removal requested for ${effectiveAddress}`,
         }),
       })
 
@@ -67,6 +112,8 @@ export function ScheduleRemovalModal({
     setNotes('')
     setError(null)
     setSuccess(false)
+    setPickedId('')
+    setInstallations([])
     onClose()
   }
 
@@ -88,10 +135,36 @@ export function ScheduleRemovalModal({
       ) : (
         <form onSubmit={handleSubmit}>
           <div className="space-y-4">
-            <div className="p-4 bg-gray-50 rounded-lg">
-              <p className="text-sm text-gray-500">Installation Address</p>
-              <p className="font-medium text-gray-900">{installationAddress}</p>
-            </div>
+            {pickerMode ? (
+              loadingInstallations ? (
+                <div className="flex items-center justify-center py-4">
+                  <Loader2 className="w-5 h-5 animate-spin text-pink-500" />
+                </div>
+              ) : installations.length === 0 ? (
+                <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
+                  No active installations eligible for removal. If a removal is already
+                  scheduled or the sign was already removed, check Order History for its status.
+                </div>
+              ) : (
+                <Select
+                  label="Which listing are we removing?"
+                  value={pickedId}
+                  onChange={(e) => setPickedId(e.target.value)}
+                  options={[
+                    { value: '', label: 'Select an installation...' },
+                    ...installations.map((inst) => ({
+                      value: inst.id,
+                      label: `${inst.propertyAddress}, ${inst.propertyCity}`,
+                    })),
+                  ]}
+                />
+              )
+            ) : (
+              <div className="p-4 bg-gray-50 rounded-lg">
+                <p className="text-sm text-gray-500">Installation Address</p>
+                <p className="font-medium text-gray-900">{installationAddress}</p>
+              </div>
+            )}
 
             <Input
               type="date"
@@ -128,7 +201,7 @@ export function ScheduleRemovalModal({
             <Button type="button" variant="outline" onClick={handleClose} disabled={loading}>
               Cancel
             </Button>
-            <Button type="submit" disabled={loading || !removalDate}>
+            <Button type="submit" disabled={loading || !removalDate || (pickerMode && !pickedId)}>
               {loading ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
