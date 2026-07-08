@@ -47,7 +47,14 @@ export function useRiderSelection({
   installPrice = RIDER_PRICING.install,
 }: UseRiderSelectionOptions = {}): UseRiderSelectionReturn {
   const [selectedRiders, setSelectedRiders] = useState<SelectedRider[]>(initialRiders)
-  const [source, setSourceState] = useState<RiderSource>('rental')
+  // Boot to 'at_property' (safe / no billing surprise) unless we're resuming an
+  // in-progress order that already has a chosen source. Old default was 'rental'
+  // which meant admins placing team_admin on-behalf-of orders would silently
+  // rent riders even when the target agent had matching inventory (Randi Means
+  // 2026-07-07). Ryan: "Make them click if they want inventory or to rent."
+  const [source, setSourceState] = useState<RiderSource>(
+    initialRiders[0]?.source ?? 'at_property'
+  )
   const [expandedCategories, setExpandedCategories] = useState<Set<RiderCategory>>(
     new Set<RiderCategory>(['popular'])
   )

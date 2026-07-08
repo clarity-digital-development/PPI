@@ -95,6 +95,12 @@ export default function CustomerDetailPage() {
   const [showEditModal, setShowEditModal] = useState(false)
   const [showAddMemberModal, setShowAddMemberModal] = useState(false)
   const [memberData, setMemberData] = useState({ name: '', email: '', phone: '' })
+  // When set, the modal is in EDIT mode and saves via PATCH to the shared
+  // /api/teams/members/[id] endpoint (admins bypass its teamId scope).
+  // Ryan 2026-07-07: admin needed a way to fix a phone number on an existing
+  // agent under a broker without going to /dashboard/teams as that broker.
+  const [editingMemberId, setEditingMemberId] = useState<string | null>(null)
+  const [removingMemberId, setRemovingMemberId] = useState<string | null>(null)
   const [addType, setAddType] = useState<'sign' | 'rider' | 'lockbox' | 'brochure_box' | 'other' | null>(null)
   const [formData, setFormData] = useState({
     description: '',
@@ -211,12 +217,39 @@ export default function CustomerDetailPage() {
     }
   }
 
-  async function handleAddMember() {
+  function openAddMember() {
+    setEditingMemberId(null)
+    setMemberData({ name: '', email: '', phone: '' })
+    setShowAddMemberModal(true)
+  }
+
+  function openEditMember(member: { id: string; name: string; email: string | null; phone: string | null }) {
+    setEditingMemberId(member.id)
+    setMemberData({
+      name: member.name || '',
+      email: member.email || '',
+      phone: member.phone || '',
+    })
+    setShowAddMemberModal(true)
+  }
+
+  function closeMemberModal() {
+    setShowAddMemberModal(false)
+    setEditingMemberId(null)
+  }
+
+  async function handleSaveMember() {
     if (!memberData.name.trim()) return
     setSaving(true)
     try {
-      const res = await fetch(`/api/admin/customers/${id}/team-members`, {
-        method: 'POST',
+      // Add uses the admin scoped POST which auto-creates the Team on first
+      // save. Edit uses the shared PATCH route which admins are authorized on.
+      const isEdit = !!editingMemberId
+      const url = isEdit
+        ? `/api/teams/members/${editingMemberId}`
+        : `/api/admin/customers/${id}/team-members`
+      const res = await fetch(url, {
+        method: isEdit ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: memberData.name.trim(),
@@ -225,17 +258,35 @@ export default function CustomerDetailPage() {
         }),
       })
       if (res.ok) {
-        setShowAddMemberModal(false)
+        closeMemberModal()
         setMemberData({ name: '', email: '', phone: '' })
         fetchCustomer()
       } else {
         const data = await res.json()
-        alert(data.error || 'Failed to add team member')
+        alert(data.error || `Failed to ${isEdit ? 'update' : 'add'} team member`)
       }
     } catch (error) {
-      console.error('Error adding team member:', error)
+      console.error('Error saving team member:', error)
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function handleRemoveMember(member: { id: string; name: string }) {
+    if (!confirm(`Remove ${member.name} from this team? They stay in past-order records but won't appear in the roster or on new assignments.`)) return
+    setRemovingMemberId(member.id)
+    try {
+      const res = await fetch(`/api/teams/members/${member.id}`, { method: 'DELETE' })
+      if (res.ok) {
+        fetchCustomer()
+      } else {
+        const data = await res.json().catch(() => ({}))
+        alert(data.error || 'Failed to remove team member')
+      }
+    } catch (error) {
+      console.error('Error removing team member:', error)
+    } finally {
+      setRemovingMemberId(null)
     }
   }
 
@@ -580,10 +631,7 @@ export default function CustomerDetailPage() {
               </div>
               <Button
                 size="sm"
-                onClick={() => {
-                  setMemberData({ name: '', email: '', phone: '' })
-                  setShowAddMemberModal(true)
-                }}
+                onClick={openAddMember}
               >
                 <Plus className="w-4 h-4 mr-1" />
                 Add Member
@@ -596,15 +644,39 @@ export default function CustomerDetailPage() {
                     key={member.id}
                     className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
                   >
-                    <div>
-                      <p className="font-medium text-gray-900">{member.name}</p>
+                    <div className="min-w-0">
+                      <p className="font-medium text-gray-900 truncate">{member.name}</p>
                       {member.phone && (
-                        <p className="text-sm text-gray-500">{member.phone}</p>
+                        <p className="text-sm text-gray-500 truncate">{member.phone}</p>
+                      )}
+                      {member.email && (
+                        <p className="text-sm text-gray-500 truncate">{member.email}</p>
                       )}
                     </div>
-                    <Badge variant={member.hasLogin ? 'success' : 'neutral'}>
-                      {member.hasLogin ? 'Login' : 'Name only'}
-                    </Badge>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <Badge variant={member.hasLogin ? 'success' : 'neutral'}>
+                        {member.hasLogin ? 'Login' : 'Name only'}
+                      </Badge>
+                      <button
+                        type="button"
+                        onClick={() => openEditMember(member)}
+                        className="p-1.5 text-gray-500 hover:text-pink-600 hover:bg-white rounded transition-colors"
+                        title={`Edit ${member.name}`}
+                        aria-label={`Edit ${member.name}`}
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveMember(member)}
+                        disabled={removingMemberId === member.id}
+                        className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-white rounded transition-colors disabled:opacity-50"
+                        title={`Remove ${member.name}`}
+                        aria-label={`Remove ${member.name}`}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1740,11 +1812,11 @@ export default function CustomerDetailPage() {
         </div>
       </Modal>
 
-      {/* Add Team Member Modal */}
+      {/* Add / Edit Team Member Modal */}
       <Modal
         isOpen={showAddMemberModal}
-        onClose={() => setShowAddMemberModal(false)}
-        title="Add Team Member"
+        onClose={closeMemberModal}
+        title={editingMemberId ? 'Edit Team Member' : 'Add Team Member'}
       >
         <div className="space-y-4">
           <Input
@@ -1767,11 +1839,13 @@ export default function CustomerDetailPage() {
             placeholder="859-555-1234"
           />
           <div className="flex justify-end gap-3 pt-4">
-            <Button variant="outline" onClick={() => setShowAddMemberModal(false)}>
+            <Button variant="outline" onClick={closeMemberModal}>
               Cancel
             </Button>
-            <Button onClick={handleAddMember} disabled={saving || !memberData.name.trim()}>
-              {saving ? 'Adding...' : 'Add Member'}
+            <Button onClick={handleSaveMember} disabled={saving || !memberData.name.trim()}>
+              {saving
+                ? (editingMemberId ? 'Saving...' : 'Adding...')
+                : (editingMemberId ? 'Save Changes' : 'Add Member')}
             </Button>
           </div>
         </div>
