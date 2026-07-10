@@ -53,6 +53,16 @@ export const rateLimitPresets = {
     maxRequests: 100,
     message: 'Rate limit exceeded. Please slow down.',
   },
+  // Address-aware service-area quote: with a full address present this can
+  // trigger a live (billed) Google Routes call per active ServiceCenter, and
+  // the client-side 300ms debounce is trivially bypassed by a direct request
+  // — cap it generously above normal form-filling usage but well below a
+  // scripted-hammering rate. 20/min per IP+route.
+  serviceAreaQuote: {
+    windowMs: 60 * 1000,
+    maxRequests: 20,
+    message: 'Too many address lookups. Please slow down and try again in a moment.',
+  },
 } as const
 
 /**

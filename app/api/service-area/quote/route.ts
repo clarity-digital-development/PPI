@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { resolveServiceArea } from '@/lib/service-area'
 import { resolveEffectivePayer } from '@/lib/orders/effective-payer'
+import { checkRateLimit, rateLimitPresets } from '@/lib/rate-limit'
 
 /**
  * GET /api/service-area/quote?zip=XXXXX[&orderId=...]
@@ -35,9 +36,23 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
+    // When an address is present this can trigger a live, billed Google
+    // Routes call per active ServiceCenter — the client debounce is
+    // cosmetic, so this is the actual abuse control.
+    const rateLimitResponse = checkRateLimit(request, rateLimitPresets.serviceAreaQuote)
+    if (rateLimitResponse) return rateLimitResponse
+
     const { searchParams } = new URL(request.url)
     const zip = searchParams.get('zip')
     const orderId = searchParams.get('orderId')
+    // Street/city/state — when the caller has a full address, pass it through
+    // so this preview gets the same Google Routes upgrade the order-creation
+    // route always uses. Without these, resolveServiceArea() falls back to
+    // haversine-only, which under-predicts rural/back-road drives (the gap
+    // that let a customer see $71 at checkout and get charged $121).
+    const street = searchParams.get('street')
+    const city = searchParams.get('city')
+    const state = searchParams.get('state')
     if (!zip || !/^\d{5}$/.test(zip.trim().slice(0, 5))) {
       return NextResponse.json({ error: 'Invalid ZIP code' }, { status: 400 })
     }
@@ -85,7 +100,12 @@ export async function GET(request: NextRequest) {
       // reporting — the safer failure mode given the bug we just fixed.
     }
 
-    const sa = await resolveServiceArea({ zip, user: walletUser })
+    const address =
+      street?.trim() && city?.trim() && state?.trim()
+        ? { street: street.trim(), city: city.trim(), state: state.trim(), zip: zip.trim() }
+        : null
+
+    const sa = await resolveServiceArea({ zip, user: walletUser, address })
 
     const body: {
       tier: 'standard' | 'surcharge' | 'out_of_area' | 'exempt'

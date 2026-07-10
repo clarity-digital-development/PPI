@@ -177,7 +177,11 @@ export async function POST(request: NextRequest) {
       address: {
         street: orderData.property_address,
         city: orderData.property_city,
-        state: orderData.property_state,
+        // WHY: property_state isn't a required field on the property step,
+        // so it can reach here blank even though the form pre-fills 'KY'.
+        // Matches the fallback already used for tax (line ~315 below) and
+        // for the batch-order path (orders/batch/route.ts).
+        state: orderData.property_state || 'KY',
         zip: orderData.property_zip,
       },
     })

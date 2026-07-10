@@ -59,6 +59,10 @@ export function ReviewStep({
   const [calculatedTax, setCalculatedTax] = useState<number | null>(null)
   const [taxRate, setTaxRate] = useState<string>('6%') // Default display
   const [loadingTax, setLoadingTax] = useState(false)
+  // True while an address-aware requote is in flight — gates submit so the
+  // customer can never confirm against a stale/haversine-only number that a
+  // moment later resolves to a different (Google Routes) surcharge.
+  const [loadingServiceAreaQuote, setLoadingServiceAreaQuote] = useState(false)
   // WHY: cart preview needs the same surcharge the server will inject — otherwise display ≠ charge.
   const [serviceAreaQuote, setServiceAreaQuote] = useState<{
     tier: 'standard' | 'surcharge' | 'out_of_area' | 'exempt'
@@ -426,23 +430,44 @@ export function ReviewStep({
   ])
 
   // WHY: customer must see the out-of-area surcharge BEFORE submit — server-side injection alone hides it.
+  // Sends street/city/state alongside zip so this preview gets the same
+  // Google Routes upgrade the order-creation route always uses — otherwise
+  // this falls back to haversine-only, which can under-predict a rural/back-
+  // road drive and show a lower number than what actually gets charged.
   useEffect(() => {
     const zip = (formData.property_zip || '').trim()
     if (!/^\d{5}$/.test(zip)) {
       setServiceAreaQuote(null)
+      setLoadingServiceAreaQuote(false)
       return
     }
     let cancelled = false
+    setLoadingServiceAreaQuote(true)
     const t = setTimeout(async () => {
       try {
+        const params = new URLSearchParams({ zip })
+        const street = (formData.property_address || '').trim()
+        const city = (formData.property_city || '').trim()
+        // Default to 'KY' matching every other property_state read in the
+        // codebase (order-to-formdata.ts, orders/route.ts) — property-step's
+        // canProceed() doesn't require this field, so it can reach Review
+        // blank even though the field is pre-filled 'KY'. Without this
+        // default, a blank state here would silently skip the address-aware
+        // upgrade on the preview while order-creation still attempts it
+        // (unconditionally, on the same field with no fallback) — reopening
+        // the exact preview-vs-charge gap this fix exists to close.
+        const state = (formData.property_state || 'KY').trim()
+        if (street && city && state) {
+          params.set('street', street)
+          params.set('city', city)
+          params.set('state', state)
+        }
         // In edit mode pass orderId so the server resolves exemption against the
         // order's payer (broker), not the logged-in user. Critical for admin-as-
         // support edits of broker orders where admin isn't exempt but the broker
         // is — without orderId the preview would wrongly show a $50 surcharge.
-        const url = isEdit && orderId
-          ? `/api/service-area/quote?zip=${encodeURIComponent(zip)}&orderId=${encodeURIComponent(orderId)}`
-          : `/api/service-area/quote?zip=${encodeURIComponent(zip)}`
-        const res = await fetch(url)
+        if (isEdit && orderId) params.set('orderId', orderId)
+        const res = await fetch(`/api/service-area/quote?${params.toString()}`)
         if (!res.ok) {
           if (!cancelled) setServiceAreaQuote(null)
           return
@@ -451,13 +476,22 @@ export function ReviewStep({
         if (!cancelled) setServiceAreaQuote(data)
       } catch {
         if (!cancelled) setServiceAreaQuote(null)
+      } finally {
+        if (!cancelled) setLoadingServiceAreaQuote(false)
       }
     }, 300)
     return () => {
       cancelled = true
       clearTimeout(t)
     }
-  }, [formData.property_zip, isEdit, orderId])
+  }, [
+    formData.property_zip,
+    formData.property_address,
+    formData.property_city,
+    formData.property_state,
+    isEdit,
+    orderId,
+  ])
 
   // Handle promo code application
   const handleApplyPromoCode = async () => {
@@ -1598,9 +1632,9 @@ export function ReviewStep({
           size="lg"
           className="w-full"
           onClick={handleSaveEdit}
-          disabled={isSubmitting || serviceAreaQuote?.tier === 'out_of_area'}
+          disabled={isSubmitting || loadingServiceAreaQuote || serviceAreaQuote?.tier === 'out_of_area'}
         >
-          {isSubmitting ? 'Saving…' : 'Save Changes'}
+          {isSubmitting ? 'Saving…' : loadingServiceAreaQuote ? 'Checking address…' : 'Save Changes'}
         </Button>
       ) : cartEnabled ? (
         <div className="space-y-3">
@@ -1608,13 +1642,15 @@ export function ReviewStep({
             size="lg"
             className="w-full"
             onClick={handleAddToCart}
-            disabled={isSubmitting || addingToCart || serviceAreaQuote?.tier === 'out_of_area'}
+            disabled={isSubmitting || addingToCart || loadingServiceAreaQuote || serviceAreaQuote?.tier === 'out_of_area'}
           >
             {addingToCart
               ? (editingCartItemId ? 'Saving…' : 'Adding…')
-              : editingCartItemId
-                ? `Update cart item — $${displayTotal.toFixed(2)}`
-                : `Add to Cart — $${displayTotal.toFixed(2)}`}
+              : loadingServiceAreaQuote
+                ? 'Checking address…'
+                : editingCartItemId
+                  ? `Update cart item — $${displayTotal.toFixed(2)}`
+                  : `Add to Cart — $${displayTotal.toFixed(2)}`}
           </Button>
           <p className="text-xs text-center text-gray-500">
             {editingCartItemId
@@ -1627,9 +1663,9 @@ export function ReviewStep({
           size="lg"
           className="w-full"
           onClick={handleSubmit}
-          disabled={isSubmitting || (!activePaymentMethods?.length && !formData.payment_method_id) || serviceAreaQuote?.tier === 'out_of_area'}
+          disabled={isSubmitting || loadingServiceAreaQuote || (!activePaymentMethods?.length && !formData.payment_method_id) || serviceAreaQuote?.tier === 'out_of_area'}
         >
-          {isSubmitting ? 'Processing...' : `Place Order — $${displayTotal.toFixed(2)}`}
+          {isSubmitting ? 'Processing...' : loadingServiceAreaQuote ? 'Checking address…' : `Place Order — $${displayTotal.toFixed(2)}`}
         </Button>
       )}
 
