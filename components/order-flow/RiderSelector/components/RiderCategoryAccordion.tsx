@@ -20,7 +20,7 @@ interface RiderCategoryAccordionProps {
   isExpanded: boolean
   onToggleExpand: () => void
   source: RiderSource
-  price: number
+  getPrice: (riderId: string) => number
   isSelected: (riderId: string) => boolean
   isAvailable: (rider: RiderOption) => boolean
   onToggle: (rider: RiderOption) => void
@@ -33,7 +33,7 @@ export function RiderCategoryAccordion({
   isExpanded,
   onToggleExpand,
   source,
-  price,
+  getPrice,
   isSelected,
   isAvailable,
   onToggle,
@@ -89,7 +89,7 @@ export function RiderCategoryAccordion({
                 rider={rider}
                 isSelected={isSelected(rider.id)}
                 isDisabled={!available}
-                price={price}
+                price={getPrice(rider.id)}
                 source={source}
                 onClick={() => available && onToggle(rider)}
                 disabledReason={!available ? 'Not in stock' : undefined}

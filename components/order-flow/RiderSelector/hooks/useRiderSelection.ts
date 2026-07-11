@@ -38,6 +38,7 @@ interface UseRiderSelectionReturn {
   isRiderAvailable: (rider: RiderOption) => boolean
   getSelectedCount: (category: RiderCategory) => number
   getRiderPrice: () => number
+  getDisplayPrice: (riderId: string) => number
 }
 
 export function useRiderSelection({
@@ -118,34 +119,15 @@ export function useRiderSelection({
     }
   }, [source, rentalPrice, installPrice])
 
+  // Switches which pricing tier NEW selections use — it must never touch
+  // riders already in the array (including ones loaded from a saved order).
+  // It used to map over every selectedRider and force its source/price to
+  // match the newly active tab, so re-opening an edit and just browsing a
+  // different tab silently repriced (and, for "owned", could delete) riders
+  // the customer never touched (Ryan, 2026-07-11).
   const setSource = useCallback((newSource: RiderSource) => {
-    const newPrice = newSource === 'rental' ? rentalPrice : installPrice
-
-    // Update all selected riders to new source/price
-    setSelectedRiders(prev => {
-      let updated = prev.map(rider => ({
-        ...rider,
-        source: newSource,
-        price: newPrice
-      }))
-
-      // If switching to "owned", filter out riders not in inventory
-      if (newSource === 'owned' && customerInventory.length > 0) {
-        const availableSlugs = customerInventory.map(inv => inv.riderType)
-        updated = updated.filter(rider => {
-          const riderData = RIDERS.find(r => r.id === rider.riderId)
-          // For riders in RIDERS constants, check slug; for inventory-only riders, check riderId
-          return riderData
-            ? availableSlugs.includes(riderData.slug)
-            : availableSlugs.includes(rider.riderId)
-        })
-      }
-
-      return updated
-    })
-
     setSourceState(newSource)
-  }, [customerInventory, rentalPrice, installPrice])
+  }, [])
 
   // Add a free-text custom rider (pickup/at-property only). Each call mints a
   // unique riderId so multiple custom names can coexist; the typed name lives
@@ -203,6 +185,26 @@ export function useRiderSelection({
     }).length
   }, [selectedRiders])
 
+  // Chip/input price display. A rider stays selected globally regardless of
+  // which tab is active (isRiderSelected, above), so once it's selected its
+  // OWN stored price must be shown — not the currently-browsed tab's price —
+  // or the label would contradict what SelectedRidersList (and the actual
+  // charge) show for it. Only unselected riders fall back to the active
+  // tab's price. Without this, browsing a different tab after selecting a
+  // rider elsewhere would silently mislabel its price again, one layer up
+  // from the setSource bug this was written alongside (Ryan, 2026-07-11).
+  const getDisplayPrice = useCallback((riderId: string) => {
+    const rider = RIDERS.find(r => r.id === riderId)
+    const existing = rider
+      ? selectedRiders.find(selected => {
+          const selectedRider = RIDERS.find(r => r.id === selected.riderId)
+          return selectedRider ? selectedRider.slug === rider.slug : selected.riderId === riderId
+        })
+      : selectedRiders.find(selected => selected.riderId === riderId)
+    if (existing) return existing.price
+    return source === 'rental' ? rentalPrice : installPrice
+  }, [selectedRiders, source, rentalPrice, installPrice])
+
   const totalPrice = useMemo(() => {
     return selectedRiders.reduce((sum, rider) => sum + rider.price, 0)
   }, [selectedRiders])
@@ -223,5 +225,6 @@ export function useRiderSelection({
     isRiderAvailable,
     getSelectedCount,
     getRiderPrice,
+    getDisplayPrice,
   }
 }

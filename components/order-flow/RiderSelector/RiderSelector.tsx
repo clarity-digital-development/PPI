@@ -37,7 +37,7 @@ export function RiderSelector({
     isRiderSelected,
     isRiderAvailable,
     getSelectedCount,
-    getRiderPrice,
+    getDisplayPrice,
   } = useRiderSelection({
     initialRiders: externalRiders,
     customerInventory,
@@ -54,7 +54,6 @@ export function RiderSelector({
     onSelectionChange(selectedRiders)
   }, [selectedRiders, onSelectionChange])
 
-  const price = getRiderPrice()
   const hasInventory = customerInventory.length > 0
 
   // Get custom riders that require input
@@ -210,7 +209,7 @@ export function RiderSelector({
           {/* Popular Riders */}
           <PopularRiders
             source={source}
-            price={price}
+            getPrice={getDisplayPrice}
             isSelected={isRiderSelected}
             isAvailable={isRiderAvailable}
             onToggle={toggleRider}
@@ -230,7 +229,7 @@ export function RiderSelector({
                   isExpanded={expandedCategories.has(category.id)}
                   onToggleExpand={() => toggleCategory(category.id)}
                   source={source}
-                  price={price}
+                  getPrice={getDisplayPrice}
                   isSelected={isRiderSelected}
                   isAvailable={isRiderAvailable}
                   onToggle={toggleRider}
@@ -256,7 +255,7 @@ export function RiderSelector({
                       isSelected={isSelected}
                       value={customValue || null}
                       onChange={(value) => updateAcres(rider.id, value)}
-                      price={price}
+                      price={getDisplayPrice(rider.id)}
                       source={source}
                       isRiderAvailable={isRiderAvailable}
                     />
