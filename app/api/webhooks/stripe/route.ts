@@ -123,6 +123,7 @@ export async function POST(request: NextRequest) {
             targetType: 'invoice',
             targetId: invoice.id,
             metadata: {
+              paidVia: 'stripe',
               paymentIntentId: paymentIntent.id,
               orderCount: invoice.orders.length,
               serviceRequestCount: invoice.serviceRequests.length,

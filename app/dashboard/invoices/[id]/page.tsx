@@ -1,6 +1,7 @@
 'use client'
 
-import { use, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import {
   useStripe,
@@ -70,8 +71,9 @@ function PayForm({ invoiceNumber, total, onPaid }: { invoiceNumber: string; tota
   )
 }
 
-export default function InvoiceDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = use(params)
+export default function InvoiceDetailPage() {
+  const params = useParams()
+  const id = params.id as string
   const [invoice, setInvoice] = useState<InvoiceDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
-import { FileText, Send, Loader2, RefreshCw, Link2, RotateCw, AlertTriangle } from 'lucide-react'
+import { FileText, Send, Loader2, RefreshCw, Link2, RotateCw, AlertTriangle, CircleDollarSign } from 'lucide-react'
 import { Card, CardContent, Button, Input, Select, Badge } from '@/components/ui'
 import { formatCurrency, formatDate } from '@/lib/utils'
 
@@ -146,6 +146,12 @@ export default function AdminInvoicesPage() {
   const [resendError, setResendError] = useState<string | null>(null)
   const [resendSuccess, setResendSuccess] = useState<string | null>(null)
   const pollTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
+
+  // Mark Paid — for payments collected outside Stripe (ACH sent directly to
+  // the bank, check) that the Stripe webhook never sees.
+  const [markingPaid, setMarkingPaid] = useState<Record<string, boolean>>({})
+  const [markPaidError, setMarkPaidError] = useState<string | null>(null)
+  const [markPaidSuccess, setMarkPaidSuccess] = useState<string | null>(null)
 
   useEffect(() => {
     async function loadCustomers() {
@@ -322,6 +328,31 @@ export default function AdminInvoicesPage() {
       setResendError(err instanceof Error ? err.message : 'Resend failed')
     } finally {
       setResending((prev) => ({ ...prev, [invoiceId]: false }))
+    }
+  }
+
+  async function markInvoicePaid(invoiceId: string, invoiceNumber: string) {
+    if (markingPaid[invoiceId]) return
+    if (!confirm(`Mark ${invoiceNumber} as paid? Use this only when payment was collected outside Stripe (e.g. ACH sent directly, check) — this can't be undone automatically.`)) return
+    const note = window.prompt('How was this paid? (e.g. "ACH transfer 7/13", "check #1234") — optional', '')
+    if (note === null) return // cancelled — do NOT mark paid
+    setMarkingPaid((prev) => ({ ...prev, [invoiceId]: true }))
+    setMarkPaidError(null)
+    setMarkPaidSuccess(null)
+    try {
+      const res = await fetch(`/api/admin/invoices/${invoiceId}/mark-paid`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note: note.trim() || null }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Mark paid failed')
+      setMarkPaidSuccess(`${invoiceNumber} marked paid.`)
+      refreshInvoices()
+    } catch (err) {
+      setMarkPaidError(err instanceof Error ? err.message : 'Mark paid failed')
+    } finally {
+      setMarkingPaid((prev) => ({ ...prev, [invoiceId]: false }))
     }
   }
 
@@ -569,6 +600,12 @@ export default function AdminInvoicesPage() {
           {resendSuccess && (
             <div className="mb-3 bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-700">{resendSuccess}</div>
           )}
+          {markPaidError && (
+            <div className="mb-3 bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{markPaidError}</div>
+          )}
+          {markPaidSuccess && (
+            <div className="mb-3 bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-700">{markPaidSuccess}</div>
+          )}
           {invoicesLoading ? (
             <div className="flex items-center justify-center py-8">
               <Loader2 className="w-6 h-6 animate-spin text-pink-600" />
@@ -597,6 +634,13 @@ export default function AdminInvoicesPage() {
                     const cfg = STATUS_LABEL[inv.status]
                     const canRegen = inv.status === 'sent'
                     const isRegen = !!regenerating[inv.id]
+                    // Mutual exclusion across this row's three actions — Resend,
+                    // Regenerate Pay link, and Mark Paid all mutate the same
+                    // invoice/orders, so firing two at once (e.g. Regenerate still
+                    // in flight when Mark Paid is clicked) races on the server.
+                    // Each button still shows its OWN spinner/label; this only
+                    // gates clickability.
+                    const rowBusy = !!resending[inv.id] || !!regenerating[inv.id] || !!markingPaid[inv.id]
                     return (
                       <tr key={inv.id}>
                         <td className="px-3 py-2">
@@ -679,7 +723,7 @@ export default function AdminInvoicesPage() {
                                 <button
                                   type="button"
                                   onClick={() => resendInvoiceEmail(inv.id, inv.recipient_email ?? null)}
-                                  disabled={!!resending[inv.id]}
+                                  disabled={rowBusy}
                                   className="inline-flex items-center gap-1 text-xs text-pink-600 hover:text-pink-700 disabled:text-gray-400 disabled:cursor-not-allowed"
                                   title={
                                     inv.email_status === 'failed'
@@ -695,7 +739,7 @@ export default function AdminInvoicesPage() {
                               <button
                                 type="button"
                                 onClick={() => regeneratePaymentLink(inv.id)}
-                                disabled={isRegen}
+                                disabled={rowBusy}
                                 className="inline-flex items-center gap-1 text-xs text-pink-600 hover:text-pink-700 disabled:text-gray-400 disabled:cursor-not-allowed"
                                 title="Regenerate the Stripe Payment Link and re-send the invoice email"
                               >
@@ -703,6 +747,18 @@ export default function AdminInvoicesPage() {
                                 {isRegen ? 'Regenerating…' : 'Regenerate Pay link'}
                               </button>
                             ) : null}
+                            {inv.status === 'sent' && (
+                              <button
+                                type="button"
+                                onClick={() => markInvoicePaid(inv.id, inv.invoice_number)}
+                                disabled={rowBusy}
+                                className="inline-flex items-center gap-1 text-xs text-green-700 hover:text-green-800 disabled:text-gray-400 disabled:cursor-not-allowed"
+                                title="Mark this invoice paid — for payments collected outside Stripe (ACH, check)"
+                              >
+                                {markingPaid[inv.id] ? <Loader2 className="w-3 h-3 animate-spin" /> : <CircleDollarSign className="w-3 h-3" />}
+                                {markingPaid[inv.id] ? 'Marking…' : 'Mark Paid'}
+                              </button>
+                            )}
                             {!canRegen && inv.email_status !== 'failed' && inv.email_status !== 'sent' && inv.email_status !== 'skipped' && (
                               <span className="text-xs text-gray-400">—</span>
                             )}
