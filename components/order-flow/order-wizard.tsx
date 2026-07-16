@@ -116,7 +116,7 @@ interface OrderWizardProps {
   // Edit mode passes a full OrderFormData; create mode may pass a partial
   // preset (e.g. a team_admin's selected agent name). Merged over defaults.
   initialFormData?: Partial<OrderFormData>
-  editMeta?: { orderNumber: string; originalTotal: number }
+  editMeta?: { orderNumber: string; originalTotal: number; flatFeeBase?: number; flatFeeFuel?: number }
   // Per-broker owned-lockbox install fee override ($0 for free-install teams).
   lockboxInstallFee?: number
   // CR4: flat-fee account — review step shows the flat $66.07 breakdown.

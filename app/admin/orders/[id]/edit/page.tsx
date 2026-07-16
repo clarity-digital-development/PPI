@@ -38,7 +38,7 @@ export default function AdminEditOrderPage() {
   const [error, setError] = useState<string | null>(null)
   const [formData, setFormData] = useState<OrderFormData | null>(null)
   const [inventory, setInventory] = useState<WizardInventory | undefined>()
-  const [editMeta, setEditMeta] = useState<{ orderNumber: string; originalTotal: number } | null>(null)
+  const [editMeta, setEditMeta] = useState<{ orderNumber: string; originalTotal: number; flatFeeBase?: number; flatFeeFuel?: number } | null>(null)
   const [freeLockboxInstall, setFreeLockboxInstall] = useState(false)
   // Pass into <OrderWizard> so ReviewStep clamps display to FLAT_FEE_BASE
   // instead of recomputing per-item totals — without this, admin edits of a
@@ -68,6 +68,7 @@ export default function AdminEditOrderPage() {
           orderNumber: string
           status: string
           total: number | string
+          subtotal: number | string
           flatFeeApplied?: boolean
         }
 
@@ -89,7 +90,12 @@ export default function AdminEditOrderPage() {
         setFlatFee(!!order.flatFeeApplied)
         setInventory(augmentInventoryWithOrder(rawInventory, order))
         setFormData(orderToFormData(order))
-        setEditMeta({ orderNumber: order.orderNumber, originalTotal: Number(order.total) })
+        setEditMeta({
+          orderNumber: order.orderNumber,
+          originalTotal: Number(order.total),
+          flatFeeBase: order.flatFeeApplied ? Number(order.subtotal) : undefined,
+          flatFeeFuel: order.flatFeeApplied ? Number(order.fuelSurcharge) : undefined,
+        })
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load order')
       } finally {

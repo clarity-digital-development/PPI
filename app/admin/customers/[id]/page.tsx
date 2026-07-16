@@ -5,6 +5,12 @@ import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
 import { ArrowLeft, Plus, Minus, Trash2, Package, Tag, Lock, FileBox, FileImage, Pencil, UserX, Archive, Users, X } from 'lucide-react'
 import { Card, CardContent, Button, Input, Badge, Modal, SearchableSelect } from '@/components/ui'
+import { computeFlatFeePricing } from '@/lib/orders/pricing'
+
+// Current flat-fee breakdown for the toggle label below — computed from the
+// live constants (not hardcoded) so this display can't drift out of sync the
+// next time the base or fuel rate changes.
+const FLAT_FEE_PRICING = computeFlatFeePricing()
 
 interface CustomerData {
   customer: {
@@ -1766,7 +1772,10 @@ export default function CustomerDetailPage() {
             </label>
           </div>
           {/* CR4: flat-fee billing — every order for this account is a flat
-              $67.09 regardless of items chosen. Enforced server-side. */}
+              amount regardless of items chosen. Enforced server-side. New
+              accounts get the current rate; existing flat-fee accounts keep
+              their originally-locked base on edit (see baseOverride in
+              lib/orders/pricing.ts) — rate changes are future-orders-only. */}
           <div>
             <label className="flex items-start gap-2 cursor-pointer">
               <input
@@ -1776,9 +1785,9 @@ export default function CustomerDetailPage() {
                 className="mt-0.5 w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
               />
               <span className="text-sm">
-                <span className="font-medium text-gray-700">Flat-fee billing ($67.09 per order)</span>
+                <span className="font-medium text-gray-700">Flat-fee billing (${FLAT_FEE_PRICING.total.toFixed(2)} per order)</span>
                 <span className="block text-xs text-gray-500">
-                  Every order for this account is charged a flat <strong>$67.09</strong> ($60 base + $3.49 gas + 6% tax) regardless of what&apos;s selected — expedite, no-post, promo, and out-of-area fees are suppressed. Items still flow to fulfillment and service requests as normal.
+                  Every order for this account is charged a flat <strong>${FLAT_FEE_PRICING.total.toFixed(2)}</strong> (${FLAT_FEE_PRICING.subtotal.toFixed(2)} base + ${FLAT_FEE_PRICING.fuelSurcharge.toFixed(2)} gas + 6% tax) regardless of what&apos;s selected — expedite, no-post, promo, and out-of-area fees are suppressed. Items still flow to fulfillment and service requests as normal.
                 </span>
               </span>
             </label>

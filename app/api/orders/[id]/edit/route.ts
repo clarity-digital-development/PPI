@@ -470,7 +470,7 @@ export async function PATCH(
     // original placement so legacy customers don't pay retroactive bumps.
     const hasPostType = !!editData.post_type && editData.post_type !== 'none'
     const pricing = isFlatFee
-      ? computeFlatFeePricing(Number(existingOrder.fuelSurcharge))
+      ? computeFlatFeePricing(Number(existingOrder.fuelSurcharge), Number(existingOrder.subtotal))
       : computeOrderPricing({
           items: pricingItems,
           hasPostType,

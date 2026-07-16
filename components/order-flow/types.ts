@@ -130,7 +130,13 @@ export interface StepProps {
   orderId?: string
   // Display-only metadata about the order being edited (review step shows the
   // original total alongside the recomputed one).
-  editMeta?: { orderNumber: string; originalTotal: number }
+  // flatFeeBase / flatFeeFuel: the ORDER's own locked flat-fee base
+  // (Order.subtotal) and fuel rate (Order.fuelSurcharge) when flatFee is
+  // true — lets the review-step preview match what the server will
+  // actually save for a pre-rate-bump order instead of showing the current
+  // global FLAT_FEE_BASE / fuel constant. Undefined for create mode (uses
+  // the current constants, correct for a brand-new order).
+  editMeta?: { orderNumber: string; originalTotal: number; flatFeeBase?: number; flatFeeFuel?: number }
   // Per-broker override for the OWNED-lockbox install fee (sentri/supra,
   // mechanical-owned, at-property). Defaults to PRICING.lockbox_install ($5).
   // Some brokers (e.g. Semonin) get it free ($0). Rental is unaffected.

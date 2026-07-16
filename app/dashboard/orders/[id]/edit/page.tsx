@@ -23,7 +23,7 @@ export default function EditOrderPage() {
   const [error, setError] = useState<string | null>(null)
   const [formData, setFormData] = useState<OrderFormData | null>(null)
   const [inventory, setInventory] = useState<WizardInventory | undefined>()
-  const [editMeta, setEditMeta] = useState<{ orderNumber: string; originalTotal: number } | null>(null)
+  const [editMeta, setEditMeta] = useState<{ orderNumber: string; originalTotal: number; flatFeeBase?: number; flatFeeFuel?: number } | null>(null)
   // Per-broker perk: owned-lockbox install free for this team (e.g. Semonin).
   const [freeLockboxInstall, setFreeLockboxInstall] = useState(false)
   // Pass into <OrderWizard> so ReviewStep clamps display to FLAT_FEE_BASE —
@@ -55,6 +55,7 @@ export default function EditOrderPage() {
           orderNumber: string
           status: string
           total: number | string
+          subtotal: number | string
           placedForAgentName?: string | null
           flatFeeApplied?: boolean
         }
@@ -97,7 +98,12 @@ export default function EditOrderPage() {
         // so the wizard can show them as the current selection.
         setInventory(augmentInventoryWithOrder(rawInventory, order))
         setFormData(orderToFormData(order))
-        setEditMeta({ orderNumber: order.orderNumber, originalTotal: Number(order.total) })
+        setEditMeta({
+          orderNumber: order.orderNumber,
+          originalTotal: Number(order.total),
+          flatFeeBase: order.flatFeeApplied ? Number(order.subtotal) : undefined,
+          flatFeeFuel: order.flatFeeApplied ? Number(order.fuelSurcharge) : undefined,
+        })
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load order')
       } finally {

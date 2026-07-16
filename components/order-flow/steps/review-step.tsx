@@ -312,8 +312,18 @@ export function ReviewStep({
   // items. The server is authoritative (it clamps on create/edit); this only
   // changes what the review screen DISPLAYS so it matches what will be charged.
   const isFlatFee = !!flatFee
-  const flatTax = Math.round(FLAT_FEE_BASE * PRICING.tax_rate * 100) / 100 // $3.60
-  const flatTotal = FLAT_FEE_BASE + PRICING.fuel_surcharge + flatTax // $66.07
+  // Edit mode preserves the order's OWN locked base + fuel rate (pre-rate-
+  // bump orders keep their original amounts — matches the server's
+  // baseOverride/fuelOverride in computeFlatFeePricing). Create mode has no
+  // editMeta and uses the current constants, correct for a brand-new order.
+  // Guarded with a real-positive-number check (not just !== undefined) so a
+  // corrupt/zero persisted value falls back to the constant instead of
+  // silently rendering $0.00 or $NaN.
+  const isPositiveNumber = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n > 0
+  const flatFeeBase = isEdit && isPositiveNumber(editMeta?.flatFeeBase) ? editMeta!.flatFeeBase! : FLAT_FEE_BASE
+  const flatFeeFuel = isEdit && isPositiveNumber(editMeta?.flatFeeFuel) ? editMeta!.flatFeeFuel! : PRICING.fuel_surcharge
+  const flatTax = Math.round(flatFeeBase * PRICING.tax_rate * 100) / 100
+  const flatTotal = flatFeeBase + flatFeeFuel + flatTax
   const displayTotal = isFlatFee ? flatTotal : total
 
   // Build items for tax calculation (same structure used in submit)
@@ -1381,11 +1391,11 @@ export function ReviewStep({
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-gray-600">Flat Installation Fee</span>
-                <span className="text-gray-900">${FLAT_FEE_BASE.toFixed(2)}</span>
+                <span className="text-gray-900">${flatFeeBase.toFixed(2)}</span>
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-gray-600">Fuel Surcharge</span>
-                <span className="text-gray-900">${PRICING.fuel_surcharge.toFixed(2)}</span>
+                <span className="text-gray-900">${flatFeeFuel.toFixed(2)}</span>
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-gray-600">Sales Tax (6%)</span>

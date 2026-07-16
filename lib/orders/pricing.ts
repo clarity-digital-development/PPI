@@ -21,17 +21,19 @@ export const FALLBACK_TAX_RATE = 0.06 // KY 6% fallback when Stripe Tax unavaila
 export const EXPEDITE_FEE = 50
 
 // CR4 (Round 22): flat-fee accounts pay a fixed amount per order regardless of
-// items selected: $60 base (taxable) + $3.49 fuel (untaxed) + 6% tax on the
-// base = $67.09. Deterministic 6% (not Stripe Tax) so the total is always exact.
-// (Fuel went 2.47 → 3.49 on 2026-06-27 per Ryan; he explicitly chose to let
-// Semonin's per-order total move with the fuel change rather than back-calc
-// the base — "fuel cost is real for their installs too.")
-export const FLAT_FEE_BASE = 60
+// items selected: base (taxable) + $3.49 fuel (untaxed) + 6% tax on the base.
+// Deterministic 6% (not Stripe Tax) so the total is always exact. Bumped
+// $60 → $65 on 2026-07-15 per Ryan, for Semonin + all future fixed-price
+// brokers — FUTURE orders only, not previous ones (see `baseOverride` below,
+// mirrors the existing fuel-rate override so past orders don't silently
+// reprice on edit). (Fuel went 2.47 → 3.49 on 2026-06-27 per Ryan; he
+// explicitly chose to let the per-order total move with the fuel change
+// rather than back-calc the base — "fuel cost is real for their installs too.")
+export const FLAT_FEE_BASE = 65
 
 /**
  * Pure flat-fee breakdown. Tax is the 6% fallback on the base only (fuel is not
- * taxed, matching the standard pricing), yielding subtotal $60, tax $3.60, and
- * total $67.09 at the current $3.49 fuel rate. Real order items are persisted
+ * taxed, matching the standard pricing). Real order items are persisted
  * separately for fulfillment.
  *
  * `fuelOverride` preserves a legacy order's locked fuel rate (matches the
@@ -40,11 +42,16 @@ export const FLAT_FEE_BASE = 60
  * of those orders would recompute to $3.49 and produce a $1.02 surprise diff-
  * charge on the broker's card. The edit route's own comment block at
  * app/api/orders/[id]/edit/route.ts:246-251 already documents this invariant.
+ *
+ * `baseOverride` is the same idea for the flat-fee base itself: an order
+ * placed before the 2026-07-15 $60→$65 bump (or any future bump) preserves
+ * its ORIGINAL base on edit instead of silently jumping to the current
+ * constant — per Ryan, rate changes apply to future orders only.
  */
-export function computeFlatFeePricing(fuelOverride?: number): ComputedOrderPricing {
+export function computeFlatFeePricing(fuelOverride?: number, baseOverride?: number): ComputedOrderPricing {
   const fuel = fuelOverride !== undefined ? fuelOverride : FUEL_SURCHARGE
-  const subtotal = FLAT_FEE_BASE
-  const tax = Math.round(FLAT_FEE_BASE * FALLBACK_TAX_RATE * 100) / 100 // 3.60
+  const subtotal = baseOverride !== undefined ? baseOverride : FLAT_FEE_BASE
+  const tax = Math.round(subtotal * FALLBACK_TAX_RATE * 100) / 100
   const total = subtotal + fuel + tax
   return { subtotal, discount: 0, fuelSurcharge: fuel, noPostSurcharge: 0, expediteFee: 0, tax, total }
 }
