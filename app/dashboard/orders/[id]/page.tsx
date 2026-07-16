@@ -20,6 +20,7 @@ import {
   FileText,
   Pencil,
   AlertTriangle,
+  CalendarClock,
 } from 'lucide-react'
 
 interface OrderItem {
@@ -88,6 +89,7 @@ export default function OrderDetailsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [cancelOpen, setCancelOpen] = useState(false)
+  const [rescheduleOpen, setRescheduleOpen] = useState(false)
   // Edit-charge toast: review-step.tsx writes the post-save chargeOutcome
   // here when redirecting from the edit page so we can surface charge_failed
   // / credit_pending / no_payment_method to the customer without making them
@@ -539,6 +541,19 @@ export default function OrderDetailsPage() {
               </Button>
             </Link>
           )}
+          {/* Change Install Date — narrow date-only update, separate from the
+              full Edit Order wizard so it still works on an already-invoiced
+              order (the wizard blocks those since it touches pricing). */}
+          {order.status !== 'completed' && order.status !== 'cancelled' && (
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={() => setRescheduleOpen(true)}
+            >
+              <CalendarClock className="w-4 h-4 mr-2" />
+              Change Install Date
+            </Button>
+          )}
           {order.status === 'completed' && (
             <Link href="/dashboard" className="flex-1">
               <Button className="w-full">View Installation</Button>
@@ -569,6 +584,17 @@ export default function OrderDetailsPage() {
         amount={Number(order.total)}
         onSuccess={() => {
           setCancelOpen(false)
+          fetchOrder()
+        }}
+      />
+
+      <RescheduleModal
+        isOpen={rescheduleOpen}
+        onClose={() => setRescheduleOpen(false)}
+        orderId={order.id}
+        currentDate={order.scheduledDate}
+        onSuccess={() => {
+          setRescheduleOpen(false)
           fetchOrder()
         }}
       />
@@ -698,6 +724,80 @@ function CancelOrderModal({ isOpen, onClose, orderId, amount, onSuccess }: Cance
           </div>
         </div>
       )}
+    </Modal>
+  )
+}
+
+interface RescheduleModalProps {
+  isOpen: boolean
+  onClose: () => void
+  orderId: string
+  currentDate: string | null
+  onSuccess: () => void
+}
+
+function RescheduleModal({ isOpen, onClose, orderId, currentDate, onSuccess }: RescheduleModalProps) {
+  const [date, setDate] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (isOpen) {
+      setDate(currentDate ? currentDate.slice(0, 10) : '')
+      setSubmitting(false)
+      setErrorMessage(null)
+    }
+  }, [isOpen, currentDate])
+
+  async function submit() {
+    if (!date) return
+    setSubmitting(true)
+    setErrorMessage(null)
+    try {
+      const res = await fetch(`/api/orders/${orderId}/reschedule`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requested_date: date }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data?.error || 'Failed to update install date')
+      }
+      onSuccess()
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Something went wrong')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal isOpen={isOpen} onClose={submitting ? () => {} : onClose} title="Change Install Date">
+      <div className="space-y-4">
+        <p className="text-sm text-gray-700">
+          Pick a new install date. This only updates the schedule — items and pricing on this order don&apos;t change.
+        </p>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1.5">New date</label>
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="block w-full rounded-md border border-gray-300 bg-white px-4 py-2.5 text-gray-900 focus:outline-none focus:ring-2 focus:ring-pink-500 focus:border-transparent transition-all duration-200"
+          />
+        </div>
+        {errorMessage && (
+          <p className="text-sm text-error">{errorMessage}</p>
+        )}
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="secondary" onClick={onClose} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={submitting || !date} isLoading={submitting}>
+            Save New Date
+          </Button>
+        </div>
+      </div>
     </Modal>
   )
 }

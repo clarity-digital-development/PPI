@@ -20,6 +20,7 @@ import {
   Clock,
   ExternalLink,
   Pencil,
+  CalendarClock,
 } from 'lucide-react'
 import { Button, Badge, Card, CardContent, Modal } from '@/components/ui'
 
@@ -168,6 +169,10 @@ export default function AdminOrderDetailPage() {
   const [disableSaving, setDisableSaving] = useState(false)
   const [postRentalError, setPostRentalError] = useState<string | null>(null)
   const [postRentalBanner, setPostRentalBanner] = useState<string | null>(null)
+  const [rescheduleModalOpen, setRescheduleModalOpen] = useState(false)
+  const [rescheduleDate, setRescheduleDate] = useState('')
+  const [rescheduling, setRescheduling] = useState(false)
+  const [rescheduleError, setRescheduleError] = useState<string | null>(null)
 
   async function loadOrder() {
     const res = await fetch(`/api/admin/orders/${orderId}`)
@@ -292,6 +297,32 @@ export default function AdminOrderDetailPage() {
     } catch (err) {
       console.error('Error cancelling order:', err)
       alert('Could not cancel order — see console for details.')
+    }
+  }
+
+  // Narrow date-only update — separate from Edit Order (the full wizard)
+  // so it still works on an already-invoiced order. Invoices bundle by
+  // order-creation date, not install date, so this can't desync an invoice.
+  async function handleReschedule() {
+    if (!rescheduleDate || !order) return
+    setRescheduling(true)
+    setRescheduleError(null)
+    try {
+      const res = await fetch(`/api/orders/${orderId}/reschedule`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requested_date: rescheduleDate }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data?.error || 'Failed to update install date')
+      }
+      setRescheduleModalOpen(false)
+      setOrder((prev) => prev ? { ...prev, scheduledDate: data.order.scheduledDate } : null)
+    } catch (err) {
+      setRescheduleError(err instanceof Error ? err.message : 'Failed to update install date')
+    } finally {
+      setRescheduling(false)
     }
   }
 
@@ -454,6 +485,23 @@ export default function AdminOrderDetailPage() {
                 Edit Order
               </Button>
             </Link>
+          )}
+
+          {/* Change Install Date — date-only, works even on an already-
+              invoiced order (unlike Edit Order, which blocks those). */}
+          {order.status !== 'completed' && order.status !== 'cancelled' && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setRescheduleError(null)
+                setRescheduleDate(order.scheduledDate ? order.scheduledDate.slice(0, 10) : '')
+                setRescheduleModalOpen(true)
+              }}
+            >
+              <CalendarClock className="w-4 h-4 mr-1" />
+              Change Install Date
+            </Button>
           )}
 
           {/* Cancel button — only for unpaid, non-cancelled orders */}
@@ -1005,6 +1053,65 @@ export default function AdminOrderDetailPage() {
                 <>
                   <RotateCcw className="w-4 h-4 mr-2" />
                   Refund ${Number(order.total).toFixed(2)}
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Change Install Date modal */}
+      <Modal
+        isOpen={rescheduleModalOpen}
+        onClose={() => {
+          if (rescheduling) return
+          setRescheduleModalOpen(false)
+          setRescheduleError(null)
+        }}
+        title="Change Install Date"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-700">
+            Pick a new install date for order {order.orderNumber}. This only updates the schedule —
+            items and pricing don&rsquo;t change, and it works even if this order is already invoiced.
+          </p>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">New date</label>
+            <input
+              type="date"
+              value={rescheduleDate}
+              onChange={(e) => setRescheduleDate(e.target.value)}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pink-500 focus:border-transparent"
+              disabled={rescheduling}
+            />
+          </div>
+          {rescheduleError && (
+            <div className="flex items-start gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <span>{rescheduleError}</span>
+            </div>
+          )}
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setRescheduleModalOpen(false)
+                setRescheduleError(null)
+              }}
+              disabled={rescheduling}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleReschedule} disabled={rescheduling || !rescheduleDate}>
+              {rescheduling ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <CalendarClock className="w-4 h-4 mr-2" />
+                  Save New Date
                 </>
               )}
             </Button>
