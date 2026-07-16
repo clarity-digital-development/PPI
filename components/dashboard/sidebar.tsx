@@ -22,6 +22,7 @@ import {
   PlayCircle,
 } from 'lucide-react'
 import { Logo } from '@/components/shared'
+import { Modal } from '@/components/ui'
 import { cn } from '@/lib/utils'
 
 const mainNavItems = [
@@ -84,17 +85,20 @@ const accountNavItems = [
 ]
 
 // How-To videos — Ryan's Slack request 2026-07-16: a "HOW TO" section above
-// Profile linking out to the two Dropbox-hosted walkthrough videos. Opens in
-// a new tab (Dropbox's own player) rather than embedding — the files are
-// hundreds of MB, no reason to host them ourselves.
+// Profile that plays the two Dropbox-hosted walkthrough videos in an in-page
+// pop-up rather than a new tab (Tanner's follow-up request). Still hosted on
+// Dropbox — the files are hundreds of MB, no reason to host them ourselves —
+// but `raw=1` (instead of `dl=0`) makes Dropbox serve the actual video bytes
+// with range-request support, so a plain <video> tag can stream/seek it
+// directly instead of linking out to Dropbox's own preview page.
 const howToVideos = [
   {
     label: 'How to Place an Order',
-    href: 'https://www.dropbox.com/scl/fo/mof43ou4341wceaq2aymp/AG2VLS-H_f1OKn9_cbgxtso/How%20to%20place%20an%20order.mov?rlkey=hisd2ie99xtlyk7dz5p8g5dbg&dl=0',
+    url: 'https://www.dropbox.com/scl/fo/mof43ou4341wceaq2aymp/AG2VLS-H_f1OKn9_cbgxtso/How%20to%20place%20an%20order.mov?rlkey=hisd2ie99xtlyk7dz5p8g5dbg&raw=1',
   },
   {
     label: 'How to Schedule Pickup',
-    href: 'https://www.dropbox.com/scl/fo/mof43ou4341wceaq2aymp/AKVW8rnGfhYNjzdg0tCTZRo/How%20to%20Schedule%20Pickup.mov?rlkey=hisd2ie99xtlyk7dz5p8g5dbg&dl=0',
+    url: 'https://www.dropbox.com/scl/fo/mof43ou4341wceaq2aymp/AKVW8rnGfhYNjzdg0tCTZRo/How%20to%20Schedule%20Pickup.mov?rlkey=hisd2ie99xtlyk7dz5p8g5dbg&raw=1',
   },
 ]
 
@@ -102,6 +106,7 @@ const Sidebar = () => {
   const pathname = usePathname()
   const [isMobileOpen, setIsMobileOpen] = useState(false)
   const [role, setRole] = useState<string | null>(null)
+  const [activeVideo, setActiveVideo] = useState<{ label: string; url: string } | null>(null)
 
   // Fetch the current user's role to drive team_admin-only nav. We render the
   // default (customer) labels until this resolves so there's no crash if the
@@ -202,16 +207,18 @@ const Sidebar = () => {
             How To
           </p>
           {howToVideos.map((video) => (
-            <a
-              key={video.href}
-              href={video.href}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium text-gray-700 hover:bg-pink-200 hover:text-pink-900 transition-all"
+            <button
+              key={video.url}
+              type="button"
+              onClick={() => {
+                setActiveVideo(video)
+                setIsMobileOpen(false)
+              }}
+              className="flex items-center gap-3 px-4 py-2.5 w-full rounded-lg text-sm font-medium text-gray-700 hover:bg-pink-200 hover:text-pink-900 transition-all"
             >
               <PlayCircle className="w-5 h-5" />
               {video.label}
-            </a>
+            </button>
           ))}
         </div>
 
@@ -277,6 +284,24 @@ const Sidebar = () => {
       <aside className="hidden lg:flex lg:w-64 lg:flex-col lg:fixed lg:inset-y-0 bg-pink-50 border-r border-pink-200">
         <SidebarContent />
       </aside>
+
+      {/* How-To video pop-up */}
+      <Modal
+        isOpen={!!activeVideo}
+        onClose={() => setActiveVideo(null)}
+        title={activeVideo?.label}
+        className="max-w-3xl w-full"
+      >
+        {activeVideo && (
+          <video
+            key={activeVideo.url}
+            src={activeVideo.url}
+            controls
+            autoPlay
+            className="w-full rounded-lg bg-black"
+          />
+        )}
+      </Modal>
     </>
   )
 }
