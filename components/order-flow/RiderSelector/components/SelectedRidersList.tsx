@@ -6,7 +6,7 @@ import { RIDERS } from '../constants'
 
 interface SelectedRidersListProps {
   selectedRiders: SelectedRider[]
-  onRemove: (riderId: string) => void
+  onRemove: (instanceId: string) => void
   onClearAll: () => void
   totalPrice: number
 }
@@ -68,7 +68,7 @@ export function SelectedRidersList({
 
           return (
             <div
-              key={rider.riderId}
+              key={rider.instanceId}
               role="listitem"
               className="flex items-center gap-2 bg-pink-100 text-pink-800 px-3 py-1.5 rounded-full text-sm"
             >
@@ -78,7 +78,7 @@ export function SelectedRidersList({
               </span>
               <button
                 type="button"
-                onClick={() => onRemove(rider.riderId)}
+                onClick={() => onRemove(rider.instanceId)}
                 aria-label={`Remove ${displayName} rider`}
                 className="text-pink-600 hover:text-pink-800 transition-colors"
               >

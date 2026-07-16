@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { Info, Plus } from 'lucide-react'
 import {
@@ -49,8 +49,14 @@ export function RiderSelector({
   // it's the only source where the agent supplies the rider themselves.
   const [customNameInput, setCustomNameInput] = useState('')
 
-  // Sync with parent whenever selection changes
-  useMemo(() => {
+  // Sync with parent whenever selection changes. Must be useEffect, not
+  // useMemo: useMemo runs its factory DURING render, so calling a callback
+  // that turns around and setStates the parent (OrderWizard's formData) from
+  // inside a child's render triggered a real "Cannot update a component
+  // while rendering a different component" React warning/race — useEffect
+  // defers it to after commit, matching React's actual effect-ordering
+  // guarantee instead of relying on useMemo's unstable re-invocation rules.
+  useEffect(() => {
     onSelectionChange(selectedRiders)
   }, [selectedRiders, onSelectionChange])
 

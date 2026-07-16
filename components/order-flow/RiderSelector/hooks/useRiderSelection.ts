@@ -8,6 +8,7 @@ import type {
   CustomerRiderInventory,
   RiderOption
 } from '../types'
+import { generateRiderInstanceId } from '../types'
 import { RIDERS, RIDER_PRICING } from '../constants'
 
 interface UseRiderSelectionOptions {
@@ -26,7 +27,7 @@ interface UseRiderSelectionReturn {
   // Actions
   setSource: (source: RiderSource) => void
   toggleRider: (rider: RiderOption, customValue?: string | number) => void
-  removeRider: (riderId: string) => void
+  removeRider: (instanceId: string) => void
   clearAll: () => void
   updateAcres: (riderId: string, value: number | null) => void
   toggleCategory: (category: RiderCategory) => void
@@ -41,13 +42,50 @@ interface UseRiderSelectionReturn {
   getDisplayPrice: (riderId: string) => number
 }
 
+// Collapses accidental duplicate riderIds down to the first occurrence. The
+// UI never lets a customer intentionally select the same rider twice
+// (toggleRider's own dedup check prevents it), so a duplicate is always
+// leftover corruption from a prior bad save. Logged so a self-heal is
+// traceable instead of silently vanishing a line item off an order.
+function dedupeByRiderId(riders: SelectedRider[]): SelectedRider[] {
+  const seen = new Set<string>()
+  const deduped = riders.filter(r => {
+    if (seen.has(r.riderId)) return false
+    seen.add(r.riderId)
+    return true
+  })
+  const dropped = riders.length - deduped.length
+  if (dropped > 0 && typeof console !== 'undefined') {
+    console.warn(
+      `[useRiderSelection] Dropped ${dropped} duplicate rider entr${dropped === 1 ? 'y' : 'ies'} sharing a riderId — this should never happen from normal selection, only from leftover corrupted data.`
+    )
+  }
+  return deduped
+}
+
 export function useRiderSelection({
   initialRiders = [],
   customerInventory = [],
   rentalPrice = RIDER_PRICING.rental,
   installPrice = RIDER_PRICING.install,
 }: UseRiderSelectionOptions = {}): UseRiderSelectionReturn {
-  const [selectedRiders, setSelectedRiders] = useState<SelectedRider[]>(initialRiders)
+  const [selectedRiders, setSelectedRidersState] = useState<SelectedRider[]>(() => dedupeByRiderId(initialRiders))
+  // Every mutation funnels through this so "no two entries share a riderId"
+  // holds continuously, not just at mount — the mount-only version of this
+  // check (dedupeByRiderId inside useState's initializer alone) only made an
+  // EXISTING duplicate removable/self-healing on next remount; it did nothing
+  // to stop a duplicate from re-forming mid-session if whatever produced the
+  // original bug (still not fully root-caused — see the useMemo->useEffect
+  // fix in RiderSelector.tsx) fired again before the component unmounted.
+  const setSelectedRiders = useCallback(
+    (updater: SelectedRider[] | ((prev: SelectedRider[]) => SelectedRider[])) => {
+      setSelectedRidersState(prev => {
+        const next = typeof updater === 'function' ? (updater as (p: SelectedRider[]) => SelectedRider[])(prev) : updater
+        return dedupeByRiderId(next)
+      })
+    },
+    []
+  )
   // Boot to 'at_property' (safe / no billing surprise) unless we're resuming an
   // in-progress order that already has a chosen source. Old default was 'rental'
   // which meant admins placing team_admin on-behalf-of orders would silently
@@ -81,6 +119,7 @@ export function useRiderSelection({
         const price = source === 'rental' ? rentalPrice : installPrice
 
         const newRider: SelectedRider = {
+          instanceId: generateRiderInstanceId(),
           riderId: rider.id,
           source,
           price,
@@ -90,15 +129,20 @@ export function useRiderSelection({
         return [...prev, newRider]
       }
     })
-  }, [source, rentalPrice, installPrice])
+  }, [source, rentalPrice, installPrice, setSelectedRiders])
 
-  const removeRider = useCallback((riderId: string) => {
-    setSelectedRiders(prev => prev.filter(r => r.riderId !== riderId))
-  }, [])
+  // Removes by instanceId, not riderId — two entries can end up sharing a
+  // riderId (legacy corrupted orders; see dedupeByRiderId above), and filtering
+  // by riderId would delete every one of them at once instead of just the
+  // single chip the customer clicked "remove" on (Ryan, 2026-07-16: "When I
+  // clicked remove on one, it removed both").
+  const removeRider = useCallback((instanceId: string) => {
+    setSelectedRiders(prev => prev.filter(r => r.instanceId !== instanceId))
+  }, [setSelectedRiders])
 
   const clearAll = useCallback(() => {
     setSelectedRiders([])
-  }, [])
+  }, [setSelectedRiders])
 
   const updateAcres = useCallback((riderId: string, value: number | null) => {
     if (value === null) {
@@ -113,11 +157,11 @@ export function useRiderSelection({
         } else {
           // Add new acres rider
           const price = source === 'rental' ? rentalPrice : installPrice
-          return [...prev, { riderId, source, price, customValue: value }]
+          return [...prev, { instanceId: generateRiderInstanceId(), riderId, source, price, customValue: value }]
         }
       })
     }
-  }, [source, rentalPrice, installPrice])
+  }, [source, rentalPrice, installPrice, setSelectedRiders])
 
   // Switches which pricing tier NEW selections use — it must never touch
   // riders already in the array (including ones loaded from a saved order).
@@ -139,9 +183,9 @@ export function useRiderSelection({
     const price = source === 'rental' ? rentalPrice : installPrice
     setSelectedRiders(prev => [
       ...prev,
-      { riderId: id, source, price, customValue: trimmed },
+      { instanceId: generateRiderInstanceId(), riderId: id, source, price, customValue: trimmed },
     ])
-  }, [source, rentalPrice, installPrice])
+  }, [source, rentalPrice, installPrice, setSelectedRiders])
 
   const toggleCategory = useCallback((category: RiderCategory) => {
     setExpandedCategories(prev => {

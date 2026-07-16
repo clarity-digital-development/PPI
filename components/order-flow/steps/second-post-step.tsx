@@ -4,7 +4,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { Minus, Plus, MapPin, Sun, ChevronDown, ChevronUp, Package } from 'lucide-react'
 import { Select } from '@/components/ui'
 import { cn } from '@/lib/utils'
-import { RiderSelector, RIDERS, type SelectedRider } from '../RiderSelector'
+import { RiderSelector, RIDERS, generateRiderInstanceId, type SelectedRider } from '../RiderSelector'
 import { ExpandableImage } from '../ExpandableImage'
 import type { StepProps, RiderSelection } from '../types'
 import { PRICING } from '../types'
@@ -34,6 +34,7 @@ function toSelectedRider(selection: RiderSelection): SelectedRider | null {
   // Free-text custom riders round-trip with their synthetic id intact.
   if (selection.rider_type.startsWith('custom-text-')) {
     return {
+      instanceId: generateRiderInstanceId(),
       riderId: selection.rider_type,
       source,
       price,
@@ -50,6 +51,7 @@ function toSelectedRider(selection: RiderSelection): SelectedRider | null {
     // customer_rider_id link (admin-add UI doesn't always set it). See
     // rider-step.tsx for the full rationale.
     return {
+      instanceId: generateRiderInstanceId(),
       riderId: selection.rider_type,
       source,
       price,
@@ -57,6 +59,7 @@ function toSelectedRider(selection: RiderSelection): SelectedRider | null {
     }
   }
   return {
+    instanceId: generateRiderInstanceId(),
     riderId: rider.id,
     source,
     price,

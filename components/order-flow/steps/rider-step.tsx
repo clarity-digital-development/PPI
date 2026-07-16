@@ -2,7 +2,7 @@
 
 import { useCallback, useMemo } from 'react'
 import { Minus, Plus, MapPin, Sun } from 'lucide-react'
-import { RiderSelector, RIDERS, type SelectedRider } from '../RiderSelector'
+import { RiderSelector, RIDERS, generateRiderInstanceId, type SelectedRider } from '../RiderSelector'
 import { ExpandableImage } from '../ExpandableImage'
 import type { StepProps, RiderSelection } from '../types'
 import { PRICING } from '../types'
@@ -41,6 +41,7 @@ function toSelectedRider(selection: RiderSelection): SelectedRider | null {
   // so they round-trip through the wizard instead of being dropped.
   if (selection.rider_type.startsWith('custom-text-')) {
     return {
+      instanceId: generateRiderInstanceId(),
       riderId: selection.rider_type,
       source,
       price,
@@ -64,6 +65,7 @@ function toSelectedRider(selection: RiderSelection): SelectedRider | null {
     // customer_rider_id here was silently dropping unlinked admin items on
     // customer self-edit. SelectedRidersList humanizes the slug for display.
     return {
+      instanceId: generateRiderInstanceId(),
       riderId: selection.rider_type,
       source,
       price,
@@ -72,6 +74,7 @@ function toSelectedRider(selection: RiderSelection): SelectedRider | null {
   }
 
   return {
+    instanceId: generateRiderInstanceId(),
     riderId: rider.id,
     source,
     price,

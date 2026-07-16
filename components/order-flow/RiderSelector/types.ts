@@ -13,10 +13,22 @@ export interface RiderOption {
 }
 
 export interface SelectedRider {
+  // Stable per-entry identity, distinct from riderId. Two entries can end up
+  // sharing a riderId (a leftover-corrupted order's duplicate rider — see
+  // dedupeByRiderId in useRiderSelection.ts), which makes riderId unsafe as a
+  // React list key or a removal target. instanceId is generated once when the
+  // entry is created and never reassigned for that entry's lifetime.
+  instanceId: string
   riderId: string
   source: RiderSource
   customValue?: string | number
   price: number
+}
+
+let riderInstanceCounter = 0
+export function generateRiderInstanceId(): string {
+  riderInstanceCounter += 1
+  return `sr-${Date.now()}-${riderInstanceCounter}-${Math.random().toString(36).slice(2, 8)}`
 }
 
 export type RiderCategory =
