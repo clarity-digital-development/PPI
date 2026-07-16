@@ -19,6 +19,7 @@ import {
   Wrench,
   Package,
   Users,
+  PlayCircle,
 } from 'lucide-react'
 import { Logo } from '@/components/shared'
 import { cn } from '@/lib/utils'
@@ -79,6 +80,21 @@ const accountNavItems = [
     label: 'Profile',
     href: '/dashboard/profile',
     icon: User,
+  },
+]
+
+// How-To videos — Ryan's Slack request 2026-07-16: a "HOW TO" section above
+// Profile linking out to the two Dropbox-hosted walkthrough videos. Opens in
+// a new tab (Dropbox's own player) rather than embedding — the files are
+// hundreds of MB, no reason to host them ourselves.
+const howToVideos = [
+  {
+    label: 'How to Place an Order',
+    href: 'https://www.dropbox.com/scl/fo/mof43ou4341wceaq2aymp/AG2VLS-H_f1OKn9_cbgxtso/How%20to%20place%20an%20order.mov?rlkey=hisd2ie99xtlyk7dz5p8g5dbg&dl=0',
+  },
+  {
+    label: 'How to Schedule Pickup',
+    href: 'https://www.dropbox.com/scl/fo/mof43ou4341wceaq2aymp/AKVW8rnGfhYNjzdg0tCTZRo/How%20to%20Schedule%20Pickup.mov?rlkey=hisd2ie99xtlyk7dz5p8g5dbg&dl=0',
   },
 ]
 
@@ -174,6 +190,28 @@ const Sidebar = () => {
         <div className="space-y-1">
           {orderNavItems.map((item) => (
             <NavLink key={item.href} {...item} />
+          ))}
+        </div>
+
+        {/* Divider */}
+        <div className="border-t border-pink-200" />
+
+        {/* How To videos */}
+        <div className="space-y-1">
+          <p className="px-4 pb-1 text-xs font-bold uppercase tracking-wide text-gray-500">
+            How To
+          </p>
+          {howToVideos.map((video) => (
+            <a
+              key={video.href}
+              href={video.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium text-gray-700 hover:bg-pink-200 hover:text-pink-900 transition-all"
+            >
+              <PlayCircle className="w-5 h-5" />
+              {video.label}
+            </a>
           ))}
         </div>
 
