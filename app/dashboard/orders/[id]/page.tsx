@@ -56,6 +56,7 @@ interface Order {
   } | null
   status: string
   paymentStatus: string
+  invoiceId: string | null
   createdAt: string
   updatedAt: string
   paidAt: string | null
@@ -163,8 +164,20 @@ export default function OrderDetailsPage() {
   // here would show or hide the Cancel button up to 4h off the real cutoff
   // — confusing UX (server is authoritative either way).
   // Null scheduledDate (Next Available) skips the cutoff.
+  //
+  // pending_invoice orders (invoice-billing customers) are cancellable too —
+  // nothing was ever charged, so there's no refundId to worry about. BUT once
+  // an admin has bundled the order into an Invoice (invoiceId set), its total
+  // and Stripe Payment Link are frozen — cancelling it here would leave it
+  // looking free to the customer while the invoice still bills for it. Every
+  // other non-succeeded paymentStatus (pending/processing/failed/refunded)
+  // is a stuck/error state that stays admin-only (Ryan, 2026-07-17).
   const canCancel = (o: Order): boolean => {
     if (['in_progress', 'completed', 'cancelled'].includes(o.status)) return false
+    if (o.paymentStatus === 'pending_invoice') {
+      if (o.invoiceId) return false
+      return !o.scheduledDate || easternMidnightMs(new Date(o.scheduledDate)) - 24 * 60 * 60 * 1000 > Date.now()
+    }
     if (o.paymentStatus !== 'succeeded') return false
     if (o.refundId) return false
     if (!o.scheduledDate) return true
@@ -582,6 +595,7 @@ export default function OrderDetailsPage() {
         onClose={() => setCancelOpen(false)}
         orderId={order.id}
         amount={Number(order.total)}
+        willRefund={order.paymentStatus === 'succeeded'}
         onSuccess={() => {
           setCancelOpen(false)
           fetchOrder()
@@ -607,12 +621,15 @@ interface CancelOrderModalProps {
   onClose: () => void
   orderId: string
   amount: number
+  // false for invoice-billing (pending_invoice) orders — nothing was ever
+  // charged, so cancelling just cancels; no refund, no high-value confirm.
+  willRefund: boolean
   onSuccess: () => void
 }
 
 type CancelStep = 'initial' | 'high-value' | 'submitting' | 'done' | 'error'
 
-function CancelOrderModal({ isOpen, onClose, orderId, amount, onSuccess }: CancelOrderModalProps) {
+function CancelOrderModal({ isOpen, onClose, orderId, amount, willRefund, onSuccess }: CancelOrderModalProps) {
   const [step, setStep] = useState<CancelStep>('initial')
   const [reason, setReason] = useState('')
   const [confirmMessage, setConfirmMessage] = useState<string | null>(null)
@@ -693,8 +710,14 @@ function CancelOrderModal({ isOpen, onClose, orderId, amount, onSuccess }: Cance
       ) : (
         <div className="space-y-4">
           <p className="text-sm text-gray-700">
-            Cancel this order? This will refund{' '}
-            <span className="font-semibold">${amount.toFixed(2)}</span> to your card.
+            {willRefund ? (
+              <>
+                Cancel this order? This will refund{' '}
+                <span className="font-semibold">${amount.toFixed(2)}</span> to your card.
+              </>
+            ) : (
+              'Cancel this order? You have not been charged, so there is nothing to refund.'
+            )}
           </p>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">

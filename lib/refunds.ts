@@ -39,6 +39,17 @@ export type RefundOrderResult =
   | { ok: true; refundId: string; amountCents: number; emailed: boolean }
   | { ok: false; error: string; code: 'STRIPE_ERROR' | 'NOT_REFUNDABLE' | 'ALREADY_REFUNDED' }
 
+export interface CancelUnpaidOrderOptions {
+  reason: CancelReason
+  customerReason?: string | null
+  actor: AuditActor
+  request?: NextRequest | Request | null
+}
+
+export type CancelUnpaidOrderResult =
+  | { ok: true }
+  | { ok: false; error: string; code: 'NOT_CANCELLABLE' | 'ALREADY_CANCELLED' | 'ALREADY_INVOICED' }
+
 /**
  * Full-refund-and-cancel orchestration. Pure server-side: no auth, no
  * threshold check — those are the route handler's job.
@@ -231,4 +242,90 @@ export async function refundOrder(
   }
 
   return { ok: true, refundId, amountCents: refundAmountCents, emailed }
+}
+
+/**
+ * Cancel an invoice-billing order that hasn't been charged yet
+ * (paymentStatus='pending_invoice' — no Stripe payment exists to refund).
+ * Sibling to refundOrder above but with no Stripe step: just a race-safe
+ * status flip, inventory restore, and audit log.
+ *
+ * paymentStatus is stamped 'failed' (not left as 'pending_invoice') because
+ * the invoice-bundle route (app/api/invoices/bundle) selects orders purely
+ * by paymentStatus='pending_invoice' — it doesn't look at order.status at
+ * all, so a cancelled order left at 'pending_invoice' would still get swept
+ * into a future bundled invoice. Mirrors the admin unpaid-order cancel route
+ * (app/api/admin/orders/[id]/cancel), which does the same for consistency.
+ *
+ * invoiceId MUST be null — once an admin has bundled this order into an
+ * Invoice (POST /api/invoices/bundle), the Invoice's total and its Stripe
+ * Payment Link amount are frozen at bundle time and never recomputed. Same
+ * hazard the edit route already guards against (app/api/orders/[id]/edit,
+ * "order already invoiced" check) — cancelling a bundled order would leave
+ * it invisible/free-looking to the customer while the invoice still bills
+ * for it, and the Stripe webhook that marks an invoice paid flips every one
+ * of its orders' paymentStatus back to 'succeeded' with no status check,
+ * silently reviving the "cancelled" order.
+ */
+export async function cancelUnpaidOrder(
+  orderId: string,
+  options: CancelUnpaidOrderOptions
+): Promise<CancelUnpaidOrderResult> {
+  const actorId = options.actor && 'id' in options.actor ? options.actor.id : null
+
+  // Single atomic conditional update — the WHERE clause both claims the
+  // cancel and performs it, so there's no reserve-then-act window to race
+  // (no external API call sits in between, unlike refundOrder's Stripe step).
+  const claimed = await prisma.order.updateMany({
+    where: {
+      id: orderId,
+      paymentStatus: 'pending_invoice',
+      invoiceId: null,
+      status: { notIn: ['in_progress', 'completed', 'cancelled'] },
+    },
+    data: {
+      status: 'cancelled',
+      paymentStatus: 'failed',
+      cancelledAt: new Date(),
+      cancelReason: options.reason,
+      cancelledByUserId: actorId,
+      refundReason: options.customerReason ?? null,
+    },
+  })
+
+  if (claimed.count === 0) {
+    const existing = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: { status: true, paymentStatus: true, invoiceId: true },
+    })
+    if (!existing) return { ok: false, error: 'Order not found', code: 'NOT_CANCELLABLE' }
+    if (existing.status === 'cancelled') {
+      return { ok: false, error: 'Order already cancelled', code: 'ALREADY_CANCELLED' }
+    }
+    if (existing.invoiceId) {
+      return {
+        ok: false,
+        error: 'This order has already been invoiced; contact support to cancel',
+        code: 'ALREADY_INVOICED',
+      }
+    }
+    return { ok: false, error: 'Order is not in a cancellable state', code: 'NOT_CANCELLABLE' }
+  }
+
+  try {
+    await releaseOrderHoldsAndRestoreInventory(orderId, options.reason, options.actor, options.request)
+  } catch (err) {
+    console.error(`[cancelUnpaidOrder] inventory restore failed for ${orderId}:`, err)
+  }
+
+  await audit({
+    actor: options.actor,
+    action: AuditAction.OrderCancel,
+    targetType: 'order',
+    targetId: orderId,
+    metadata: { reason: options.reason, refunded: false, paymentStatus: 'pending_invoice' },
+    request: options.request,
+  })
+
+  return { ok: true }
 }

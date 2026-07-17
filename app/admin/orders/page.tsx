@@ -353,14 +353,21 @@ function AdminOrdersPageInner() {
                     <td className="px-6 py-4 text-center">
                       <Badge
                         variant={
-                          order.payment_status === 'succeeded'
+                          // A cancelled order's paymentStatus is stamped 'failed' as a
+                          // bookkeeping marker (keeps it out of future invoice bundles —
+                          // see cancelUnpaidOrder), not a real declined charge. Red 'error'
+                          // is reserved for payment_status='failed' on a NON-cancelled
+                          // order, which does need admin follow-up.
+                          order.status === 'cancelled'
+                            ? 'neutral'
+                            : order.payment_status === 'succeeded'
                             ? 'success'
                             : order.payment_status === 'failed'
                             ? 'error'
                             : 'warning'
                         }
                       >
-                        {order.payment_status}
+                        {order.status === 'cancelled' ? 'cancelled' : order.payment_status}
                       </Badge>
                     </td>
                     <td className="px-6 py-4 text-right font-medium text-gray-900">

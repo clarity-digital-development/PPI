@@ -45,6 +45,34 @@ export async function POST(
       )
     }
 
+    // Atomic claim BEFORE doing any Stripe/inventory work — closes the race
+    // against the customer-facing pending_invoice cancel (lib/refunds.ts
+    // cancelUnpaidOrder), which didn't exist before that path was added
+    // (Ryan, 2026-07-17). Without this, a customer cancelling first and an
+    // admin's already-loaded page cancelling moments later would both
+    // "succeed": harmless in practice (Stripe cancel/inventory restore are
+    // guarded/idempotent) but writes a duplicate audit log entry and shows
+    // the admin a false "Order cancelled" success message for an action
+    // that already happened.
+    const claimed = await prisma.order.updateMany({
+      where: { id, status: { not: 'cancelled' }, paymentStatus: { not: 'succeeded' } },
+      data: { status: 'cancelled', paymentStatus: 'failed' },
+    })
+
+    if (claimed.count === 0) {
+      const existing = await prisma.order.findUnique({ where: { id }, select: { status: true, paymentStatus: true } })
+      if (existing?.status === 'cancelled') {
+        return NextResponse.json({ error: 'Order already cancelled' }, { status: 409 })
+      }
+      if (existing?.paymentStatus === 'succeeded') {
+        return NextResponse.json(
+          { error: 'Cannot cancel a paid order from here. Refund it from Stripe first.' },
+          { status: 400 }
+        )
+      }
+      return NextResponse.json({ error: 'Order is not in a cancellable state' }, { status: 409 })
+    }
+
     // Cancel Stripe PaymentIntent if present and in a cancellable state
     const cancellable = ['requires_payment_method', 'requires_capture', 'requires_confirmation', 'requires_action', 'processing']
     let stripeCancelled = false
@@ -75,13 +103,10 @@ export async function POST(
       // Continue with cancellation
     }
 
-    const updatedOrder = await prisma.order.update({
-      where: { id },
-      data: {
-        status: 'cancelled',
-        paymentStatus: 'failed',
-      },
-    })
+    // The atomic claim above already wrote status/paymentStatus — no need for
+    // a second update. Build the response from the pre-claim `order` fetch
+    // (only those two fields changed).
+    const updatedOrder = { ...order, status: 'cancelled', paymentStatus: 'failed' }
 
     await audit({
       actor: { id: user.id, email: user.email, role: user.role },
