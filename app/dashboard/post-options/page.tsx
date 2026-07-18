@@ -33,7 +33,7 @@ const posts = [
     slug: 'metal-frame',
     description:
       'A budget-friendly option for standard real estate signage. Sturdy angle iron construction with a powder coated finish, fits 18"h x 24"w signs.',
-    installationFee: 40,
+    installationFee: 50,
     imageUrl: '/images/posts/metal-frame.jpg',
   },
 ]

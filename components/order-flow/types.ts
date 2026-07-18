@@ -161,7 +161,7 @@ export const PRICING = {
     'White Vinyl Post': 59,
     'Black Vinyl Post': 59,
     'Signature Pink Post': 65,
-    'Metal Frame Sign': 40,
+    'Metal Frame Sign': 50,
     'Wood Panel Post': 95,
   },
   wood_panel_sign_build: 55,
