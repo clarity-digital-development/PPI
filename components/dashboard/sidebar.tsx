@@ -100,6 +100,10 @@ const howToVideos = [
     label: 'How to Schedule Pickup',
     url: 'https://www.dropbox.com/scl/fo/mof43ou4341wceaq2aymp/AKVW8rnGfhYNjzdg0tCTZRo/How%20to%20Schedule%20Pickup.mov?rlkey=hisd2ie99xtlyk7dz5p8g5dbg&raw=1',
   },
+  {
+    label: 'Change/Cancel Orders',
+    url: 'https://www.dropbox.com/scl/fi/p856d05b650d2xyvc6r9r/How-To-Change-or-Cancel-Orders.mov?rlkey=6h7wchuxl34isalblcn8j140n&st=3wo7mywr&raw=1',
+  },
 ]
 
 const Sidebar = () => {
