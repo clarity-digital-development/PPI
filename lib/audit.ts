@@ -113,6 +113,9 @@ export const AuditAction = {
   InvoiceResent:               'invoice.resent',
   ServiceAreaBlock:            'service_area.block',
   ServiceAreaSurchargeApplied: 'service_area.surcharge_applied',
+  // Admin manually retried the second half of a split out-of-area fee
+  // after the auto-charge on removal-scheduling failed.
+  ServiceAreaSecondChargeRetry: 'service_area.second_charge.retry',
   // Policy-notice acceptance — legal trail proving each non-exempt user
   // saw and acknowledged the out-of-area fee + post-rental clarification.
   PolicyNoticeAccepted: 'policy_notice.accepted',

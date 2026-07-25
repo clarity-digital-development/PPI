@@ -107,6 +107,12 @@ interface Order {
   lastEditPaymentIntentId: string | null
   lastEditChargedAt: string | null
   pendingCreditCents: number
+  // Split out-of-area fee — second half, auto-charged on removal-scheduling
+  serviceAreaSecondChargeCents: number | null
+  serviceAreaSecondChargeStatus: 'pending' | 'paid' | 'failed' | null
+  serviceAreaSecondChargeError: string | null
+  serviceAreaSecondChargePaymentIntentId: string | null
+  serviceAreaSecondChargedAt: string | null
   user: {
     id: string
     fullName: string | null
@@ -173,6 +179,8 @@ export default function AdminOrderDetailPage() {
   const [rescheduleDate, setRescheduleDate] = useState('')
   const [rescheduling, setRescheduling] = useState(false)
   const [rescheduleError, setRescheduleError] = useState<string | null>(null)
+  const [retryingOOACharge, setRetryingOOACharge] = useState(false)
+  const [ooaChargeError, setOoaChargeError] = useState<string | null>(null)
 
   async function loadOrder() {
     const res = await fetch(`/api/admin/orders/${orderId}`)
@@ -343,6 +351,24 @@ export default function AdminOrderDetailPage() {
       setPostRentalError(err instanceof Error ? err.message : 'Retry failed')
     } finally {
       setRetryingChargeId(null)
+    }
+  }
+
+  async function handleRetryOutOfAreaCharge() {
+    setRetryingOOACharge(true)
+    setOoaChargeError(null)
+    try {
+      const res = await fetch(`/api/admin/orders/${orderId}/out-of-area/retry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || 'Retry failed')
+      await loadOrder()
+    } catch (err) {
+      setOoaChargeError(err instanceof Error ? err.message : 'Retry failed')
+    } finally {
+      setRetryingOOACharge(false)
     }
   }
 
@@ -876,6 +902,64 @@ export default function AdminOrderDetailPage() {
                     {order.editChargeStatus === 'invoice_billing_skip' && (
                       <div className="text-sm">
                         <Badge variant="neutral">Invoice billing — diff folded into next invoice</Badge>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Out-of-area second charge — the $25 auto-charged when
+                    removal gets scheduled (Ryan, 2026-07-09/12). Only
+                    renders for orders that actually carry a split fee. */}
+                {order.serviceAreaSecondChargeStatus && (
+                  <div className="pt-4 border-t border-gray-100">
+                    <p className="text-sm font-medium text-gray-900 mb-2">Out-of-area pickup charge</p>
+                    {order.serviceAreaSecondChargeStatus === 'pending' && (
+                      <Badge variant="neutral">
+                        Pending — ${((order.serviceAreaSecondChargeCents ?? 0) / 100).toFixed(2)} charges when removal is scheduled
+                      </Badge>
+                    )}
+                    {order.serviceAreaSecondChargeStatus === 'paid' && (
+                      <div className="text-sm">
+                        <Badge variant="success">Charged</Badge>
+                        {order.serviceAreaSecondChargePaymentIntentId && (
+                          <a
+                            href={`https://dashboard.stripe.com/payments/${order.serviceAreaSecondChargePaymentIntentId}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="block mt-2 text-pink-600 hover:text-pink-700 underline text-xs font-mono"
+                          >
+                            {order.serviceAreaSecondChargePaymentIntentId.slice(0, 18)}…
+                          </a>
+                        )}
+                        {order.serviceAreaSecondChargedAt && (
+                          <p className="mt-1 text-xs text-gray-500">
+                            {new Date(order.serviceAreaSecondChargedAt).toLocaleString()}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {order.serviceAreaSecondChargeStatus === 'failed' && (
+                      <div className="text-sm">
+                        <Badge variant="error">Charge failed</Badge>
+                        {order.serviceAreaSecondChargeError && (
+                          <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">
+                            {order.serviceAreaSecondChargeError}
+                          </p>
+                        )}
+                        {ooaChargeError && (
+                          <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">
+                            {ooaChargeError}
+                          </p>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="mt-2"
+                          onClick={handleRetryOutOfAreaCharge}
+                          disabled={retryingOOACharge}
+                        >
+                          {retryingOOACharge ? 'Charging…' : `Charge $${((order.serviceAreaSecondChargeCents ?? 0) / 100).toFixed(2)}`}
+                        </Button>
                       </div>
                     )}
                   </div>

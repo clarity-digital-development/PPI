@@ -49,6 +49,11 @@ export const createOrderSchema = z.object({
   has_marker_placed: z.boolean().default(false),
   sign_orientation: z.string().optional(),
   sign_orientation_other: z.string().optional(),
+  // Required consent for the split out-of-area fee ($25 now / $25 at
+  // removal) — only enforced server-side when the resolved tier is
+  // 'surcharge' (unknown at parse time, so this stays optional here; the
+  // route checks it explicitly once resolveServiceArea() has run).
+  service_area_fee_agreed: z.boolean().optional(),
 })
 
 export const schedulingSchema = z.object({

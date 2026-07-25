@@ -121,6 +121,9 @@ interface OrderWizardProps {
   lockboxInstallFee?: number
   // CR4: flat-fee account — review step shows the flat $66.07 breakdown.
   flatFee?: boolean
+  // Payer is invoice-billing — review step keeps the full (unsplit)
+  // out-of-area fee line and skips the consent checkbox for this payer class.
+  invoiceBilling?: boolean
   // When true, ReviewStep shows internal service-area breadcrumb info next
   // to the out-of-area fee (center name + drive minutes). Customer view
   // hides this to avoid confusion — e.g. "Bardstown ~51 min" on a
@@ -134,7 +137,7 @@ interface OrderWizardProps {
   editingCartItemId?: string
 }
 
-export function OrderWizard({ inventory, paymentMethods, onBehalfOf, placedForMemberId, currentUserRole, mode = 'create', orderId, initialFormData, editMeta, lockboxInstallFee, flatFee, adminView, editingCartItemId }: OrderWizardProps) {
+export function OrderWizard({ inventory, paymentMethods, onBehalfOf, placedForMemberId, currentUserRole, mode = 'create', orderId, initialFormData, editMeta, lockboxInstallFee, flatFee, invoiceBilling, adminView, editingCartItemId }: OrderWizardProps) {
   const isEdit = mode === 'edit'
   const [currentStep, setCurrentStep] = useState(0)
   // In edit mode (or cart-edit re-entry) every step has effectively been
@@ -344,6 +347,7 @@ export function OrderWizard({ inventory, paymentMethods, onBehalfOf, placedForMe
               editMeta={editMeta}
               lockboxInstallFee={lockboxInstallFee}
               flatFee={flatFee}
+              invoiceBilling={invoiceBilling}
               adminView={adminView}
               editingCartItemId={editingCartItemId}
             />

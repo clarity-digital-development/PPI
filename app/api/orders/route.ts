@@ -213,9 +213,48 @@ export async function POST(request: NextRequest) {
     // The internal signal (winning center + drive time + source) is still
     // persisted on the Order row (serviceAreaCenterId / DriveMinutes /
     // DriveTimeSource) so admin can audit without leaking to the customer.
+    //
+    // Split fee (Ryan, 2026-07-09/12): the one exception is a payer whose
+    // order total isn't collected as a normal now-charge in the first place
+    // — invoice-billing (accumulates into a bundled Invoice) and flat-fee
+    // (the whole total is clamped to a fixed amount below, ignoring item
+    // prices entirely) payers both keep the OLD single full-amount item and
+    // never get split/consent/a second charge, since "charge $25 later"
+    // doesn't mean anything for an account that was never charged per-item
+    // to begin with. Everyone else pays HALF now (this item) and half when
+    // removal gets scheduled — see lib/orders/out-of-area-charge.ts.
+    //
+    // orderItemSurchargeCents tracks exactly what dollar amount ends up in
+    // THIS item (half or full) — Order.serviceAreaSurchargeCents below is
+    // set to this, not the always-full sa.surchargeCents, because the edit
+    // route (app/api/orders/[id]/edit/route.ts) treats that column as the
+    // ground truth for how much of the order's total is "the surcharge
+    // line" when reconciling a diff — if it disagreed with what's actually
+    // in the OrderItem, every edit to a split order would overcharge the
+    // customer by the difference.
+    let pendingSecondChargeCents = 0
+    let orderItemSurchargeCents = 0
     if (sa.tier === 'surcharge' && sa.surchargeCents > 0) {
-      const surchargeDollars = sa.surchargeCents / 100
       const description = 'Out of Area Service Fee'
+      const skipsSplit = !!payer.invoiceBilling || !!payer.flatFeeBilling
+      orderItemSurchargeCents = sa.surchargeCents
+      if (!skipsSplit) {
+        // Required consent — server-side gate; the review-step checkbox is
+        // client-side only and can't be trusted alone for a billing decision.
+        if (orderData.service_area_fee_agreed !== true) {
+          return NextResponse.json(
+            {
+              error: 'Please agree to the out-of-area fee terms before placing your order.',
+              code: 'service_area_consent_required',
+            },
+            { status: 400 }
+          )
+        }
+        const firstChargeCents = Math.round(sa.surchargeCents / 2)
+        pendingSecondChargeCents = sa.surchargeCents - firstChargeCents
+        orderItemSurchargeCents = firstChargeCents
+      }
+      const itemDollars = orderItemSurchargeCents / 100
       orderData.items.push({
         // Server-injected: 'surcharge' is intentionally NOT in the client Zod enum
         // (clients can't fake a $0 surcharge line). The outer object cast widens to the
@@ -224,8 +263,8 @@ export async function POST(request: NextRequest) {
         item_category: undefined,
         description,
         quantity: 1,
-        unit_price: surchargeDollars,
-        total_price: surchargeDollars,
+        unit_price: itemDollars,
+        total_price: itemDollars,
       } as typeof orderData.items[number])
     }
 
@@ -364,7 +403,10 @@ export async function POST(request: NextRequest) {
     const finalExpediteFee = flat ? 0 : pricing.expediteFee
     const finalTax = flat ? flat.tax : pricing.tax
     const total = flat ? flat.total : pricing.total
-    const finalServiceAreaSurchargeCents = flat ? 0 : (sa.tier === 'surcharge' ? sa.surchargeCents : 0)
+    // Matches orderItemSurchargeCents (the actual OrderItem amount — half for
+    // a split order, full for invoice-billing) so the edit route's
+    // reconciliation math stays correct. NOT the always-full sa.surchargeCents.
+    const finalServiceAreaSurchargeCents = flat ? 0 : orderItemSurchargeCents
 
     // Invoice-billing payers skip the Stripe charge at checkout — their orders
     // accumulate as pending_invoice and an admin collects via /admin/invoices.
@@ -509,6 +551,8 @@ export async function POST(request: NextRequest) {
         serviceAreaCenterId: sa.decidedBy?.centerId ?? null,
         serviceAreaDriveMinutes: sa.decidedBy?.driveTimeMinutes ?? null,
         serviceAreaDriveTimeSource: sa.decidedBy?.driveTimeSource ?? null,
+        serviceAreaSecondChargeCents: pendingSecondChargeCents > 0 ? pendingSecondChargeCents : null,
+        serviceAreaSecondChargeStatus: pendingSecondChargeCents > 0 ? 'pending' : null,
         promoCodeId,
         paymentIntentId: paymentIntent?.id || null,
         paymentStatus: isInvoiceBilling

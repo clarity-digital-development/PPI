@@ -93,6 +93,12 @@ export interface OrderFormData {
   promo_discount_value?: number
   fuel_surcharge_waived?: boolean
 
+  // Required consent checkbox for the split out-of-area fee (Ryan,
+  // 2026-07-09/12): only shown/required when the order actually carries the
+  // 'surcharge' tier. Unchecked/undefined blocks "Place Order" client-side;
+  // the server independently re-checks it before charging.
+  service_area_fee_agreed?: boolean
+
   // Team-admin only: the name of the agent on the team who sold this property.
   // Captured at checkout so each order in a batch can be attributed.
   placed_for_agent_name?: string
@@ -144,6 +150,11 @@ export interface StepProps {
   // CR4: flat-fee account — review step shows the flat $66.07 breakdown instead
   // of itemized pricing (server clamps the charge regardless).
   flatFee?: boolean
+  // Payer is invoice-billing (accumulates into a bundled Invoice, nothing
+  // charged to a card at order time). Review step shows the FULL out-of-area
+  // fee as a single line — no split, no consent checkbox — matching the
+  // server, which skips the split for this payer class too.
+  invoiceBilling?: boolean
   // When true, the review step shows internal distance-check breadcrumb info
   // alongside the out-of-area fee (which service center triggered it + the
   // estimated drive time). Customer view hides this since seeing "Bardstown

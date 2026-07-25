@@ -419,25 +419,38 @@ model Order {
   isExpedited   Boolean   @default(false) @map("is_expedited")
 
   // Pricing
-  subtotal                  Decimal @db.Decimal(10, 2)
-  fuelSurcharge             Decimal @default(3.49) @map("fuel_surcharge") @db.Decimal(10, 2)
-  noPostSurcharge           Decimal @default(0) @map("no_post_surcharge") @db.Decimal(10, 2)
+  subtotal                               Decimal                        @db.Decimal(10, 2)
+  fuelSurcharge                          Decimal                        @default(3.49) @map("fuel_surcharge") @db.Decimal(10, 2)
+  noPostSurcharge                        Decimal                        @default(0) @map("no_post_surcharge") @db.Decimal(10, 2)
   // Out-of-area surcharge: $50 (5000 cents) when ZIP falls in surcharge band of nearest center.
-  serviceAreaSurchargeCents Int     @default(0) @map("service_area_surcharge_cents")
-  serviceAreaCenterId       String? @map("service_area_center_id")
+  serviceAreaSurchargeCents              Int                            @default(0) @map("service_area_surcharge_cents")
+  serviceAreaCenterId                    String?                        @map("service_area_center_id")
   // Round 25 audit trail: which drive-time signal decided this order's tier.
   // Values: 'haversine_estimate' | 'zip_cache' | 'address_lookup' | 'address_cache'.
   // Null for exempt orders, override-decided orders, and pre-Round-25 rows.
-  serviceAreaDriveMinutes      Int?    @map("service_area_drive_minutes")
-  serviceAreaDriveTimeSource   String? @map("service_area_drive_time_source")
+  serviceAreaDriveMinutes                Int?                           @map("service_area_drive_minutes")
+  serviceAreaDriveTimeSource             String?                        @map("service_area_drive_time_source")
+  // Split out-of-area fee (Ryan, 2026-07-09/12): the OOA surcharge splits
+  // into half charged now (folded into `total` via the surcharge OrderItem)
+  // and half auto-charged when removal gets scheduled — see
+  // lib/orders/out-of-area-charge.ts. Null on every order that doesn't carry
+  // a pending/completed second charge (no surcharge, invoice-billing payer,
+  // or a pre-split legacy order). 'pending' until removal is scheduled, then
+  // 'paid' or 'failed' — a failure never blocks removal, it just flags the
+  // order for admin (Ryan: "I'll send invoice worst case").
+  serviceAreaSecondChargeCents           Int?                           @map("service_area_second_charge_cents")
+  serviceAreaSecondChargeStatus          ServiceAreaSecondChargeStatus? @map("service_area_second_charge_status")
+  serviceAreaSecondChargePaymentIntentId String?                        @map("service_area_second_charge_payment_intent_id")
+  serviceAreaSecondChargedAt             DateTime?                      @map("service_area_second_charged_at")
+  serviceAreaSecondChargeError           String?                        @map("service_area_second_charge_error")
   // CR4 (Round 22): true when this order was priced as a flat-fee order (payer
   // had flatFeeBilling at creation). Frozen on the order so edits recompute as
   // flat (no diff-charge) and invoices/reporting can identify clamped orders.
-  flatFeeApplied            Boolean @default(false) @map("flat_fee_applied")
-  expediteFee               Decimal @default(0) @map("expedite_fee") @db.Decimal(10, 2)
-  discount                  Decimal @default(0) @db.Decimal(10, 2)
-  tax                       Decimal @default(0) @db.Decimal(10, 2)
-  total                     Decimal @db.Decimal(10, 2)
+  flatFeeApplied                         Boolean                        @default(false) @map("flat_fee_applied")
+  expediteFee                            Decimal                        @default(0) @map("expedite_fee") @db.Decimal(10, 2)
+  discount                               Decimal                        @default(0) @db.Decimal(10, 2)
+  tax                                    Decimal                        @default(0) @db.Decimal(10, 2)
+  total                                  Decimal                        @db.Decimal(10, 2)
 
   // Promo Code
   promoCodeId String? @map("promo_code_id")
@@ -540,9 +553,9 @@ model Order {
 // on monthly/weekly cadence. One Stripe PaymentIntent per invoice — when it
 // succeeds, every child Order's paymentStatus flips to `succeeded`.
 model Invoice {
-  id            String        @id @default(cuid())
-  invoiceNumber String        @unique @map("invoice_number")
-  userId        String        @map("user_id")
+  id            String @id @default(cuid())
+  invoiceNumber String @unique @map("invoice_number")
+  userId        String @map("user_id")
 
   // Date range the invoice covers (snapshotted for display + audit).
   rangeStart DateTime @map("range_start")
@@ -581,21 +594,21 @@ model Invoice {
   // worker handles Stripe Payment Link + PDF generation + Resend send. These
   // columns make the worker's progress observable in the admin UI so failures
   // don't disappear into the void.
-  emailStatus       InvoiceEmailStatus @default(queued) @map("email_status")
+  emailStatus      InvoiceEmailStatus @default(queued) @map("email_status")
   // The email address the invoice was actually sent to (snapshot). Set at
   // creation time from the recipientEmailOverride OR user.billingEmail OR
   // user.email. The Resend endpoint can atomically overwrite this when the
   // admin retries to a different address. NEVER re-derive at send time —
   // always trust the snapshot to keep the audit log faithful.
-  recipientEmail    String?            @map("recipient_email")
+  recipientEmail   String?            @map("recipient_email")
   // Last error from the worker (Stripe / PDF / Resend). Cleared on the next
   // successful send. Surfaced inline on the admin invoices page so failures
   // are visible without a tooltip hover.
-  emailError        String?            @map("email_error")
+  emailError       String?            @map("email_error")
   // Timestamp when the worker claimed this row (set when emailStatus flips
   // queued/failed → sending). Used by the startup heal hook to recover rows
   // left in 'sending' by a process restart mid-job.
-  sendingStartedAt  DateTime?          @map("sending_started_at")
+  sendingStartedAt DateTime?          @map("sending_started_at")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -713,6 +726,12 @@ enum EditChargeStatus {
   // Order is on invoice billing (paymentStatus = 'pending_invoice'); the diff is
   // already reflected in the order.total so it folds into the next bundled invoice.
   invoice_billing_skip
+}
+
+enum ServiceAreaSecondChargeStatus {
+  pending
+  paid
+  failed
 }
 
 // ============================================
@@ -1087,7 +1106,7 @@ model ZipDriveTimeCache {
 }
 
 model AddressDriveTimeCache {
-  addressHash  String   @db.VarChar(64) @map("address_hash")
+  addressHash  String   @map("address_hash") @db.VarChar(64)
   centerId     String   @map("center_id")
   address      String
   driveMinutes Int      @map("drive_minutes")

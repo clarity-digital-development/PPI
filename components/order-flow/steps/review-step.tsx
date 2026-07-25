@@ -30,6 +30,7 @@ export function ReviewStep({
   editMeta,
   lockboxInstallFee,
   flatFee,
+  invoiceBilling,
   adminView,
   editingCartItemId,
 }: StepProps) {
@@ -245,11 +246,28 @@ export function ReviewStep({
   // the admin session (not the order owner) and so wrongly returns a surcharge for an exempt
   // broker. Even after the quote endpoint is payer-aware this stays defensive: if the gate
   // is ever refactored, the surcharge is already neutralized at source for flat-fee orders.
+  //
+  // Split fee (Ryan, 2026-07-09/12): the quote endpoint always returns the
+  // FULL surcharge — invoice-billing payers see/pay that full amount as one
+  // line (server keeps their old behavior). Everyone else (the split case)
+  // sees/pays only HALF now; mirror the server's Math.round(cents / 2) exactly
+  // so the confirmed total on this screen matches what Stripe actually charges.
+  const isInvoiceBillingPayer = !!invoiceBilling
   const serviceAreaSurcharge = flatFee
     ? 0
     : serviceAreaQuote?.tier === 'surcharge'
-      ? serviceAreaQuote.surchargeCents / 100
+      ? isInvoiceBillingPayer
+        ? serviceAreaQuote.surchargeCents / 100
+        : Math.round(serviceAreaQuote.surchargeCents / 2) / 100
       : 0
+  // Required consent applies only to the direct create checkout for a
+  // split-fee order: never in edit mode (no re-charge happens there), never
+  // in cart/batch mode (that path still charges the old full amount as one
+  // line with no split — team_admins are exempt from the surcharge in
+  // practice, so this is a narrow, intentionally out-of-scope carve-out),
+  // and never for invoice-billing payers (nothing splits for them).
+  const requiresOOAConsent =
+    !isEdit && !cartEnabled && !isInvoiceBillingPayer && serviceAreaSurcharge > 0 && serviceAreaQuote?.tier === 'surcharge'
   const itemsSubtotal = orderItems.reduce((sum, item) => sum + item.price, 0)
   const fuelSurchargeWaived = formData.fuel_surcharge_waived || false
 
@@ -1187,6 +1205,14 @@ export function ReviewStep({
       return
     }
 
+    // Required consent for the split out-of-area fee — mirrors the server's
+    // own check so the customer sees a friendly message before submitting
+    // rather than a generic request failure.
+    if (requiresOOAConsent && !formData.service_area_fee_agreed) {
+      setError('Please agree to the out-of-area fee terms before placing your order')
+      return
+    }
+
     setIsSubmitting?.(true)
     setError(null)
 
@@ -1220,6 +1246,7 @@ export function ReviewStep({
           promo_code: formData.promo_code,
           promo_code_id: formData.promo_code_id,
           fuel_surcharge_waived: fuelSurchargeWaived,
+          service_area_fee_agreed: formData.service_area_fee_agreed || false,
           // When admin/team_admin places on behalf of an agent the API needs
           // the agent's user id so the order is owned by them
           on_behalf_of_user_id: onBehalfOf,
@@ -1450,9 +1477,29 @@ export function ReviewStep({
                 <span className="text-gray-900">${serviceAreaSurcharge.toFixed(2)}</span>
               </summary>
               <p className="mt-2 text-xs text-gray-600 leading-relaxed bg-pink-50 rounded-lg p-3 border border-pink-100">
-                Trips that are approx 1 hour+ out of town result in a $25 per trip (there to install and then pickup when sold) for a total of $50. Pink Posts strives to keep prices as low and attainable as possible. When an installer drives 1 hour away, this results in 4 hours (there/back to install, there/back for pickup) it becomes a loss for the company. This out of area fee allows Pink Posts to accommodate even your rural listings just as we do in town.
+                Trips that are approx 45 mins+ one way, out of town result in a $25 per trip (there to install and then pickup when sold). Pink Posts strives to keep prices as low and attainable as possible. When an installer drives to these locations, this results in 4 hours (there/back to install, install time, there/back for pickup) it becomes a loss for the company as payroll is beyond what we charge to install. This out of area fee allows Pink Posts to accommodate even your rural listings just as we do in town. We are consistently monitoring our service area and as we continue to grow, we hope to be able to service more areas without a fee.
               </p>
             </details>
+          )}
+          {/* Required consent for the split out-of-area fee (Ryan,
+              2026-07-09/12): $25 charged now (the line above), $25 more
+              auto-charged when removal gets scheduled. Full details live in
+              the "What's this?" expander on the fee line right above —
+              deliberately not duplicated here. */}
+          {requiresOOAConsent && (
+            <div className="rounded-lg border border-pink-200 bg-pink-50/60 p-3">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={formData.service_area_fee_agreed || false}
+                  onChange={(e) => updateFormData({ service_area_fee_agreed: e.target.checked })}
+                  className="mt-0.5 w-4 h-4 text-pink-500 border-gray-300 rounded focus:ring-pink-500"
+                />
+                <span className="text-xs text-gray-700 leading-relaxed">
+                  By selecting I Agree, there is a $25 out of area fee to install. When removal is scheduled, $25 to pickup will be charged.
+                </span>
+              </label>
+            </div>
           )}
           <div className="flex justify-between text-sm">
             <span className="text-gray-600">Fuel Surcharge</span>
@@ -1673,7 +1720,13 @@ export function ReviewStep({
           size="lg"
           className="w-full"
           onClick={handleSubmit}
-          disabled={isSubmitting || loadingServiceAreaQuote || (!activePaymentMethods?.length && !formData.payment_method_id) || serviceAreaQuote?.tier === 'out_of_area'}
+          disabled={
+            isSubmitting ||
+            loadingServiceAreaQuote ||
+            (!activePaymentMethods?.length && !formData.payment_method_id) ||
+            serviceAreaQuote?.tier === 'out_of_area' ||
+            (requiresOOAConsent && !formData.service_area_fee_agreed)
+          }
         >
           {isSubmitting ? 'Processing...' : loadingServiceAreaQuote ? 'Checking address…' : `Place Order — $${displayTotal.toFixed(2)}`}
         </Button>

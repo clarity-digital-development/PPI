@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
+import { chargeSecondOutOfAreaFee } from '@/lib/orders/out-of-area-charge'
 
 export async function POST(
   request: NextRequest,
@@ -56,6 +57,10 @@ export async function POST(
         where: { id: updated.orderId },
         data: { postRentalStoppedAt: new Date() },
       })
+      // Fire the second half of a split out-of-area fee, if this order has
+      // one pending. Never blocks removal — a failed charge just flags the
+      // order for admin (see lib/orders/out-of-area-charge.ts).
+      await chargeSecondOutOfAreaFee(updated.orderId)
     }
 
     return NextResponse.json({ installation: updated })
