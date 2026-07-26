@@ -136,6 +136,27 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ received: true })
         }
 
+        // Standalone-charge branches — PIs that are deliberately NOT stamped on
+        // any order.paymentIntentId, because that column holds the order's
+        // ORIGINAL checkout PI and must keep pointing there. Each of these is
+        // already recorded synchronously by the code that raised it, so the
+        // event is purely informational. They must be ack'd explicitly: without
+        // this, they fall through to the orphan branch below and get a 500,
+        // which puts Stripe into a 24h exponential-retry storm on a charge that
+        // actually succeeded.
+        if (paymentIntent.metadata?.kind === 'service_area_second_charge') {
+          console.log(`Webhook: payment_intent.succeeded for out-of-area pickup fee PI ${paymentIntent.id} (orderId ${paymentIntent.metadata.orderId}) — ack'd`)
+          return NextResponse.json({ received: true, kind: 'service_area_second_charge' })
+        }
+        if (paymentIntent.metadata?.post_rental_charge_id) {
+          console.log(`Webhook: payment_intent.succeeded for post-rental charge ${paymentIntent.metadata.post_rental_charge_id} (PI ${paymentIntent.id}) — ack'd`)
+          return NextResponse.json({ received: true, kind: 'post_rental' })
+        }
+        if (paymentIntent.metadata?.serviceRequestId) {
+          console.log(`Webhook: payment_intent.succeeded for service-trip invoice on SR ${paymentIntent.metadata.serviceRequestId} (PI ${paymentIntent.id}) — ack'd`)
+          return NextResponse.json({ received: true, kind: 'service_request_invoice' })
+        }
+
         // Find ALL orders for this payment intent — a single PI may back
         // a batch of orders placed via /api/orders/batch
         const existingOrders = await prisma.order.findMany({
@@ -154,8 +175,17 @@ export async function POST(request: NextRequest) {
           )
         }
 
+        // 'refunded' is excluded alongside 'succeeded': a re-delivered
+        // payment_intent.succeeded for an order that has since been refunded
+        // would otherwise flip it back to paid with a fresh paidAt while
+        // refundedAt/refundId stay set, quietly un-refunding it in the admin
+        // UI. Re-delivery is a live possibility whenever this endpoint starts
+        // receiving events it previously missed.
         await prisma.order.updateMany({
-          where: { paymentIntentId: paymentIntent.id, paymentStatus: { not: 'succeeded' } },
+          where: {
+            paymentIntentId: paymentIntent.id,
+            paymentStatus: { notIn: ['succeeded', 'refunded'] },
+          },
           data: { paymentStatus: 'succeeded', paidAt: new Date() },
         })
 
@@ -266,14 +296,33 @@ export async function POST(request: NextRequest) {
           break
         }
 
-        await prisma.order.updateMany({
-          where: { paymentIntentId: paymentIntent.id },
+        // Only demote orders that haven't already settled. A single PI legally
+        // emits payment_failed AND payment_intent.succeeded — a declined 3DS
+        // attempt followed by a successful retry on the same PI, or an admin
+        // re-confirming an existing PI with a different card. Stripe does not
+        // guarantee delivery order and re-delivers on our 500s, so without this
+        // the late failure event flips a genuinely PAID order to 'failed' AND
+        // hands the customer's signs/riders/lockboxes back to inventory (the
+        // restore below deliberately ignores this order's own state) while the
+        // post is still scheduled for install. Mirrors the succeeded branch's
+        // guard, which had it and this one didn't.
+        const demoted = await prisma.order.updateMany({
+          where: {
+            paymentIntentId: paymentIntent.id,
+            paymentStatus: { notIn: ['succeeded', 'refunded'] },
+          },
           data: { paymentStatus: 'failed' },
         })
 
         // Restore any inventory that was marked out-of-storage at order creation
-        // so a failed payment doesn't leave the customer's signs/riders locked
-        await restoreOrderInventory(paymentIntent.id, 'payment_failed', request)
+        // so a failed payment doesn't leave the customer's signs/riders locked.
+        // Skipped entirely when nothing was demoted — otherwise a stale failure
+        // event would strip inventory off an order that's already paid for.
+        if (demoted.count > 0) {
+          await restoreOrderInventory(paymentIntent.id, 'payment_failed', request)
+        } else {
+          console.log(`Webhook: payment_failed for PI ${paymentIntent.id} matched no unsettled order — inventory left alone`)
+        }
         break
       }
 
@@ -296,15 +345,25 @@ export async function POST(request: NextRequest) {
           break
         }
 
-        await prisma.order.updateMany({
-          where: { paymentIntentId: paymentIntent.id },
+        // Same settled-order guard as payment_failed above — a cancel event on
+        // a PI that later succeeded (or was since refunded) must not cancel a
+        // paid order out from under the customer or return its inventory.
+        const cancelled = await prisma.order.updateMany({
+          where: {
+            paymentIntentId: paymentIntent.id,
+            paymentStatus: { notIn: ['succeeded', 'refunded'] },
+          },
           data: {
             paymentStatus: 'failed',
             status: 'cancelled',
           },
         })
 
-        await restoreOrderInventory(paymentIntent.id, 'canceled', request)
+        if (cancelled.count > 0) {
+          await restoreOrderInventory(paymentIntent.id, 'canceled', request)
+        } else {
+          console.log(`Webhook: canceled for PI ${paymentIntent.id} matched no unsettled order — inventory left alone`)
+        }
         break
       }
 
@@ -319,10 +378,20 @@ export async function POST(request: NextRequest) {
           break
         }
 
-        const order = await prisma.order.findFirst({
+        // paymentIntentId is NOT unique — a cart batch shares one PI across
+        // every order in it, and the invoice branch above stamps the invoice's
+        // PI onto every bundled order. findFirst therefore used to reconcile
+        // one arbitrary order and silently leave its siblings showing as paid
+        // even though the whole charge had been refunded. Oldest-first just
+        // makes the primary (the one that carries the email + cancel side
+        // effects) deterministic; the refund columns are applied to all of
+        // them below.
+        const ordersOnCharge = await prisma.order.findMany({
           where: { paymentIntentId },
           include: { user: true },
+          orderBy: { createdAt: 'asc' },
         })
+        const order = ordersOnCharge[0]
         if (!order) {
           // Not every charge in the Stripe account belongs to an order in this DB
           // (e.g. test charges, deleted orders). Don't force Stripe to retry forever.
@@ -391,19 +460,42 @@ export async function POST(request: NextRequest) {
           },
         })
 
+        // Siblings sharing this PI (cart batch / bundled invoice). The refund
+        // covered the whole charge, so every order on it is refunded — carry
+        // the same columns across rather than leaving them reading as paid.
+        // refundedAmount stays on the primary only: splitting one charge-level
+        // refund across N orders would be a guess, and the per-order figure is
+        // what the admin credit tooling reads.
+        const siblingIds = ordersOnCharge.slice(1).map((o) => o.id)
+        if (siblingIds.length > 0) {
+          await prisma.order.updateMany({
+            where: { id: { in: siblingIds }, paymentStatus: { not: 'refunded' } },
+            data: {
+              paymentStatus: 'refunded',
+              refundedAt: now,
+              ...(dashboardInitiated
+                ? { status: 'cancelled', cancelledAt: now, cancelReason: 'stripe_dashboard' }
+                : {}),
+            },
+          })
+          console.log(`Webhook charge.refunded: PI ${paymentIntentId} backs ${ordersOnCharge.length} orders — marked ${siblingIds.length} sibling(s) refunded alongside ${order.orderNumber}`)
+        }
+
         if (dashboardInitiated) {
-          try {
-            await releaseOrderHoldsAndRestoreInventory(
-              order.id,
-              'stripe_dashboard',
-              { system: true },
-              request,
-            )
-          } catch (err) {
-            console.error(
-              `Webhook charge.refunded: failed to release holds for order ${order.id}:`,
-              err,
-            )
+          for (const o of ordersOnCharge) {
+            try {
+              await releaseOrderHoldsAndRestoreInventory(
+                o.id,
+                'stripe_dashboard',
+                { system: true },
+                request,
+              )
+            } catch (err) {
+              console.error(
+                `Webhook charge.refunded: failed to release holds for order ${o.id}:`,
+                err,
+              )
+            }
           }
         }
 
