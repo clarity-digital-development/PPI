@@ -212,9 +212,24 @@ export function OrderWizard({ inventory, paymentMethods, onBehalfOf, placedForMe
         return true
       case 'rider':
       case 'second-post':
-      case 'lockbox':
       case 'brochure':
         return true // Optional steps
+      case 'lockbox':
+        // The step itself stays optional ("No lockbox needed" proceeds), but
+        // once a lockbox IS on the order we always need a way into it. Agents
+        // were skipping the old optional code box and Pink Posts had to chase
+        // them down for it (Ryan, 2026-07-24) — there's no case where some
+        // code isn't needed, so it gates Continue for every lockbox choice.
+        if (formData.lockbox_option === 'none') return true
+        // Inventory route: a specific lockbox has to be picked, not just the
+        // bubble opened.
+        if (
+          (formData.lockbox_option === 'sentrilock' || formData.lockbox_option === 'mechanical_own') &&
+          !formData.customer_lockbox_id
+        ) {
+          return false
+        }
+        return !!formData.lockbox_code?.trim()
       case 'scheduling':
         // Only "specific_date" needs a date chosen. next_available and
         // expedited (same-day) proceed without one — previously expedited had
