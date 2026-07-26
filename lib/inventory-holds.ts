@@ -608,6 +608,59 @@ export async function releaseOrderHoldsAndRestoreInventory(
 }
 
 /**
+ * Resolve human-readable labels for held items, keyed "<itemType>:<itemId>".
+ *
+ * Checkout conflicts used to surface the bare code `item_unavailable`, which
+ * told the agent nothing about WHICH of their items was the problem (Ryan,
+ * 2026-07-24). Best-effort: an item that's since been deleted simply has no
+ * entry and the caller falls back to the generic type name.
+ */
+export async function describeHoldItems(
+  items: Array<{ itemType: HoldItemType; itemId: string }>
+): Promise<Map<string, string>> {
+  const labels = new Map<string, string>()
+  if (items.length === 0) return labels
+
+  const byType: Record<HoldItemType, string[]> = { sign: [], rider: [], lockbox: [] }
+  for (const i of items) {
+    if (i.itemId) byType[i.itemType]?.push(i.itemId)
+  }
+
+  if (byType.sign.length > 0) {
+    const rows = await prisma.customerSign.findMany({
+      where: { id: { in: byType.sign } },
+      select: { id: true, description: true },
+    })
+    for (const r of rows) labels.set(`sign:${r.id}`, `${r.description} (sign)`)
+  }
+
+  if (byType.rider.length > 0) {
+    const rows = await prisma.customerRider.findMany({
+      where: { id: { in: byType.rider } },
+      select: { id: true, rider: { select: { name: true } } },
+    })
+    for (const r of rows) labels.set(`rider:${r.id}`, `${r.rider.name} rider`)
+  }
+
+  if (byType.lockbox.length > 0) {
+    const rows = await prisma.customerLockbox.findMany({
+      where: { id: { in: byType.lockbox } },
+      select: { id: true, serialNumber: true, lockboxType: { select: { name: true } } },
+    })
+    for (const r of rows) {
+      labels.set(
+        `lockbox:${r.id}`,
+        r.serialNumber
+          ? `${r.lockboxType.name} lockbox (#${r.serialNumber})`
+          : `${r.lockboxType.name} lockbox`
+      )
+    }
+  }
+
+  return labels
+}
+
+/**
  * Force-release a single hold (admin override). Writes Overridden audit.
  */
 export async function overrideHold(

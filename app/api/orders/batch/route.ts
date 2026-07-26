@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { getCurrentUser, generateOrderNumber } from '@/lib/auth-utils'
 import { createPaymentIntent, createCustomer, getStripeErrorMessage, stripe } from '@/lib/stripe/server'
 import { computeOrderPricing, computeFlatFeePricing } from '@/lib/orders/pricing'
-import { claimHoldsInTx, HoldConflictError, releaseHolds, type HoldClaim } from '@/lib/inventory-holds'
+import { claimHoldsInTx, HoldConflictError, releaseHolds, describeHoldItems, type HoldClaim } from '@/lib/inventory-holds'
 import { validateScheduling } from '@/lib/scheduling'
 import crypto from 'node:crypto'
 import { audit, AuditAction } from '@/lib/audit'
@@ -11,6 +11,80 @@ import { resolveServiceArea, type ResolveResult } from '@/lib/service-area'
 import type { HoldItemType } from '@prisma/client'
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
+
+type HoldConflict = {
+  code: string
+  item_type: HoldItemType | null
+  item_id: string | null
+  hold_id: string | null
+  label?: string
+}
+
+const GENERIC_ITEM_NAME: Record<HoldItemType, string> = {
+  sign: 'a sign',
+  rider: 'a rider',
+  lockbox: 'a lockbox',
+}
+
+/**
+ * Turn raw hold-conflict codes into a sentence that NAMES the offending item.
+ * Before this, checkout failures rendered the bare string "item_unavailable"
+ * in the cart, so an agent had no idea which of their items blocked the order
+ * (Ryan, 2026-07-24: "can we have whatever it's stating it's unable to add be
+ * selected... such as 'coming soon rider' unable to be added").
+ *
+ * `hold_lost` is by far the most common in practice: reservations last 15
+ * minutes, and editing a cart row can easily outlast that — so it gets copy
+ * that says what actually happened rather than implying someone took the item.
+ */
+async function describeConflicts(conflicts: HoldConflict[]): Promise<{
+  conflicts: HoldConflict[]
+  message: string
+}> {
+  const labels = await describeHoldItems(
+    conflicts
+      .filter((c): c is HoldConflict & { item_type: HoldItemType; item_id: string } =>
+        !!c.item_type && !!c.item_id
+      )
+      .map((c) => ({ itemType: c.item_type, itemId: c.item_id }))
+  ).catch(() => new Map<string, string>())
+
+  const withLabels = conflicts.map((c) => ({
+    ...c,
+    label:
+      (c.item_type && c.item_id ? labels.get(`${c.item_type}:${c.item_id}`) : undefined) ??
+      (c.item_type ? GENERIC_ITEM_NAME[c.item_type] : 'An item'),
+  }))
+
+  const names = Array.from(new Set(withLabels.map((c) => c.label))).filter(Boolean)
+  const nameList =
+    names.length === 1
+      ? names[0]
+      : names.length === 2
+        ? `${names[0]} and ${names[1]}`
+        : `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`
+
+  // All conflicts in one response share a stage, so the first code is
+  // representative for the headline copy.
+  const code = withLabels[0]?.code ?? 'item_unavailable'
+  let message: string
+  switch (code) {
+    case 'hold_lost':
+    case 'item_gone':
+      message = `Your 15-minute reservation on ${nameList} ran out, so it couldn't be added. Nothing was charged — open the order, re-pick the item, and check out again.`
+      break
+    case 'agent_reassigned':
+      message = `${nameList} was reassigned to a different agent while this order sat in the cart, so it couldn't be added. Nothing was charged — re-pick and try again.`
+      break
+    case 'already_assigned':
+      message = `${nameList} is already out on another property, so it couldn't be added. Nothing was charged — re-pick and try again.`
+      break
+    default:
+      message = `${nameList} is reserved on another order right now, so it couldn't be added. Nothing was charged — re-pick and try again.`
+  }
+
+  return { conflicts: withLabels, message }
+}
 
 /**
  * Batch order placement. The cart hits this endpoint once with N orders
@@ -292,16 +366,17 @@ export async function POST(request: NextRequest) {
         }
       }
       if (conflicts.length > 0) {
+        const described = await describeConflicts(conflicts)
         await audit({
           actor: { id: actor.id, email: actor.email, role: actor.role },
           action: AuditAction.CartCheckoutFail,
           targetType: 'cart',
           targetId: cartSessionId,
-          metadata: { stage: 'prevalidate', conflicts, grandTotal },
+          metadata: { stage: 'prevalidate', conflicts: described.conflicts, grandTotal },
           request,
         })
         return NextResponse.json(
-          { error: 'item_unavailable', code: 'hold_conflict', conflicts },
+          { error: described.message, code: 'hold_conflict', conflicts: described.conflicts },
           { status: 409 }
         )
       }
@@ -457,26 +532,27 @@ export async function POST(request: NextRequest) {
       }
 
       if (txError instanceof HoldConflictError) {
-        const conflict = {
+        const conflict: HoldConflict = {
           code: txError.code,
           item_type: (txError.details.itemType as HoldItemType) ?? null,
           item_id: (txError.details.itemId as string) ?? null,
           hold_id: (txError.details.holdId as string) ?? null,
         }
+        const described = await describeConflicts([conflict])
         try {
           await audit({
             actor: { id: actor.id, email: actor.email, role: actor.role },
             action: AuditAction.CartCheckoutFail,
             targetType: 'cart',
             targetId: cartSessionId,
-            metadata: { stage: 'tx_claim', conflict },
+            metadata: { stage: 'tx_claim', conflict: described.conflicts[0] },
             request,
           })
         } catch (auditErr) {
           console.error('Batch: failed to audit tx_claim conflict:', auditErr)
         }
         return NextResponse.json(
-          { error: 'item_unavailable', code: 'hold_conflict', conflicts: [conflict] },
+          { error: described.message, code: 'hold_conflict', conflicts: described.conflicts },
           { status: 409 }
         )
       }

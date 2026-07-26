@@ -282,6 +282,15 @@ export default function CartPage() {
   const successCount = results.filter(r => r.status === 'success').length
   const errorCount = results.filter(r => r.status === 'error').length
 
+  // `done` alone used to hide Edit / Remove / Clear cart — but done is set on
+  // FAILURE too, so a failed checkout stripped every control while the summary
+  // told the agent to "fix the issue and try again". There was nothing left to
+  // fix it with: no edit, no cancel, no clear (Ryan, 2026-07-24 — the agent had
+  // to leave for the dashboard and dump the whole cart). Keep the controls live
+  // whenever rows failed; a fully successful checkout empties the cart anyway.
+  const cartStillActionable = !done || errorCount > 0
+  const rowsEditable = !checkingOut && cartStillActionable
+
   return (
     <div>
       <Header title="Cart" />
@@ -297,7 +306,7 @@ export default function CartPage() {
               <span className="text-gray-400">(approx. — final total includes tax)</span>
             </p>
           </div>
-          {items.length > 0 && !checkingOut && !done && (
+          {items.length > 0 && rowsEditable && (
             <div className="flex items-center gap-2">
               <Link href={nextOrderHref}>
                 <Button variant="outline">
@@ -350,7 +359,7 @@ export default function CartPage() {
                         Reservation expired — remove & re-pick
                       </p>
                     )}
-                    {!checkingOut && !done && (
+                    {rowsEditable && (
                       <div className="mt-2 flex items-center justify-end gap-3">
                         <Link
                           href={`/dashboard/place-order?cart_item_id=${encodeURIComponent(item.id)}`}
@@ -421,7 +430,7 @@ export default function CartPage() {
         )}
 
         {/* Re-pick prompt for expired rows */}
-        {expiredRows.size > 0 && !checkingOut && !done && (
+        {expiredRows.size > 0 && rowsEditable && (
           <Card className="border-amber-200 bg-amber-50">
             <CardContent className="p-4 text-sm text-amber-900">
               <p className="font-semibold mb-1">Some reservations expired while your cart was open.</p>
@@ -430,8 +439,9 @@ export default function CartPage() {
           </Card>
         )}
 
-        {/* Payment method + checkout */}
-        {items.length > 0 && !done && (
+        {/* Payment method + checkout — stays mounted after a FAILED checkout so
+            "try again" is actually possible without dumping the whole cart. */}
+        {items.length > 0 && cartStillActionable && (
           <Card>
             <CardContent className="p-5 space-y-3">
               {!profileLoaded ? (
