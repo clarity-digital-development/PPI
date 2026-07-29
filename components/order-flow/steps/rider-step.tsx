@@ -11,14 +11,30 @@ import { PRICING } from '../types'
 // we look up the matching CustomerRider record in inventory by slug so the order
 // item gets `customer_rider_id` set — without that, the inventory auto-remove
 // hook can't mark the rider as out-of-storage.
+//
+// An entry that already knows its physical row keeps it, rather than being
+// re-resolved by rider type. Type lookup returns whichever row the grouped
+// /api/inventory response nominated as that type's representative, which for an
+// order being edited is a DIFFERENT row than the one actually on the order —
+// the swap that produced duplicate rider lines (Ryan, 2026-07-28).
+//
+// The carried id is only honoured when it's still present in `inventory`. That
+// keeps the cart path safe: a cart row rehydrated from localStorage can hold an
+// id that has since been sold, reassigned or deleted, and preferring it blindly
+// would turn a self-healing re-resolve into a hard checkout failure (every
+// customer_rider_id becomes a hold acquire, and a stale one 409s). Absent from
+// inventory → fall back to the live type lookup exactly as before.
 function toRiderSelection(
   selected: SelectedRider,
   inventory: Array<{ id: string; riderType: string }> = []
 ): RiderSelection {
   const rider = RIDERS.find(r => r.id === selected.riderId)
   const slug = rider?.slug || selected.riderId
+  const carried = selected.source === 'owned' && selected.customerRiderId
+    ? inventory.find(inv => inv.id === selected.customerRiderId)
+    : undefined
   const inventoryMatch = selected.source === 'owned'
-    ? inventory.find(inv => inv.riderType === slug)
+    ? carried ?? inventory.find(inv => inv.riderType === slug)
     : undefined
   return {
     rider_type: slug,
@@ -30,11 +46,16 @@ function toRiderSelection(
   }
 }
 
-// Convert from order form format to RiderSelector format
+// Convert from order form format to RiderSelector format.
+//
+// Every branch below must carry customer_rider_id through as customerRiderId.
+// Dropping it here is what destroyed a rider's physical identity on the way into
+// the selector, leaving toRiderSelection to re-invent it from the rider type.
 function toSelectedRider(selection: RiderSelection): SelectedRider | null {
   // Prefer the explicit source field; fall back to is_rental for older saved data
   const source = selection.source ?? (selection.is_rental ? 'rental' : 'owned')
   const price = source === 'rental' ? PRICING.rider_rental : PRICING.rider_install
+  const customerRiderId = selection.customer_rider_id
 
   // Free-text custom riders (pickup/at-property) use a synthetic rider_type
   // that starts with "custom-text-" — keep them as their own selected entries
@@ -46,6 +67,7 @@ function toSelectedRider(selection: RiderSelection): SelectedRider | null {
       source,
       price,
       customValue: selection.custom_value,
+      customerRiderId,
     }
   }
 
@@ -70,6 +92,7 @@ function toSelectedRider(selection: RiderSelection): SelectedRider | null {
       source,
       price,
       customValue: selection.custom_value,
+      customerRiderId,
     }
   }
 
@@ -79,6 +102,7 @@ function toSelectedRider(selection: RiderSelection): SelectedRider | null {
     source,
     price,
     customValue: selection.custom_value ? parseFloat(selection.custom_value) || selection.custom_value : undefined,
+    customerRiderId,
   }
 }
 

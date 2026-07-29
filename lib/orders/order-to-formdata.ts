@@ -392,8 +392,38 @@ export function augmentInventoryWithOrder(
       const slug = isSecondPost(item.description)
         ? parseSecondPostRider(item).rider_type
         : parseMainRider(item).rider_type
-      if (!base.riders.some(r => r.id === item.customerRiderId || r.rider_type === slug)) {
-        base.riders.unshift({ id: item.customerRiderId, rider_type: slug, quantity: 1 })
+      // Match on ID, never on rider type — the same way signs above and
+      // lockboxes below already do.
+      //
+      // This used to also bail out when any group of the same TYPE was present
+      // (`|| r.rider_type === slug`). Riders are grouped per type by
+      // /api/inventory, and a group's id is whichever IN-STORAGE row came back
+      // first — never the row on this order, which is out of storage. So the
+      // order's real row never made it into the list, and therefore never into
+      // client_aware_inventory (review-step builds that from these ids). The
+      // edit route reads that set as "which inventory could the form actually
+      // see?", so the order's own rider looked invisible to the form and got
+      // treated as silently-dropped: re-attached as an extra priced line on any
+      // edit, and resurrected — still charged — when the customer deliberately
+      // REMOVED it. Both were the same missing id (Ryan, 2026-07-28).
+      if (!base.riders.some(r => r.id === item.customerRiderId)) {
+        const sameType = base.riders.findIndex(r => r.rider_type === slug)
+        if (sameType >= 0) {
+          // Point the existing group at this order's actual row instead of
+          // adding a second chip for the same type. Replaced with a NEW object:
+          // the array is only shallow-copied, so mutating the element in place
+          // would write through to the caller's fetched inventory, and an
+          // in-place quantity++ would double-count if this ever ran twice over
+          // the same response.
+          const group = base.riders[sameType]
+          base.riders[sameType] = {
+            ...group,
+            id: item.customerRiderId,
+            quantity: group.quantity + 1,
+          }
+        } else {
+          base.riders.unshift({ id: item.customerRiderId, rider_type: slug, quantity: 1 })
+        }
       }
     }
     if (item.itemType === 'lockbox' && item.customerLockboxId) {

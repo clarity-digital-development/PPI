@@ -23,6 +23,15 @@ export interface SelectedRider {
   source: RiderSource
   customValue?: string | number
   price: number
+  // The specific CustomerRider row (physical rider) this entry stands for, when
+  // it came from inventory. Carried through the selector so an edit round-trip
+  // keeps pointing at the SAME physical rider: without it the id was dropped on
+  // the way in and re-derived by rider-type lookup on the way out, which
+  // silently swapped in a different row of the same type and made the server
+  // treat the order's original rider as "dropped by the form" — re-adding it as
+  // a second priced line (Ryan, 2026-07-28). Undefined for rental and
+  // pickup/at-property riders, which have no inventory row.
+  customerRiderId?: string
 }
 
 let riderInstanceCounter = 0
