@@ -53,6 +53,9 @@ export async function GET(
       orders_subtotal: invoice.orders.reduce((s, o) => s + Number(o.subtotal ?? 0), 0),
       service_requests_subtotal: invoice.serviceRequests.reduce((s, sr) => s + Number(sr.invoiceAmount ?? 0), 0),
       total: Number(invoice.total),
+      // Post-invoice edit adjustments swept onto THIS invoice — snapshot JSON,
+      // [{ order_id, order_number, property, amount_cents }]. Null pre-feature.
+      adjustments: (invoice.adjustments as Array<{ order_id: string; order_number: string; property: string; amount_cents: number }> | null) ?? [],
       fuel_total: invoice.orders.reduce((s, o) => s + Number(o.fuelSurcharge ?? 0), 0),
       tax_total: invoice.orders.reduce((s, o) => s + Number(o.tax ?? 0), 0),
       expedite_total: invoice.orders.reduce((s, o) => s + Number(o.expediteFee ?? 0), 0),

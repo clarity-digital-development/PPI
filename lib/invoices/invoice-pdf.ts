@@ -70,6 +70,10 @@ export interface InvoiceDetail {
   // === subtotal.
   orders_subtotal: number
   service_requests_subtotal: number
+  // Post-invoice edit adjustments swept onto THIS invoice (snapshot taken at
+  // bundle time; the per-order source column is zeroed by the sweep). Amounts
+  // can be negative — an order edited cheaper after its invoice went out.
+  adjustments?: Array<{ order_id: string; order_number: string; property: string; amount_cents: number }>
   total: number
   // Aggregated across the bundled orders so the totals box can explain the
   // gap between Subtotal and Total (fuel + tax + fees), instead of an
@@ -370,6 +374,15 @@ export function buildInvoicePdfDoc(invoice: InvoiceDetail): jsPDF {
     detailRow('Service trips (non-taxable)', invoice.service_requests_subtotal)
   } else {
     detailRow('Subtotal', invoice.subtotal)
+  }
+  // One row per adjustment so the broker sees exactly which order changed and
+  // by how much. Negative amounts render with the credit (green) treatment.
+  for (const adj of invoice.adjustments ?? []) {
+    detailRow(
+      `Adjustment — Order ${adj.order_number} (edited after invoicing)`,
+      Math.abs(adj.amount_cents) / 100,
+      adj.amount_cents < 0
+    )
   }
   if (invoice.discount_total > 0) detailRow('Discount', invoice.discount_total, true)
   if (invoice.no_post_total > 0) detailRow('Service Trip Fee (no post)', invoice.no_post_total)

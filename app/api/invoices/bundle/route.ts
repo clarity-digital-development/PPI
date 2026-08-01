@@ -101,10 +101,20 @@ export async function POST(request: NextRequest) {
     ? { OR: [{ userId: user.id }, { placedByUserId: user.id }] }
     : { userId: user.id }
 
+  // Post-invoice adjustments sweep ONLY on unfiltered bundles: the agent /
+  // price filters slice invoices deliberately (e.g. one invoice per agent),
+  // and an adjustment from agent A's order must not land on an invoice the
+  // broker filtered to agent B. Filtered bundles leave adjustments pending
+  // for the next unfiltered (or admin) bundle.
+  const sweepAdjustments = agent === null && minPrice === null && maxPrice === null
+
   // SRs have no placedByUserId column — broker only bundles SRs they own
   // directly. Their team members' SRs aren't bundled here (would need an
   // agent-level filter that doesn't exist on SR today).
-  const result = await prisma.$transaction(async (tx) => {
+  // Arrow const (not a hoisted declaration) so the null-guard narrowing on
+  // user/startDate/endDate above carries into the closure.
+  const runBundleTransaction = async () =>
+    prisma.$transaction(async (tx) => {
     const orderWhere: Record<string, unknown> = {
       ...orderOwnership,
       paymentStatus: 'pending_invoice' as const,
@@ -149,15 +159,40 @@ export async function POST(request: NextRequest) {
       orderBy: { completedAt: 'asc' },
     })
 
-    if (orders.length === 0 && serviceRequests.length === 0) {
+    // Pending post-invoice adjustments (orders edited after a previous invoice
+    // of THIS broker went out). Same predicate as the admin bundler: keyed on
+    // the OLD invoice's owner, cancelled orders excluded. Only swept on
+    // unfiltered bundles — see sweepAdjustments above.
+    const adjustmentOrders = sweepAdjustments
+      ? await tx.order.findMany({
+          where: {
+            invoice: { userId: user.id },
+            status: { not: 'cancelled' },
+            postInvoiceAdjustmentCents: { not: 0 },
+          },
+          select: { id: true, orderNumber: true, propertyAddress: true, propertyCity: true, postInvoiceAdjustmentCents: true },
+          orderBy: { createdAt: 'asc' },
+        })
+      : []
+    const adjustmentCents = adjustmentOrders.reduce((s, o) => s + o.postInvoiceAdjustmentCents, 0)
+
+    if (orders.length === 0 && serviceRequests.length === 0 && adjustmentOrders.length === 0) {
       return { invoice: null, ordersCount: 0, serviceRequestsCount: 0, subtotal: 0, total: 0 }
     }
 
     const ordersSubtotal = orders.reduce((s, o) => s + Number(o.subtotal || 0), 0)
     const ordersTotal = orders.reduce((s, o) => s + Number(o.total || 0), 0)
     const srTotal = serviceRequests.reduce((s, sr) => s + Number(sr.invoiceAmount || 0), 0)
+    // Adjustments ride into TOTAL only — subtotal must keep matching the live
+    // sum of the bundled orders (customer page + PDF re-derive it from them).
     const subtotal = ordersSubtotal + srTotal
-    const total = ordersTotal + srTotal
+    const total = ordersTotal + srTotal + adjustmentCents / 100
+
+    if (total <= 0) {
+      throw new Error(
+        `Pending adjustments (-$${Math.abs(adjustmentCents / 100).toFixed(2)}) meet or exceed this period's charges ($${(ordersTotal + srTotal).toFixed(2)}). Contact Pink Posts to settle the credit directly.`
+      )
+    }
 
     const invoice = await tx.invoice.create({
       data: {
@@ -170,6 +205,16 @@ export async function POST(request: NextRequest) {
         status: 'sent',
         sentAt: new Date(),
         publicPdfToken: generatePublicPdfToken(),
+        ...(adjustmentOrders.length > 0
+          ? {
+              adjustments: adjustmentOrders.map((o) => ({
+                order_id: o.id,
+                order_number: o.orderNumber,
+                property: `${o.propertyAddress}, ${o.propertyCity}`,
+                amount_cents: o.postInvoiceAdjustmentCents,
+              })),
+            }
+          : {}),
       },
       select: { id: true, invoiceNumber: true, total: true, publicPdfToken: true },
     })
@@ -195,10 +240,26 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Sweep: zero each adjustment only if it still holds the value we read;
+    // an edit racing this bundle changes it → count mismatch → full rollback.
+    for (const o of adjustmentOrders) {
+      const swept = await tx.order.updateMany({
+        where: { id: o.id, postInvoiceAdjustmentCents: o.postInvoiceAdjustmentCents },
+        data: {
+          postInvoiceAdjustmentCents: 0,
+          sweptAdjustmentCents: { increment: o.postInvoiceAdjustmentCents },
+        },
+      })
+      if (swept.count !== 1) {
+        throw new Error(`Concurrent bundle race: adjustment on ${o.orderNumber} changed mid-bundle`)
+      }
+    }
+
     return {
       invoice,
       ordersCount: orders.length,
       serviceRequestsCount: serviceRequests.length,
+      adjustmentsCount: adjustmentOrders.length,
       subtotal,
       total,
       orderNumbers: orders.map((o) => o.orderNumber),
@@ -206,6 +267,23 @@ export async function POST(request: NextRequest) {
       publicPdfToken: invoice.publicPdfToken!,
     }
   })
+
+  let result
+  try {
+    result = await runBundleTransaction()
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : ''
+    if (msg.startsWith('Pending adjustments')) {
+      return NextResponse.json({ error: msg }, { status: 400 })
+    }
+    if (msg.startsWith('Concurrent bundle race')) {
+      return NextResponse.json(
+        { error: 'Another invoice was being generated at the same time — nothing was created. Refresh and try again.' },
+        { status: 409 }
+      )
+    }
+    throw err
+  }
 
   if (!result.invoice) {
     return NextResponse.json(

@@ -38,6 +38,7 @@ export async function loadInvoiceDetailForPdf(invoiceId: string): Promise<Invoic
     subtotal: Number(invoice.subtotal),
     orders_subtotal,
     service_requests_subtotal,
+    adjustments: (invoice.adjustments as InvoiceDetail['adjustments']) ?? [],
     total: Number(invoice.total),
     fuel_total: orderSum('fuelSurcharge'),
     tax_total: orderSum('tax'),

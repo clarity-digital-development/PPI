@@ -35,14 +35,25 @@ interface PreviewServiceRequest {
   amount: number
 }
 
+interface PreviewAdjustment {
+  order_id: string
+  order_number: string
+  property: string
+  amount: number
+}
+
 interface PreviewResponse {
   orders: PreviewOrder[]
   service_requests: PreviewServiceRequest[]
+  // Post-invoice edit adjustments the next bundle will sweep. Optional for
+  // back-compat with cached pre-feature responses.
+  adjustments?: PreviewAdjustment[]
   subtotal: number
   total: number
   count: number
   order_count: number
   service_request_count: number
+  adjustment_count?: number
 }
 
 type EmailStatus = 'queued' | 'sending' | 'sent' | 'failed' | 'skipped'
@@ -511,8 +522,8 @@ export default function AdminInvoicesPage() {
                 <p className="text-lg font-bold text-pink-600">{formatCurrency(preview.total)}</p>
               </div>
             </div>
-            {preview.orders.length === 0 && (preview.service_requests?.length ?? 0) === 0 ? (
-              <p className="text-sm text-gray-500 py-4 text-center">No pending-invoice orders or service trips in this range.</p>
+            {preview.orders.length === 0 && (preview.service_requests?.length ?? 0) === 0 && (preview.adjustments?.length ?? 0) === 0 ? (
+              <p className="text-sm text-gray-500 py-4 text-center">No pending-invoice orders, service trips, or adjustments in this range.</p>
             ) : (
               <div className="space-y-4">
                 {preview.orders.length > 0 && (
@@ -563,6 +574,33 @@ export default function AdminInvoicesPage() {
                             <td className="px-3 py-2 text-gray-600">{sr.completed_at ? formatDate(sr.completed_at) : '—'}</td>
                             <td className="px-3 py-2 text-gray-600">{sr.property}</td>
                             <td className="px-3 py-2 text-right font-medium">{formatCurrency(sr.amount)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {(preview.adjustments?.length ?? 0) > 0 && (
+                  <div className="overflow-x-auto">
+                    <p className="text-xs font-semibold text-gray-500 uppercase mb-1">
+                      Adjustments (orders edited after a previous invoice)
+                    </p>
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+                        <tr>
+                          <th className="px-3 py-2 text-left">Order #</th>
+                          <th className="px-3 py-2 text-left">Property</th>
+                          <th className="px-3 py-2 text-right">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {preview.adjustments!.map((adj) => (
+                          <tr key={adj.order_id}>
+                            <td className="px-3 py-2 font-medium text-gray-900">{adj.order_number}</td>
+                            <td className="px-3 py-2 text-gray-600">{adj.property}</td>
+                            <td className={`px-3 py-2 text-right font-medium ${adj.amount < 0 ? 'text-green-600' : ''}`}>
+                              {adj.amount < 0 ? '-' : ''}{formatCurrency(Math.abs(adj.amount))}
+                            </td>
                           </tr>
                         ))}
                       </tbody>

@@ -377,6 +377,19 @@ export default function InvoiceDetailPage() {
                   <span className="text-gray-900">{formatCurrency(invoice.subtotal)}</span>
                 </div>
               )}
+              {/* Post-invoice edit adjustments — one row per order so the
+                  broker sees exactly which order changed and by how much.
+                  Negative = edited cheaper after invoicing, nets off. */}
+              {(invoice.adjustments ?? []).map((adj) => (
+                <div key={adj.order_id} className={`flex justify-between ${adj.amount_cents < 0 ? 'text-green-600' : ''}`}>
+                  <span className={adj.amount_cents < 0 ? '' : 'text-gray-500'}>
+                    Adjustment — Order {adj.order_number} (edited after invoicing)
+                  </span>
+                  <span className={adj.amount_cents < 0 ? '' : 'text-gray-900'}>
+                    {adj.amount_cents < 0 ? '-' : ''}{formatCurrency(Math.abs(adj.amount_cents) / 100)}
+                  </span>
+                </div>
+              ))}
               {invoice.discount_total > 0 && (
                 <div className="flex justify-between text-green-600">
                   <span>Discount</span><span>-{formatCurrency(invoice.discount_total)}</span>

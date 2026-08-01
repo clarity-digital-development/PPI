@@ -525,6 +525,35 @@ model Order {
   // $5 net rather than charged $10 + still owed $5.
   pendingCreditCents      Int               @default(0) @map("pending_credit_cents")
 
+  // Post-invoice edits (Ryan, 2026-07-29): an order already bundled onto an
+  // invoice stays editable, but its money columns are FROZEN at the invoiced
+  // values — the invoice detail page and PDF re-read order rows live, so
+  // changing them would silently rewrite an already-sent invoice. The price
+  // difference lives here instead and is swept onto the customer's NEXT
+  // invoice as its own "Adjustment" line.
+  //
+  // postInvoiceAdjustmentCents is INCREMENTED on every post-invoice edit by
+  // the delta of two recomputes through the same pricing pipeline: new items
+  // vs the pre-edit items. Identical items cancel exactly (a date-only edit
+  // adds zero even on Stripe-Tax-priced orders), repeat edits accumulate
+  // per-edit deltas ("always remembers what the order currently is", Ryan
+  // 2026-06-29), and the value can go negative for edits that reduce the
+  // price. Incrementing (never SET) keeps a bundler sweep racing an edit
+  // honest: the sweep zeroes and bills what it read; the edit's own delta
+  // lands on the zeroed column and waits for the next sweep.
+  // sweptAdjustmentCents accumulates what sweeps already billed (audit /
+  // display; not part of the delta arithmetic).
+  postInvoiceAdjustmentCents Int @default(0) @map("post_invoice_adjustment_cents")
+  sweptAdjustmentCents       Int @default(0) @map("swept_adjustment_cents")
+  // The recomputed total (cents) as of the LAST post-invoice edit — the
+  // anchor each subsequent edit's delta is measured against, so only the
+  // first-ever invoiced edit needs to reconstruct a baseline from the stored
+  // items (where priced-state discriminators like noPostSurcharge can be
+  // stale after post-ness changes). Null until the first post-invoice edit.
+  // Also doubles as the optimistic-concurrency token for invoiced edits: the
+  // update is conditional on it being unchanged since read.
+  postInvoiceBaselineCents   Int? @map("post_invoice_baseline_cents")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -609,6 +638,13 @@ model Invoice {
   // queued/failed → sending). Used by the startup heal hook to recover rows
   // left in 'sending' by a process restart mid-job.
   sendingStartedAt DateTime?          @map("sending_started_at")
+
+  // Adjustment lines swept from previously-invoiced orders that were edited
+  // after their invoice went out. Snapshot at bundle time — array of
+  // { order_id, order_number, property, amount_cents } — because the source
+  // column (Order.postInvoiceAdjustmentCents) is zeroed by the sweep and the
+  // PDF must keep rendering the same lines forever.
+  adjustments Json?
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

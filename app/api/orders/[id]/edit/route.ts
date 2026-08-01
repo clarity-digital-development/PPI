@@ -118,19 +118,18 @@ export async function PATCH(
       )
     }
 
-    // Block edits on orders that have already been bundled onto an invoice
-    // (invoiceId set). The invoice has a fixed total + a Stripe Payment Link
-    // generated against the OLD price, so a silent edit would silently drift
-    // both. Per Ryan: rare (most edits happen same-day), and the workflow is
-    // to regenerate the invoice manually. This is a pre-flight check; the
-    // invoice-bundle job could still attach invoiceId between here and the
-    // transaction below, so the tx.order.updateMany also re-checks invoiceId.
-    if (existingOrder.invoiceId) {
-      return NextResponse.json(
-        { error: 'Error: order already invoiced. Please contact 859-395-8188 to make changes.' },
-        { status: 409 }
-      )
-    }
+    // Already-invoiced orders are EDITABLE (Ryan, 2026-07-29) but their money
+    // columns are frozen: the sent invoice's page and PDF re-read order rows
+    // live, so writing new totals would silently rewrite an invoice the
+    // customer already has. Instead this edit's price delta is INCREMENTED
+    // onto postInvoiceAdjustmentCents and swept onto the customer's next
+    // invoice as its own line. Items/date/property still update normally —
+    // that's what the edit is FOR (replaced a hard 409 telling people to call).
+    //
+    // The invoice-bundle job can still attach invoiceId between here and the
+    // transaction below, so the tx.order.updateMany re-checks invoiceId is
+    // UNCHANGED from what we read (null-to-bundled race → 409 like before).
+    const wasInvoiced = !!existingOrder.invoiceId
 
     const body = await request.json()
     const validationResult = editOrderSchema.safeParse(body)
@@ -448,20 +447,22 @@ export async function PATCH(
     // to current eligible subtotal). Without this, a customer who edits after
     // admin deactivates their code silently loses the discount and gets
     // re-charged — Ryan's preference is "customer keeps the promo they got".
-    const discountableSubtotal = computeDiscountableSubtotal(pricingItems)
-    let discount = 0
-    if (existingOrder.promoCode && existingOrder.promoCode.isActive) {
-      if (existingOrder.promoCode.discountType === 'percentage') {
-        discount = discountableSubtotal * (Number(existingOrder.promoCode.discountValue) / 100)
-      } else {
-        discount = Math.min(Number(existingOrder.promoCode.discountValue), discountableSubtotal)
+    const discountForItems = (items: OrderItemForPricing[]): number => {
+      if (isFlatFee) return 0
+      const base = computeDiscountableSubtotal(items)
+      let d = 0
+      if (existingOrder.promoCode && existingOrder.promoCode.isActive) {
+        if (existingOrder.promoCode.discountType === 'percentage') {
+          d = base * (Number(existingOrder.promoCode.discountValue) / 100)
+        } else {
+          d = Math.min(Number(existingOrder.promoCode.discountValue), base)
+        }
+      } else if (existingOrder.promoCode && Number(existingOrder.discount) > 0) {
+        d = Math.min(Number(existingOrder.discount), base)
       }
-      discount = Math.round(discount * 100) / 100
-    } else if (existingOrder.promoCode && Number(existingOrder.discount) > 0) {
-      discount = Math.min(Number(existingOrder.discount), discountableSubtotal)
-      discount = Math.round(discount * 100) / 100
+      return Math.round(d * 100) / 100
     }
-    if (isFlatFee) discount = 0
+    const discount = discountForItems(pricingItems)
 
     // Flat-fee short-circuits to the canonical flat breakdown. Non-flat-fee
     // routes through the shared helper, which mirrors the create route's math
@@ -469,12 +470,18 @@ export async function PATCH(
     // `fuelSurchargeOverride` preserves the LOCKED rate from the order's
     // original placement so legacy customers don't pay retroactive bumps.
     const hasPostType = !!editData.post_type && editData.post_type !== 'none'
+    // One derivation shared by pricing AND the DB write below (which already
+    // uses this ?? form): a PATCH that omits the optional is_expedited field
+    // must price the state the row will actually keep, not silently price as
+    // non-expedited while the column stays true — that mismatch fed phantom
+    // credits into the post-invoice adjustment baseline.
+    const effectiveIsExpedited = editData.is_expedited ?? existingOrder.isExpedited
     const pricing = isFlatFee
       ? computeFlatFeePricing(Number(existingOrder.fuelSurcharge), Number(existingOrder.subtotal))
       : computeOrderPricing({
           items: pricingItems,
           hasPostType,
-          isExpedited: !!editData.is_expedited,
+          isExpedited: effectiveIsExpedited,
           discount,
           fuelSurchargeOverride: Number(existingOrder.fuelSurcharge),
         })
@@ -484,6 +491,66 @@ export async function PATCH(
     const expediteFee = pricing.expediteFee
     const tax = pricing.tax
     const total = pricing.total
+
+    // ---- Post-invoice adjustment delta (invoiced orders only) ----
+    // The frozen Order.total can't be the baseline: it may embed Stripe-Tax
+    // pricing from create time, while this recompute uses the flat KY rate —
+    // diffing against it would put phantom tax-drift cents on the customer's
+    // next invoice for a date-only edit. Instead, price the PRE-EDIT items
+    // through the SAME pipeline (same promo rules, same fuel lock, same flat
+    // 6%) and take the delta of the two recomputes: identical items cancel to
+    // exactly zero, and only what this edit actually changed carries through.
+    // The delta is INCREMENTED onto postInvoiceAdjustmentCents (not SET), so
+    // a bundler sweep racing this edit stays correct — the sweep zeroes the
+    // column and bills what it read; this edit's own delta then lands on the
+    // zeroed column and waits for the next sweep. A retried identical PATCH
+    // prices old===new and increments zero.
+    let postInvoiceAdjustmentDeltaCents = 0
+    let newPostInvoiceBaselineCents: number | null = null
+    if (wasInvoiced) {
+      const oldPricingItems: OrderItemForPricing[] = existingOrder.orderItems.map((it) => ({
+        item_type: it.itemType,
+        item_category: it.itemCategory ?? undefined,
+        total_price: Number(it.totalPrice),
+      }))
+      // Symmetric surcharge shortfall: the NEW side injects a synthetic
+      // surcharge when the locked column exceeds the surcharge OrderItems.
+      // Mirror the exact construction on the OLD side (against the pre-edit
+      // column) so a legacy column/items mismatch prices identically on both
+      // sides of the delta instead of surfacing as a phantom adjustment.
+      const oldSurchargeFromLines = oldPricingItems
+        .filter((it) => it.item_type === 'surcharge')
+        .reduce((s, it) => s + it.total_price, 0)
+      const oldLockedSurcharge = isFlatFee ? 0 : (existingOrder.serviceAreaSurchargeCents ?? 0) / 100
+      const oldShortfall = Math.max(0, oldLockedSurcharge - oldSurchargeFromLines)
+      if (oldShortfall > 0) {
+        oldPricingItems.push({ item_type: 'surcharge', total_price: oldShortfall })
+      }
+      const oldPricing = isFlatFee
+        ? computeFlatFeePricing(Number(existingOrder.fuelSurcharge), Number(existingOrder.subtotal))
+        : computeOrderPricing({
+            items: oldPricingItems,
+            // NOT !!existingOrder.postTypeId: open_house orders persist
+            // postTypeId=null yet were PRICED as hasPostType=true (no $40
+            // no-post fee). The stored noPostSurcharge is the only faithful
+            // record of which way the order was actually priced — zero means
+            // the $40 fee was not charged, so the baseline must not add it.
+            hasPostType: Number(existingOrder.noPostSurcharge) === 0,
+            isExpedited: existingOrder.isExpedited,
+            discount: discountForItems(oldPricingItems),
+            fuelSurchargeOverride: Number(existingOrder.fuelSurcharge),
+          })
+      // Anchor semantics: after the first invoiced edit, the previous edit's
+      // recomputed total (stored on the row) is the baseline — measured
+      // through the IDENTICAL pipeline as this edit's recompute, so any
+      // reconstruction imprecision (frozen columns going stale after a
+      // post-ness change, legacy mismatches) can only ever affect the first
+      // delta, never compound across edits.
+      const baselineCents =
+        existingOrder.postInvoiceBaselineCents ?? Math.round(oldPricing.total * 100)
+      newPostInvoiceBaselineCents = Math.round(total * 100)
+      postInvoiceAdjustmentDeltaCents = newPostInvoiceBaselineCents - baselineCents
+    }
     // The helper recomputes noPostSurcharge from hasPostType; for flat-fee it
     // returns 0. Mirror that into the existing variable used by the DB save
     // block below so the downstream consumers don't change.
@@ -638,7 +705,19 @@ export async function PATCH(
       // raced us, in which case we throw to roll back the whole transaction
       // (orderItem deletes, inventory swaps) and 409 the caller.
       const updateResult = await tx.order.updateMany({
-        where: { id, invoiceId: null },
+        // invoiceId must be UNCHANGED since the read: null stays the pre-
+        // existing bundler race guard; a non-null id can't change (the bundler
+        // only touches invoiceId: null rows), so invoiced edits always match.
+        // For invoiced edits the baseline anchor doubles as an optimistic-
+        // concurrency token — a concurrent edit moved it, and applying this
+        // delta on top would double-count that edit's movement.
+        where: {
+          id,
+          invoiceId: existingOrder.invoiceId,
+          ...(wasInvoiced
+            ? { postInvoiceBaselineCents: existingOrder.postInvoiceBaselineCents }
+            : {}),
+        },
         data: {
           postTypeId: newPostTypeId,
           // Property
@@ -661,16 +740,14 @@ export async function PATCH(
           // Scheduling
           scheduledDate,
           isExpedited: editData.is_expedited ?? existingOrder.isExpedited,
-          // Pricing
-          subtotal: newSubtotal,
-          noPostSurcharge,
-          expediteFee,
-          discount,
-          tax,
-          total,
           // OOA snapshot — only when we re-resolved this edit. Undefined
           // fields are omitted by Prisma so the existing locked-at-placement
-          // values stay untouched on address-unchanged edits.
+          // values stay untouched on address-unchanged edits. Written for
+          // invoiced orders too: invoices never sum this column (the fee lives
+          // inside subtotal via its OrderItem), and every later recompute
+          // treats it as ground truth for what surcharge the items carry — a
+          // stale frozen value would resurrect a removed fee on the next
+          // date-only edit.
           ...(resolvedSurchargeCents !== null
             ? {
                 serviceAreaSurchargeCents: resolvedSurchargeCents,
@@ -679,6 +756,27 @@ export async function PATCH(
                 serviceAreaDriveTimeSource: resolvedDriveTimeSource,
               }
             : {}),
+          // Pricing — FROZEN for invoiced orders (see wasInvoiced above): the
+          // sent invoice sums these columns live, so they must keep the values
+          // it billed. This edit's price movement lands on the adjustment
+          // instead, INCREMENTED so concurrent sweeps and retries stay honest.
+          ...(wasInvoiced
+            ? {
+                // Always advance the anchor (even on a zero delta) so the next
+                // edit measures against THIS recompute, not a reconstruction.
+                postInvoiceBaselineCents: newPostInvoiceBaselineCents,
+                ...(postInvoiceAdjustmentDeltaCents !== 0
+                  ? { postInvoiceAdjustmentCents: { increment: postInvoiceAdjustmentDeltaCents } }
+                  : {}),
+              }
+            : {
+                subtotal: newSubtotal,
+                noPostSurcharge,
+                expediteFee,
+                discount,
+                tax,
+                total,
+              }),
         },
       })
       if (updateResult.count === 0) {
@@ -698,8 +796,16 @@ export async function PATCH(
     })
 
     if (!updatedOrder) {
+      // Two ways to get here: the bundler stamped invoiceId mid-edit (the
+      // pre-existing race), or a concurrent edit of an already-invoiced order
+      // moved the baseline anchor. Either way the caller's view is stale.
       return NextResponse.json(
-        { error: 'Error: order already invoiced. Please contact 859-395-8188 to make changes.' },
+        {
+          error: wasInvoiced
+            ? 'This order was changed by someone else while you were editing. Refresh to see the latest version and try again.'
+            : 'This order was just added to an invoice while you were editing. Refresh to see the latest version.',
+          code: 'concurrent_edit',
+        },
         { status: 409 }
       )
     }
@@ -746,7 +852,17 @@ export async function PATCH(
     let newLastEditChargedAt: Date | null = null
     let pendingCreditCentsAfter = existingPendingCreditCents
 
-    if (diff !== 0) {
+    if (wasInvoiced) {
+      // Already on an invoice: money columns were frozen in the tx, so the
+      // generic diff below is always 0. The real movement is this edit's
+      // recompute-vs-recompute delta (what the tx just incremented onto the
+      // pending adjustment) — report THAT so the email and toast say
+      // "the $X difference will appear on your next invoice".
+      if (postInvoiceAdjustmentDeltaCents !== 0) {
+        chargeOutcome = { kind: 'invoice_billing_skip', diff: postInvoiceAdjustmentDeltaCents / 100 }
+        newEditChargeStatus = 'invoice_billing_skip'
+      }
+    } else if (diff !== 0) {
       if (existingOrder.paymentStatus === 'pending_invoice') {
         chargeOutcome = { kind: 'invoice_billing_skip', diff }
         newEditChargeStatus = 'invoice_billing_skip'

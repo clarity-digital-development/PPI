@@ -56,6 +56,7 @@ export async function GET(
     // for the rationale and the canonical computation.
     orders_subtotal: invoice.orders.reduce((s, o) => s + Number(o.subtotal ?? 0), 0),
     service_requests_subtotal: invoice.serviceRequests.reduce((s, sr) => s + Number(sr.invoiceAmount ?? 0), 0),
+    adjustments: (invoice.adjustments as InvoiceDetail['adjustments']) ?? [],
     total: Number(invoice.total),
     fuel_total: invoice.orders.reduce((s, o) => s + Number(o.fuelSurcharge ?? 0), 0),
     tax_total: invoice.orders.reduce((s, o) => s + Number(o.tax ?? 0), 0),
