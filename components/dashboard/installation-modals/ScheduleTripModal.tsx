@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { Modal, Button, Input, Select } from '@/components/ui'
+import { SearchableSelect } from '@/components/ui/SearchableSelect'
 import { Loader2, AlertCircle, CheckCircle, MapPin, Plus, DollarSign } from 'lucide-react'
 import { PRICING } from '@/lib/constants'
 import { getNextAvailableDate, toDateStr, isSunday } from '@/lib/scheduling'
@@ -311,10 +312,15 @@ export function ScheduleTripModal({
                     </p>
                   </div>
                 ) : (
-                  <Select
+                  // Searchable so any part of the address matches (street name,
+                  // not just house number) — see ScheduleRemovalModal.
+                  <SearchableSelect
                     value={selectedInstallationId}
-                    onChange={(e) => setSelectedInstallationId(e.target.value)}
-                    options={[{ value: '', label: 'Select an installation...' }, ...installationOptions]}
+                    onChange={setSelectedInstallationId}
+                    options={installationOptions}
+                    placeholder="Select an installation..."
+                    searchPlaceholder="Type any part of the address — street, number, city…"
+                    emptyText="No listings match"
                   />
                 )
               ) : (

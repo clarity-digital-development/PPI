@@ -276,17 +276,24 @@ export async function PUT(
                 })
               }
             } else {
-              // For new/rental lockboxes, try to find the lockbox type by name in description
-              const lockboxType = await prisma.lockboxType.findFirst({
-                where: {
-                  OR: [
-                    { name: { contains: 'SentriLock', mode: 'insensitive' } },
-                    { name: { contains: 'Supra', mode: 'insensitive' } },
-                  ],
-                  isActive: true,
-                },
-              })
-              lockboxTypeId = lockboxType?.id || null
+              // No inventory link (rental, at-property/pickup, or a typed-in
+              // box): resolve the type from what the order actually says.
+              // This used to hardcode Sentrilock/Supra for EVERY such item, so
+              // a "Mechanical Lockbox Rental" showed up on the removal request
+              // as a phantom "Sentrilock/Supra — (no code on file)" alongside
+              // the real rental — installers went looking for two boxes
+              // (Ryan, 2026-08-14). The code the agent typed lives on
+              // customValue; carry it too instead of dropping it.
+              const wantSentri = /sentri|supra/i.test(item.description)
+              const activeTypes = await prisma.lockboxType.findMany({ where: { isActive: true } })
+              const pick = (pred: (n: string) => boolean) => activeTypes.find(t => pred(t.name.toLowerCase()))
+              const chosen = wantSentri
+                ? pick(n => /sentri|supra/.test(n))
+                : isRental
+                  ? pick(n => /mechanical/.test(n) && /rental/.test(n)) ?? pick(n => /mechanical/.test(n))
+                  : pick(n => /mechanical/.test(n) && !/rental/.test(n)) ?? pick(n => /mechanical/.test(n))
+              lockboxTypeId = chosen?.id || null
+              code = item.customValue || null
             }
 
             if (lockboxTypeId) {

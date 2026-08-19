@@ -1,7 +1,8 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Modal, Button, Input, Select } from '@/components/ui'
+import { Modal, Button, Input } from '@/components/ui'
+import { SearchableSelect } from '@/components/ui/SearchableSelect'
 import { Calendar, Loader2, AlertCircle, CheckCircle } from 'lucide-react'
 
 interface PickerInstallation {
@@ -146,17 +147,22 @@ export function ScheduleRemovalModal({
                   scheduled or the sign was already removed, check Order History for its status.
                 </div>
               ) : (
-                <Select
+                // Searchable (substring) rather than a native <select>: the
+                // browser's type-ahead only matches from the START of the
+                // label, so typing a house number found the address but a
+                // street name never did — a broker with 50+ listings had to
+                // scroll (Ryan, 2026-08-14).
+                <SearchableSelect
                   label="Which listing are we removing?"
                   value={pickedId}
-                  onChange={(e) => setPickedId(e.target.value)}
-                  options={[
-                    { value: '', label: 'Select an installation...' },
-                    ...installations.map((inst) => ({
-                      value: inst.id,
-                      label: `${inst.propertyAddress}, ${inst.propertyCity}`,
-                    })),
-                  ]}
+                  onChange={setPickedId}
+                  options={installations.map((inst) => ({
+                    value: inst.id,
+                    label: `${inst.propertyAddress}, ${inst.propertyCity}`,
+                  }))}
+                  placeholder="Select an installation..."
+                  searchPlaceholder="Type any part of the address — street, number, city…"
+                  emptyText="No listings match"
                 />
               )
             ) : (
