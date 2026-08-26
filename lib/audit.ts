@@ -111,6 +111,13 @@ export const AuditAction = {
   // optionally with a recipient override. Distinct from InvoiceCreated so
   // forensic queries can tell first-send vs retry apart.
   InvoiceResent:               'invoice.resent',
+  // Installer dispatch email — the price-free "today's jobs" list sent to
+  // hourly crews. One 'dispatch' summary row per send (targetId = Resend id)
+  // plus one row per included order / service request (targetType
+  // 'order' | 'service_request') so a job's send history is queryable via
+  // the (targetType, targetId) index.
+  DispatchEmailSent:           'dispatch.email.sent',
+  DispatchEmailFailed:         'dispatch.email.failed',
   ServiceAreaBlock:            'service_area.block',
   ServiceAreaSurchargeApplied: 'service_area.surcharge_applied',
   // Admin manually retried the second half of a split out-of-area fee

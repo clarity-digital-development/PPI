@@ -24,6 +24,17 @@ export async function GET(request: NextRequest) {
     // file, or a credit owed back to the customer awaiting manual refund.
     // 'charged_diff' and 'invoice_billing_skip' are excluded (no action needed).
     const chargeIssues = searchParams.get('charge_issues') === 'true'
+    // Installer dispatch: filter by the INSTALL day, not the order date.
+    // scheduledDate is stored as a UTC-day instant (noon from the customer /
+    // batch / reschedule paths, midnight from the admin PUT), so a whole-UTC-
+    // day window matches both. 'unscheduled' = "Next Available" orders.
+    const scheduledDateParam = searchParams.get('scheduled_date')
+    const scheduledDateWhere =
+      scheduledDateParam === 'unscheduled'
+        ? { scheduledDate: null }
+        : scheduledDateParam && /^\d{4}-\d{2}-\d{2}$/.test(scheduledDateParam)
+          ? { scheduledDate: { gte: new Date(`${scheduledDateParam}T00:00:00.000Z`), lte: new Date(`${scheduledDateParam}T23:59:59.999Z`) } }
+          : {}
     const limit = parseInt(searchParams.get('limit') || '50')
     const offset = parseInt(searchParams.get('offset') || '0')
 
@@ -35,6 +46,7 @@ export async function GET(request: NextRequest) {
       ...(chargeIssues
         ? { editChargeStatus: { in: ['charge_failed', 'no_payment_method', 'credit_pending'] as Array<'charge_failed' | 'no_payment_method' | 'credit_pending'> } }
         : {}),
+      ...scheduledDateWhere,
     }
 
     // Total matching count so the admin UI can paginate through every order
@@ -53,7 +65,11 @@ export async function GET(request: NextRequest) {
           },
         },
       },
-      orderBy: { createdAt: 'desc' },
+      // With a day filter the list reads like a route sheet: expedited first,
+      // then by install date, then by street. Default ordering unchanged.
+      orderBy: Object.keys(scheduledDateWhere).length
+        ? [{ isExpedited: 'desc' as const }, { scheduledDate: 'asc' as const }, { propertyAddress: 'asc' as const }]
+        : { createdAt: 'desc' as const },
       take: limit,
       skip: offset,
     })

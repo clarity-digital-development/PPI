@@ -18,6 +18,15 @@ export async function GET(request: NextRequest) {
     const status = searchParams.get('status')
     const type = searchParams.get('type')
     const invoiceStatus = searchParams.get('invoiceStatus')
+    // Installer dispatch: filter by requested day (stored as noon UTC — a
+    // whole-UTC-day window is exact). 'unscheduled' = no date picked yet.
+    const requestedDateParam = searchParams.get('requested_date')
+    const requestedDateWhere =
+      requestedDateParam === 'unscheduled'
+        ? { requestedDate: null }
+        : requestedDateParam && /^\d{4}-\d{2}-\d{2}$/.test(requestedDateParam)
+          ? { requestedDate: { gte: new Date(`${requestedDateParam}T00:00:00.000Z`), lte: new Date(`${requestedDateParam}T23:59:59.999Z`) } }
+          : {}
     const limit = parseInt(searchParams.get('limit') || '50')
     const offset = parseInt(searchParams.get('offset') || '0')
 
@@ -34,6 +43,7 @@ export async function GET(request: NextRequest) {
       // Lets admin click the "Pending invoice" tile to narrow the list
       // to only SRs queued for the next bundled invoice.
       ...(invoiceStatus ? { invoiceStatus } : {}),
+      ...requestedDateWhere,
     }
 
     let filteredTotal = 0
@@ -74,7 +84,9 @@ export async function GET(request: NextRequest) {
             },
           },
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: Object.keys(requestedDateWhere).length
+          ? [{ requestedDate: 'asc' as const }, { createdAt: 'desc' as const }]
+          : { createdAt: 'desc' as const },
         take: limit,
         skip: offset,
       })

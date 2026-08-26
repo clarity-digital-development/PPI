@@ -130,3 +130,21 @@ No DB. Fixture with two order jobs + two SR jobs whose free text is stuffed with
 
 ## Effort
 ~1 focused day (lib 3h, routes 2h, UI 3h, script + QA + review 2h). No schema, no Stripe.
+
+
+## Status — shipped 2026-08-25
+
+Ryan's answers to the open questions (Slack thread, 2026-08-25):
+
+1. **Photos: attached**, not linked. Loader fetches `installationLocationImage` one order at a time (never in the list select), caps 3 MB per photo / 15 MB per email, and prints a "see the admin order page" note when a photo is over budget. Sent to Resend as base64 strings (a Buffer JSON-serializes to ~4x its size).
+2. **No "sent to crew" badge** on the order — audit log rows only (`dispatch.email.sent` per job + one summary row carrying the Resend id).
+3. **Agent details: yes** — name, phone, company, plus "Sold by" for team orders.
+4. **No cancel follow-up** — a cancelled job is simply skipped (and listed as skipped in the preview).
+
+Changes from the spec found by the pre-ship adversarial review:
+
+- Money guard covers **amounts in every spelling** — `$80`, `$ 80`, `80$`, `USD 80`, `80 dollars`, `80-dollar`, `eighty dollars`, `€/£`. Patterns live in `lib/dispatch/money.ts` (Buffer-free) and are shared by the redactor, the send-time backstop, the admin note, and the modal preview. Still amounts only — "Price Reduced" survives.
+- The dashboard trip modal bakes `… Address: X. Trip fee: $40` into every service-trip description; the loader now **strips that suffix** rather than redacting it (a `Trip fee: [amount removed]` line still tells the crew a charge exists).
+- The email body has **no "To:" line** (mail client shows recipients; the preview is rendered before the final list is typed). The modal splices the typed, redacted note into the preview at the exact spot the template puts it, so preview == sent.
+- Modal: stale dryRun responses are discarded on close/reopen; backdrop/X are inert mid-send; a note containing an amount shows a hint that it will be replaced.
+- Regression script `scripts/dispatch-email-preview.ts` (no DB, no network) exercises all of the above — run it before touching the template.

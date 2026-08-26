@@ -27,6 +27,10 @@ import {
   ChevronRight,
 } from 'lucide-react'
 import { formatDate } from '@/lib/utils'
+import { DateInput } from '@/components/ui/DateInput'
+import { useDispatchSelection } from '@/components/admin/dispatch/useDispatchSelection'
+import { DispatchBar } from '@/components/admin/dispatch/DispatchBar'
+import { DispatchEmailModal } from '@/components/admin/dispatch/DispatchEmailModal'
 
 // Match the orders admin list page size — Ryan asked for the SR list to
 // paginate "like orders" (2026-07-06) so he can find old service requests
@@ -124,6 +128,11 @@ export default function ServiceRequestsPage() {
   // Drives the "Pending invoice" tile so admin can click it to scope the
   // list to just the SRs queued for the next bundled invoice.
   const [filterInvoiceStatus, setFilterInvoiceStatus] = useState<string>('')
+  // Installer dispatch: requested-day filter ('' | 'unscheduled' | YYYY-MM-DD)
+  // plus the cross-page selection shared with /admin/orders.
+  const [filterDate, setFilterDate] = useState<string>('')
+  const selection = useDispatchSelection()
+  const [dispatchOpen, setDispatchOpen] = useState(false)
   const [selectedRequest, setSelectedRequest] = useState<ServiceRequest | null>(null)
   const [showModal, setShowModal] = useState(false)
   const [updating, setUpdating] = useState(false)
@@ -154,7 +163,7 @@ export default function ServiceRequestsPage() {
   // matching records existing on page 0.
   useEffect(() => {
     setPage(0)
-  }, [filterStatus, filterType, filterInvoiceStatus])
+  }, [filterStatus, filterType, filterInvoiceStatus, filterDate])
 
   useEffect(() => {
     fetchRequests()
@@ -163,7 +172,7 @@ export default function ServiceRequestsPage() {
     // reference every render, which loops. Matches the pre-existing pattern
     // used elsewhere in this file for the same reason.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterStatus, filterType, filterInvoiceStatus, page])
+  }, [filterStatus, filterType, filterInvoiceStatus, filterDate, page])
 
   const fetchRequests = async () => {
     setLoading(true)
@@ -172,6 +181,7 @@ export default function ServiceRequestsPage() {
       if (filterStatus) params.set('status', filterStatus)
       if (filterType) params.set('type', filterType)
       if (filterInvoiceStatus) params.set('invoiceStatus', filterInvoiceStatus)
+      if (filterDate) params.set('requested_date', filterDate)
       params.set('limit', String(PAGE_SIZE))
       params.set('offset', String(page * PAGE_SIZE))
 
@@ -392,13 +402,34 @@ export default function ServiceRequestsPage() {
                 placeholder="All Types"
               />
             </div>
-            {(filterStatus || filterType) && (
+            {/* Requested-day filter for the dispatch workflow — mirrors the
+                install-date filter on /admin/orders. */}
+            <div className="w-44">
+              <DateInput
+                label="Requested date"
+                value={filterDate === 'unscheduled' ? '' : filterDate}
+                // Clear fires '' even when the field was already empty
+                // (Unscheduled active) — keep that filter.
+                onChange={(v) => { if (!v && filterDate === 'unscheduled') return; setFilterDate(v) }}
+                placeholder="Any date"
+              />
+            </div>
+            <Button
+              variant={filterDate === 'unscheduled' ? 'primary' : 'outline'}
+              className="self-end"
+              onClick={() => setFilterDate((d) => (d === 'unscheduled' ? '' : 'unscheduled'))}
+              title="Show only requests with no date picked yet"
+            >
+              {filterDate === 'unscheduled' ? 'Unscheduled · clear' : 'Unscheduled'}
+            </Button>
+            {(filterStatus || filterType || filterDate) && (
               <Button
                 variant="outline"
                 className="self-end"
                 onClick={() => {
                   setFilterStatus('')
                   setFilterType('')
+                  setFilterDate('')
                 }}
               >
                 Clear Filters
@@ -423,11 +454,21 @@ export default function ServiceRequestsPage() {
       ) : (
         <div className="space-y-4">
           {requests.map((request) => (
-            <Card key={request.id} className="hover:shadow-md transition-shadow">
+            <Card key={request.id} className={`hover:shadow-md transition-shadow ${selection.isServiceRequestSelected(request.id) ? 'ring-1 ring-pink-200 bg-pink-50/40' : ''}`}>
               <CardContent className="p-4">
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                   <div className="flex-1">
                     <div className="flex items-center gap-3 mb-2 flex-wrap">
+                      <input
+                        type="checkbox"
+                        aria-label="Select this service request for the installer email"
+                        checked={selection.isServiceRequestSelected(request.id)}
+                        onChange={() => selection.toggleServiceRequest(request.id)}
+                        onClick={(e) => e.stopPropagation()}
+                        disabled={request.status === 'cancelled'}
+                        title={request.status === 'cancelled' ? "Cancelled requests aren't dispatched" : undefined}
+                        className="w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500 disabled:opacity-40"
+                      />
                       <Badge variant={statusConfig[request.status]?.variant || 'neutral'}>
                         {statusConfig[request.status]?.label || request.status}
                       </Badge>
@@ -846,6 +887,18 @@ export default function ServiceRequestsPage() {
           </div>
         )}
       </Modal>
+
+      <DispatchBar selection={selection} onEmail={() => setDispatchOpen(true)} />
+      <DispatchEmailModal
+        isOpen={dispatchOpen}
+        onClose={() => setDispatchOpen(false)}
+        orderIds={selection.orderIds}
+        serviceRequestIds={selection.serviceRequestIds}
+        onSent={() => {
+          selection.clear()
+          fetchRequests()
+        }}
+      />
     </div>
   )
 }

@@ -3,8 +3,12 @@
 import { useState, useEffect, useRef, Suspense } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { Eye, Check, Clock, Truck, XCircle, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react'
+import { Eye, Check, Clock, Truck, XCircle, ChevronLeft, ChevronRight, AlertTriangle, CalendarX } from 'lucide-react'
 import { Select, Badge, Button } from '@/components/ui'
+import { DateInput } from '@/components/ui/DateInput'
+import { useDispatchSelection } from '@/components/admin/dispatch/useDispatchSelection'
+import { DispatchBar } from '@/components/admin/dispatch/DispatchBar'
+import { DispatchEmailModal } from '@/components/admin/dispatch/DispatchEmailModal'
 
 const PAGE_SIZE = 25
 
@@ -17,27 +21,35 @@ const FILTER_STORAGE_KEY = 'admin-orders-filters-v1'
 // re-pick from the dropdown every time. URL params always win when present,
 // so shared/bookmarked links and the failed-charge-email deep-link
 // (?charge_issues=true) still take precedence over the saved default.
-function readPersistedFilters(): { statusFilter: StatusFilter; chargeIssuesOnly: boolean } | null {
+// The install-date filter is URL-only EXCEPT the literal 'unscheduled': a
+// persisted concrete date would replay yesterday every morning and show
+// "No orders found" — same reason `page` is never persisted.
+type DateFilter = '' | 'unscheduled' | string
+function isValidDateFilter(v: string | null): v is DateFilter {
+  return v === '' || v === 'unscheduled' || (!!v && /^\d{4}-\d{2}-\d{2}$/.test(v))
+}
+
+function readPersistedFilters(): { statusFilter: StatusFilter; chargeIssuesOnly: boolean; dateUnscheduled: boolean } | null {
   if (typeof window === 'undefined') return null
   try {
     const raw = window.localStorage.getItem(FILTER_STORAGE_KEY)
     if (!raw) return null
-    const parsed = JSON.parse(raw) as { statusFilter?: unknown; chargeIssuesOnly?: unknown }
+    const parsed = JSON.parse(raw) as { statusFilter?: unknown; chargeIssuesOnly?: unknown; dateUnscheduled?: unknown }
     const s = typeof parsed.statusFilter === 'string' && VALID_STATUSES.includes(parsed.statusFilter as StatusFilter)
       ? (parsed.statusFilter as StatusFilter)
       : ''
-    return { statusFilter: s, chargeIssuesOnly: parsed.chargeIssuesOnly === true }
+    return { statusFilter: s, chargeIssuesOnly: parsed.chargeIssuesOnly === true, dateUnscheduled: parsed.dateUnscheduled === true }
   } catch {
     return null
   }
 }
 
-function writePersistedFilters(statusFilter: StatusFilter, chargeIssuesOnly: boolean) {
+function writePersistedFilters(statusFilter: StatusFilter, chargeIssuesOnly: boolean, dateFilter: DateFilter) {
   if (typeof window === 'undefined') return
   try {
     window.localStorage.setItem(
       FILTER_STORAGE_KEY,
-      JSON.stringify({ statusFilter, chargeIssuesOnly })
+      JSON.stringify({ statusFilter, chargeIssuesOnly, dateUnscheduled: dateFilter === 'unscheduled' })
     )
   } catch {
     /* localStorage blocked or quota exceeded — silently degrade to URL-only */
@@ -133,26 +145,36 @@ function AdminOrdersPageInner() {
   // No state↔URL sync effects to fight over precedence.
   const urlStatus = searchParams.get('status')
   const urlChargeIssues = searchParams.get('charge_issues')
+  const urlDate = searchParams.get('date')
   const urlPage = searchParams.get('page')
   const statusFilter: StatusFilter = VALID_STATUSES.includes((urlStatus ?? '') as StatusFilter)
     ? ((urlStatus ?? '') as StatusFilter)
     : ''
   const chargeIssuesOnly = urlChargeIssues === 'true'
+  const dateFilter: DateFilter = isValidDateFilter(urlDate) ? urlDate : ''
   const page = Math.max(0, Number.parseInt(urlPage ?? '0', 10) || 0)
 
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
   const [total, setTotal] = useState(0)
+  // Bumped after a dispatch send so the list refetches without a URL change.
+  const [reloadKey, setReloadKey] = useState(0)
+
+  // Installer dispatch: cross-page selection (orders + service requests)
+  // lives in a per-tab sessionStorage hook; the bar + modal render below.
+  const selection = useDispatchSelection()
+  const [dispatchOpen, setDispatchOpen] = useState(false)
 
   // Single writer: pushes a new filter/page set to the URL, and persists the
   // filters (not page) to localStorage so a sidebar round-trip back to
   // /admin/orders restores Ryan's last selection. Page is intentionally NOT
   // saved to localStorage — stale page numbers go bad as new orders arrive.
-  function pushUrl(next: { statusFilter: StatusFilter; chargeIssuesOnly: boolean; page: number }) {
-    writePersistedFilters(next.statusFilter, next.chargeIssuesOnly)
+  function pushUrl(next: { statusFilter: StatusFilter; chargeIssuesOnly: boolean; dateFilter: DateFilter; page: number }) {
+    writePersistedFilters(next.statusFilter, next.chargeIssuesOnly, next.dateFilter)
     const params = new URLSearchParams()
     if (next.statusFilter) params.set('status', next.statusFilter)
     if (next.chargeIssuesOnly) params.set('charge_issues', 'true')
+    if (next.dateFilter) params.set('date', next.dateFilter)
     if (next.page > 0) params.set('page', String(next.page))
     const qs = params.toString()
     router.replace(qs ? `/admin/orders?${qs}` : '/admin/orders', { scroll: false })
@@ -161,13 +183,22 @@ function AdminOrdersPageInner() {
   // Filter changes always reset page to 0 atomically (no separate effect),
   // so the fetch fires exactly once with the right offset.
   function changeStatus(value: StatusFilter) {
-    pushUrl({ statusFilter: value, chargeIssuesOnly, page: 0 })
+    pushUrl({ statusFilter: value, chargeIssuesOnly, dateFilter, page: 0 })
   }
   function toggleChargeIssues() {
-    pushUrl({ statusFilter, chargeIssuesOnly: !chargeIssuesOnly, page: 0 })
+    pushUrl({ statusFilter, chargeIssuesOnly: !chargeIssuesOnly, dateFilter, page: 0 })
+  }
+  function changeDate(value: string) {
+    // The picker's Clear button fires '' even when the field was already
+    // empty (Unscheduled active) — don't let it silently drop that filter.
+    if (!value && dateFilter === 'unscheduled') return
+    pushUrl({ statusFilter, chargeIssuesOnly, dateFilter: isValidDateFilter(value) ? value : '', page: 0 })
+  }
+  function toggleUnscheduled() {
+    pushUrl({ statusFilter, chargeIssuesOnly, dateFilter: dateFilter === 'unscheduled' ? '' : 'unscheduled', page: 0 })
   }
   function changePage(next: number) {
-    pushUrl({ statusFilter, chargeIssuesOnly, page: next })
+    pushUrl({ statusFilter, chargeIssuesOnly, dateFilter, page: next })
   }
 
   // Mount-only restore: if URL has no filters but localStorage does, replay
@@ -178,11 +209,16 @@ function AdminOrdersPageInner() {
   useEffect(() => {
     if (hasRestored.current) return
     hasRestored.current = true
-    if (urlStatus !== null || urlChargeIssues !== null) return
+    if (urlStatus !== null || urlChargeIssues !== null || urlDate !== null) return
     const persisted = readPersistedFilters()
     if (!persisted) return
-    if (persisted.statusFilter === '' && !persisted.chargeIssuesOnly) return
-    pushUrl({ statusFilter: persisted.statusFilter, chargeIssuesOnly: persisted.chargeIssuesOnly, page: 0 })
+    if (persisted.statusFilter === '' && !persisted.chargeIssuesOnly && !persisted.dateUnscheduled) return
+    pushUrl({
+      statusFilter: persisted.statusFilter,
+      chargeIssuesOnly: persisted.chargeIssuesOnly,
+      dateFilter: persisted.dateUnscheduled ? 'unscheduled' : '',
+      page: 0,
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -200,6 +236,7 @@ function AdminOrdersPageInner() {
         const params = new URLSearchParams()
         if (statusFilter) params.set('status', statusFilter)
         if (chargeIssuesOnly) params.set('charge_issues', 'true')
+        if (dateFilter) params.set('scheduled_date', dateFilter)
         params.set('limit', String(PAGE_SIZE))
         params.set('offset', String(page * PAGE_SIZE))
 
@@ -220,7 +257,13 @@ function AdminOrdersPageInner() {
 
     fetchOrders()
     return () => ac.abort()
-  }, [statusFilter, chargeIssuesOnly, page])
+  }, [statusFilter, chargeIssuesOnly, dateFilter, page, reloadKey])
+
+  // Select-all state for the header checkbox (current page only).
+  const selectableIds = orders.filter((o) => o.status !== 'cancelled').map((o) => o.id)
+  const selectedOnPage = selectableIds.filter((id) => selection.isOrderSelected(id)).length
+  const allOnPageSelected = selectableIds.length > 0 && selectedOnPage === selectableIds.length
+  const someOnPageSelected = selectedOnPage > 0 && !allOnPageSelected
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
@@ -251,7 +294,27 @@ function AdminOrdersPageInner() {
           <h1 className="text-2xl font-bold text-gray-900">Orders</h1>
           <p className="text-gray-600">Manage and track all orders</p>
         </div>
-        <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+        <div className="flex flex-col sm:flex-row sm:items-end gap-2 w-full md:w-auto">
+          {/* Install-day filter — the dispatch workflow: pick today, tick the
+              jobs, "Email installers". 'Unscheduled' surfaces the
+              Next-Available orders that have no date yet. */}
+          <div className="w-full sm:w-44">
+            <DateInput
+              value={dateFilter === 'unscheduled' ? '' : dateFilter}
+              onChange={changeDate}
+              placeholder="Install date"
+            />
+          </div>
+          <Button
+            variant={dateFilter === 'unscheduled' ? 'primary' : 'outline'}
+            size="sm"
+            onClick={toggleUnscheduled}
+            className="gap-2"
+            title="Show only orders with no install date yet (Next Available)"
+          >
+            <CalendarX className="w-4 h-4" />
+            {dateFilter === 'unscheduled' ? 'Unscheduled · clear' : 'Unscheduled'}
+          </Button>
           <Button
             variant={chargeIssuesOnly ? 'primary' : 'outline'}
             size="sm"
@@ -282,6 +345,17 @@ function AdminOrdersPageInner() {
             <table className="w-full">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
+                  <th className="px-4 py-3 w-10">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all orders on this page for the installer email"
+                      checked={allOnPageSelected}
+                      ref={(el) => { if (el) el.indeterminate = someOnPageSelected }}
+                      onChange={() => selection.setMany('order', selectableIds, !allOnPageSelected)}
+                      disabled={selectableIds.length === 0}
+                      className="w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
+                    />
+                  </th>
                   <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Install Date
                   </th>
@@ -307,7 +381,18 @@ function AdminOrdersPageInner() {
               </thead>
               <tbody className="divide-y divide-gray-200">
                 {orders.map((order) => (
-                  <tr key={order.id} className="hover:bg-gray-50">
+                  <tr key={order.id} className={selection.isOrderSelected(order.id) ? 'bg-pink-50/60 hover:bg-pink-100/60' : 'hover:bg-gray-50'}>
+                    <td className="px-4 py-4">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${order.order_number} for the installer email`}
+                        checked={selection.isOrderSelected(order.id)}
+                        onChange={() => selection.toggleOrder(order.id)}
+                        disabled={order.status === 'cancelled'}
+                        title={order.status === 'cancelled' ? "Cancelled orders aren't dispatched" : undefined}
+                        className="w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500 disabled:opacity-40"
+                      />
+                    </td>
                     <td className="px-6 py-4">
                       <div>
                         <p className="font-medium text-gray-900">
@@ -398,7 +483,7 @@ function AdminOrdersPageInner() {
                 ))}
                 {orders.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-6 py-12 text-center text-gray-500">
+                    <td colSpan={8} className="px-6 py-12 text-center text-gray-500">
                       No orders found
                     </td>
                   </tr>
@@ -439,6 +524,18 @@ function AdminOrdersPageInner() {
           </div>
         </div>
       )}
+
+      <DispatchBar selection={selection} onEmail={() => setDispatchOpen(true)} />
+      <DispatchEmailModal
+        isOpen={dispatchOpen}
+        onClose={() => setDispatchOpen(false)}
+        orderIds={selection.orderIds}
+        serviceRequestIds={selection.serviceRequestIds}
+        onSent={() => {
+          selection.clear()
+          setReloadKey((k) => k + 1)
+        }}
+      />
     </div>
   )
 }
