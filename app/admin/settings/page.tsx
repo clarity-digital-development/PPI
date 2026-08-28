@@ -16,6 +16,7 @@ import {
   Trash2,
   ToggleLeft,
   ToggleRight,
+  Pencil,
 } from 'lucide-react'
 
 interface EmailConfig {
@@ -34,8 +35,62 @@ interface PromoCode {
   maxUses: number | null // Max uses per customer
   startsAt: string | null
   expiresAt: string | null
+  waiveFuelSurcharge: boolean
   isActive: boolean
   _count?: { orders: number; usages: number }
+}
+
+// Shared shape for the Add and Edit forms (strings straight from the inputs).
+interface PromoForm {
+  code: string
+  description: string
+  discountType: 'percentage' | 'fixed'
+  discountValue: string
+  maxUses: string
+  expiresAt: string
+  waiveFuelSurcharge: boolean
+}
+
+const EMPTY_PROMO_FORM: PromoForm = {
+  code: '',
+  description: '',
+  discountType: 'percentage',
+  discountValue: '',
+  maxUses: '',
+  expiresAt: '',
+  waiveFuelSurcharge: false,
+}
+
+function promoToForm(p: PromoCode): PromoForm {
+  return {
+    code: p.code,
+    description: p.description ?? '',
+    discountType: p.discountType,
+    discountValue: String(Number(p.discountValue)),
+    maxUses: p.maxUses ? String(p.maxUses) : '',
+    expiresAt: p.expiresAt ? p.expiresAt.slice(0, 10) : '',
+    waiveFuelSurcharge: !!p.waiveFuelSurcharge,
+  }
+}
+
+function validatePromoForm(f: PromoForm): string | null {
+  if (!f.code.trim() || !f.discountValue) return 'Code and discount value are required'
+  const v = parseFloat(f.discountValue)
+  if (!Number.isFinite(v) || v <= 0) return 'Discount value must be a positive number'
+  if (f.discountType === 'percentage' && v > 100) return 'Percentage discount cannot exceed 100%'
+  return null
+}
+
+function promoFormToBody(f: PromoForm) {
+  return {
+    code: f.code.trim().toUpperCase(),
+    description: f.description.trim() || null,
+    discountType: f.discountType,
+    discountValue: parseFloat(f.discountValue),
+    maxUses: f.maxUses ? parseInt(f.maxUses) : null,
+    expiresAt: f.expiresAt ? new Date(f.expiresAt).toISOString() : null,
+    waiveFuelSurcharge: f.waiveFuelSurcharge,
+  }
 }
 
 export default function AdminSettingsPage() {
@@ -50,15 +105,13 @@ export default function AdminSettingsPage() {
   const [showAddPromo, setShowAddPromo] = useState(false)
   const [savingPromo, setSavingPromo] = useState(false)
   const [promoError, setPromoError] = useState<string | null>(null)
-  const [newPromo, setNewPromo] = useState({
-    code: '',
-    description: '',
-    discountType: 'percentage' as 'percentage' | 'fixed',
-    discountValue: '',
-    maxUses: '',
-    expiresAt: '',
-    waiveFuelSurcharge: false,
-  })
+  const [newPromo, setNewPromo] = useState<PromoForm>(EMPTY_PROMO_FORM)
+  // Inline edit (Ryan 2026-08-26: needed to cap SAVETIME at $68 and had no
+  // way to change an existing code's value — only toggle/delete).
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editPromo, setEditPromo] = useState<PromoForm>(EMPTY_PROMO_FORM)
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
 
   useEffect(() => {
     async function fetchEmailConfig() {
@@ -95,8 +148,9 @@ export default function AdminSettingsPage() {
   }, [])
 
   const handleCreatePromo = async () => {
-    if (!newPromo.code || !newPromo.discountValue) {
-      setPromoError('Code and discount value are required')
+    const problem = validatePromoForm(newPromo)
+    if (problem) {
+      setPromoError(problem)
       return
     }
 
@@ -107,31 +161,14 @@ export default function AdminSettingsPage() {
       const res = await fetch('/api/admin/promo-codes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          code: newPromo.code,
-          description: newPromo.description || null,
-          discountType: newPromo.discountType,
-          discountValue: parseFloat(newPromo.discountValue),
-          maxUses: newPromo.maxUses ? parseInt(newPromo.maxUses) : null,
-          expiresAt: newPromo.expiresAt ? new Date(newPromo.expiresAt).toISOString() : null,
-          waiveFuelSurcharge: newPromo.waiveFuelSurcharge,
-          isActive: true,
-        }),
+        body: JSON.stringify({ ...promoFormToBody(newPromo), isActive: true }),
       })
 
       if (res.ok) {
         const data = await res.json()
         setPromoCodes((prev) => [data.promoCode, ...prev])
         setShowAddPromo(false)
-        setNewPromo({
-          code: '',
-          description: '',
-          discountType: 'percentage',
-          discountValue: '',
-          maxUses: '',
-          expiresAt: '',
-          waiveFuelSurcharge: false,
-        })
+        setNewPromo(EMPTY_PROMO_FORM)
       } else {
         const data = await res.json()
         setPromoError(data.error || 'Failed to create promo code')
@@ -140,6 +177,49 @@ export default function AdminSettingsPage() {
       setPromoError('Failed to create promo code')
     } finally {
       setSavingPromo(false)
+    }
+  }
+
+  const startEditPromo = (promo: PromoCode) => {
+    setEditingId(promo.id)
+    setEditPromo(promoToForm(promo))
+    setEditError(null)
+  }
+
+  const cancelEditPromo = () => {
+    setEditingId(null)
+    setEditError(null)
+  }
+
+  const handleSaveEdit = async () => {
+    if (!editingId) return
+    const problem = validatePromoForm(editPromo)
+    if (problem) {
+      setEditError(problem)
+      return
+    }
+
+    setSavingEdit(true)
+    setEditError(null)
+
+    try {
+      const res = await fetch(`/api/admin/promo-codes/${editingId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(promoFormToBody(editPromo)),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setEditError(data.error || 'Failed to save changes')
+        return
+      }
+      // Keep the _count the list already has — the PUT response doesn't carry it.
+      setPromoCodes((prev) => prev.map((p) => (p.id === editingId ? { ...p, ...data.promoCode } : p)))
+      setEditingId(null)
+    } catch (error) {
+      setEditError('Failed to save changes')
+    } finally {
+      setSavingEdit(false)
     }
   }
 
@@ -564,7 +644,93 @@ export default function AdminSettingsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {promoCodes.map((promo) => (
+                    {promoCodes.map((promo) => editingId === promo.id ? (
+                      <tr key={promo.id} className="border-b border-gray-100 bg-pink-50/40">
+                        <td colSpan={6} className="py-3 px-2">
+                          <h3 className="font-medium text-gray-900 mb-3">Edit {promo.code}</h3>
+                          <div className="grid md:grid-cols-3 gap-4">
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">Code *</label>
+                              <Input
+                                value={editPromo.code}
+                                onChange={(e) => setEditPromo({ ...editPromo, code: e.target.value.toUpperCase() })}
+                                className="uppercase"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">Discount Type</label>
+                              <select
+                                value={editPromo.discountType}
+                                onChange={(e) => setEditPromo({ ...editPromo, discountType: e.target.value as 'percentage' | 'fixed' })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-pink-500 focus:border-pink-500"
+                              >
+                                <option value="percentage">Percentage (%)</option>
+                                <option value="fixed">Fixed Amount ($)</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">
+                                {editPromo.discountType === 'percentage' ? 'Discount Value (%) *' : 'Max Discount ($) *'}
+                              </label>
+                              <Input
+                                type="number"
+                                value={editPromo.discountValue}
+                                onChange={(e) => setEditPromo({ ...editPromo, discountValue: e.target.value })}
+                                placeholder={editPromo.discountType === 'percentage' ? '10' : '68.00'}
+                              />
+                              {editPromo.discountType === 'fixed' && (
+                                <p className="text-xs text-gray-500 mt-1">Takes up to this much off; smaller orders are fully covered.</p>
+                              )}
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                              <Input
+                                value={editPromo.description}
+                                onChange={(e) => setEditPromo({ ...editPromo, description: e.target.value })}
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">Max Uses Per Customer (optional)</label>
+                              <Input
+                                type="number"
+                                value={editPromo.maxUses}
+                                onChange={(e) => setEditPromo({ ...editPromo, maxUses: e.target.value })}
+                                placeholder="Unlimited"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">Expires (optional)</label>
+                              <Input
+                                type="date"
+                                value={editPromo.expiresAt}
+                                onChange={(e) => setEditPromo({ ...editPromo, expiresAt: e.target.value })}
+                              />
+                            </div>
+                          </div>
+                          <label className="flex items-center gap-2 mt-3 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={editPromo.waiveFuelSurcharge}
+                              onChange={(e) => setEditPromo({ ...editPromo, waiveFuelSurcharge: e.target.checked })}
+                              className="w-4 h-4 text-pink-600 border-gray-300 rounded focus:ring-pink-500"
+                            />
+                            <span className="text-sm text-gray-700">Waive fuel surcharge ($3.49)</span>
+                          </label>
+                          <p className="text-xs text-gray-500 mt-2">
+                            Changes apply to new orders only — orders already placed keep the discount they got.
+                          </p>
+                          {editError && <p className="text-red-600 text-sm mt-2">{editError}</p>}
+                          <div className="flex gap-2 mt-4">
+                            <Button size="sm" onClick={handleSaveEdit} disabled={savingEdit} className="bg-pink-600 hover:bg-pink-700">
+                              {savingEdit ? (<><Loader2 className="w-4 h-4 mr-1 animate-spin" /> Saving...</>) : 'Save Changes'}
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={cancelEditPromo} disabled={savingEdit}>
+                              Cancel
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : (
                       <tr key={promo.id} className="border-b border-gray-100">
                         <td className="py-3 px-2">
                           <div>
@@ -617,6 +783,13 @@ export default function AdminSettingsPage() {
                         </td>
                         <td className="py-3 px-2 text-right">
                           <div className="flex items-center justify-end gap-2">
+                            <button
+                              onClick={() => startEditPromo(promo)}
+                              className="p-1.5 rounded hover:bg-gray-100 text-gray-500 hover:text-gray-700"
+                              title="Edit"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
                             <button
                               onClick={() => handleTogglePromo(promo.id, promo.isActive)}
                               className="p-1.5 rounded hover:bg-gray-100 text-gray-500 hover:text-gray-700"
