@@ -298,8 +298,36 @@ export async function PATCH(
         }
         break
       }
+      case 'brochure_box': {
+        // Brochure boxes have no catalog id — the per-customer row count IS
+        // the quantity, so item_id is ignored (Ryan 2026-08-31: admin
+        // couldn't edit or remove them at all on non-team customers).
+        const existingBoxes = await prisma.customerBrochureBox.findMany({
+          where: { userId: customerId, inStorage: true },
+          orderBy: { createdAt: 'desc' },
+        })
+        const diff = newQuantity - existingBoxes.length
+
+        if (diff > 0) {
+          await prisma.customerBrochureBox.createMany({
+            data: Array.from({ length: diff }, () => ({
+              userId: customerId,
+              inStorage: true,
+            })),
+          })
+        } else if (diff < 0) {
+          const toDelete = existingBoxes.slice(0, Math.abs(diff))
+          await prisma.customerBrochureBox.deleteMany({
+            // inStorage re-checked: a concurrent checkout can deploy one of
+            // the fetched rows between the findMany and this delete — a
+            // deployed box must never be hard-deleted from tracking.
+            where: { id: { in: toDelete.map(b => b.id) }, inStorage: true },
+          })
+        }
+        break
+      }
       default:
-        return NextResponse.json({ error: 'Quantity update only supported for riders and lockboxes' }, { status: 400 })
+        return NextResponse.json({ error: 'Quantity update only supported for riders, lockboxes, and brochure boxes' }, { status: 400 })
     }
 
     return NextResponse.json({ success: true, quantity: newQuantity })

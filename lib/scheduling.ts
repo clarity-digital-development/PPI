@@ -1,7 +1,7 @@
 /**
  * Shared scheduling helpers — used by the order wizard (install scheduling)
- * AND the service-request / removal scheduling modal so the same business
- * rules (no Sundays, no same-day after 4pm EST) apply everywhere.
+ * AND the service-request / removal scheduling modals so the same business
+ * rules (closed days, no same-day after 4pm EST) apply everywhere.
  */
 
 /** Eastern Time clock components, used to apply business-hour cutoffs. */
@@ -19,7 +19,7 @@ export function getEasternTime() {
  * Next bookable business day given current Eastern Time:
  *  - Start from tomorrow
  *  - If it is currently after 4pm Eastern, push one additional day
- *  - Skip Sundays
+ *  - Skip closed days (Saturdays, Sundays, and CLOSED_DATES)
  */
 export function getNextAvailableDate(): Date {
   const { hours, date: easternNow } = getEasternTime()
@@ -30,8 +30,8 @@ export function getNextAvailableDate(): Date {
   if (isAfter4pm) {
     next.setDate(next.getDate() + 1)
   }
-  if (next.getDay() === 0) {
-    next.setDate(next.getDate() + 1) // skip Sunday
+  while (isClosedDay(toDateStr(next))) {
+    next.setDate(next.getDate() + 1)
   }
   return next
 }
@@ -46,19 +46,39 @@ export function toDateStr(d: Date): string {
 
 /**
  * Whether expedited / same-day service can be offered right now.
- * False after 4pm EST so customers can't book a same-day install at 8pm.
+ * False after 4pm EST (no same-day install at 8pm) and false all day on a
+ * closed day — no same-day service on a day we aren't working.
  */
 export function canExpediteNow(): boolean {
-  return getEasternTime().hours < 16
+  const { hours, date } = getEasternTime()
+  return hours < 16 && !isClosedDay(toDateStr(date))
 }
 
 /**
- * Returns true if the given YYYY-MM-DD string is a Sunday (we are closed).
+ * Specific dates we are closed, YYYY-MM-DD. Saturdays and Sundays are closed
+ * by rule (Ryan 2026-08-31: closed Saturdays going forward); this list is for
+ * one-off holidays and closures.
  */
-export function isSunday(dateStr: string): boolean {
+export const CLOSED_DATES: string[] = [
+  '2026-09-07', // Labor Day (Ryan, Slack 2026-08-31)
+  '2026-10-16', // closed — day before the wedding (Ryan, Slack 2026-09-02)
+]
+
+/**
+ * Why a YYYY-MM-DD date can't be booked, or null if it's open.
+ * The message is customer-facing.
+ */
+export function closedDayReason(dateStr: string): string | null {
   const [year, month, day] = dateStr.split('-').map(Number)
-  const d = new Date(year, month - 1, day)
-  return d.getDay() === 0
+  const dow = new Date(year, month - 1, day).getDay()
+  if (dow === 0) return 'We are closed on Sundays — please pick another day.'
+  if (dow === 6) return 'We are closed on Saturdays — please pick another day.'
+  if (CLOSED_DATES.includes(dateStr)) return 'We are closed that day — please pick another day.'
+  return null
+}
+
+export function isClosedDay(dateStr: string): boolean {
+  return closedDayReason(dateStr) !== null
 }
 
 /**
@@ -119,7 +139,7 @@ export interface SchedulingValidationErr {
   /** Customer-facing message. */
   error: string
   /** Stable code for branching in the client. */
-  code: 'invalid_date_format' | 'sunday_closed' | 'before_cutoff' | 'expedite_unavailable'
+  code: 'invalid_date_format' | 'closed_day' | 'before_cutoff' | 'expedite_unavailable'
 }
 
 /**
@@ -130,8 +150,9 @@ export interface SchedulingValidationErr {
  * any date. EVERY write endpoint that accepts a schedule must call this.
  *
  * Rules (mirror the business rules used by the wizard):
- *   - Expedited (same-day) is only allowed BEFORE 4pm Eastern.
- *   - A specific requested_date must be ≥ getNextAvailableDate() and not Sunday.
+ *   - Expedited (same-day) is only allowed BEFORE 4pm Eastern on an open day.
+ *   - A specific requested_date must be ≥ getNextAvailableDate() and not a
+ *     closed day (Saturday, Sunday, or a CLOSED_DATES entry).
  *   - "Next available" with no requested_date is always OK — server computes
  *     the date downstream.
  */
@@ -147,10 +168,13 @@ export function validateScheduling(args: {
   // expedited:true with a past requestedDate used to silently slip
   // through and persist a past Order.scheduledDate.)
   if (isExpedited && !canExpediteNow()) {
+    const todayClosed = closedDayReason(toDateStr(getEasternTime().date)) !== null
     return {
       ok: false,
       code: 'expedite_unavailable',
-      error: 'Same-day service is unavailable after 4pm Eastern. Please pick a future date.',
+      error: todayClosed
+        ? 'We are closed today, so same-day service is unavailable. Please pick a future date.'
+        : 'Same-day service is unavailable after 4pm Eastern. Please pick a future date.',
     }
   }
 
@@ -164,11 +188,12 @@ export function validateScheduling(args: {
     return { ok: false, code: 'invalid_date_format', error: 'Invalid date format (expected YYYY-MM-DD).' }
   }
 
-  if (isSunday(args.requestedDate)) {
+  const closedReason = closedDayReason(args.requestedDate)
+  if (closedReason) {
     return {
       ok: false,
-      code: 'sunday_closed',
-      error: 'We are closed on Sundays — please pick another day.',
+      code: 'closed_day',
+      error: closedReason,
     }
   }
 

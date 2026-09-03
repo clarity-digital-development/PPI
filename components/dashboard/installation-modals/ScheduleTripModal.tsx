@@ -5,7 +5,7 @@ import { Modal, Button, Input, Select } from '@/components/ui'
 import { SearchableSelect } from '@/components/ui/SearchableSelect'
 import { Loader2, AlertCircle, CheckCircle, MapPin, Plus, DollarSign } from 'lucide-react'
 import { PRICING } from '@/lib/constants'
-import { getNextAvailableDate, toDateStr, isSunday } from '@/lib/scheduling'
+import { getNextAvailableDate, toDateStr, closedDayReason } from '@/lib/scheduling'
 
 interface Installation {
   id: string
@@ -204,13 +204,14 @@ export function ScheduleTripModal({
     onClose()
   }
 
-  // Same scheduling rules as the install order: no Sundays, no same-day
-  // after 4pm EST. Removal/service-trip dates must clear the cutoff too.
+  // Same scheduling rules as the install order: no closed days (Sat/Sun/
+  // holidays), no same-day after 4pm EST.
   const minDate = toDateStr(getNextAvailableDate())
 
   const handlePreferredDateChange = (val: string) => {
-    if (val && isSunday(val)) {
-      setError('We are closed on Sundays — please pick another day.')
+    const reason = val ? closedDayReason(val) : null
+    if (reason) {
+      setError(reason)
       return
     }
     setError(null)
@@ -422,7 +423,7 @@ export function ScheduleTripModal({
               onChange={(e) => handlePreferredDateChange(e.target.value)}
               min={minDate}
               required
-              helperText="Next-day after 4pm EST is the soonest. We're closed Sundays."
+              helperText="Next-day after 4pm EST is the soonest. We're closed Saturdays and Sundays."
             />
 
             {/* Notes */}

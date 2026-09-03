@@ -112,6 +112,7 @@ type BatchOrderBody = {
   is_gated_community?: boolean
   gate_code?: string
   has_marker_placed?: boolean
+  street_numbers_visible?: boolean
   sign_orientation?: string
   sign_orientation_other?: string
   post_type?: string
@@ -438,6 +439,7 @@ export async function POST(request: NextRequest) {
               isGatedCommunity: o.is_gated_community || false,
               gateCode: o.gate_code,
               hasMarkerPlaced: o.has_marker_placed || false,
+              streetNumbersVisible: o.street_numbers_visible ?? null,
               signOrientation: o.sign_orientation,
               signOrientationOther: o.sign_orientation_other,
               scheduledDate: o.requested_date ? new Date(o.requested_date + 'T12:00:00Z') : null,

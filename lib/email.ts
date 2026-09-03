@@ -1485,6 +1485,7 @@ function renderDispatchOrderText(j: DispatchOrderJob, n: number): string {
   if (j.orientation) flags.push(`Orientation: ${j.orientation}`)
   flags.push(`Marker placed: ${j.markerPlaced ? 'yes' : 'no'}`)
   out.push(`   ${flags.join(' · ')}`)
+  if (j.streetNumbersVisible === false) out.push('   Street numbers: NOT visible — check the location details/photo')
   if (j.isGated) out.push(`   Gated: yes${j.gateCode ? ` — code ${j.gateCode}` : ' (no code on file — call agent)'}`)
   if (j.notes) out.push(`   Notes: ${j.notes}`)
   if (j.photo) out.push(`   Photo: attached as ${j.photo.filename}`)
@@ -1502,6 +1503,7 @@ function renderDispatchServiceText(j: DispatchServiceJob, n: number): string {
   if (j.address.unlisted && j.address.onFile) out.push('   (address not on file with PPI — no existing install here)')
   out.push(`   Date: ${dispatchDayLabel(j.requestedDate, 'long')}`)
   out.push(`   Agent: ${j.agent.name}${j.agent.phone ? ` (${j.agent.phone})` : ''}${j.agent.company ? ` · ${j.agent.company}` : ''}`)
+  if (j.listingAgent) out.push(`   For agent: ${j.listingAgent.name}${j.listingAgent.phone ? ` (${j.listingAgent.phone})` : ''}`)
   if (j.description) out.push(`   Request: ${j.description}`)
   if (j.notes) out.push(`   Notes: ${j.notes}`)
   if (j.installedHere) {
@@ -1538,6 +1540,7 @@ function renderDispatchJobHtml(j: DispatchJob, n: number): string {
     if (j.installLocation) rows.push(row('Location', escapeHtml(j.installLocation)))
     if (j.orientation) rows.push(row('Orientation', escapeHtml(j.orientation)))
     rows.push(row('Marker placed', j.markerPlaced ? 'yes' : 'no'))
+    if (j.streetNumbersVisible === false) rows.push(row('Street numbers', '<strong>NOT visible</strong> — check the location details/photo'))
     if (j.isGated) rows.push(row('Gated', j.gateCode ? `yes — code <strong>${escapeHtml(j.gateCode)}</strong>` : 'yes (no code on file — call agent)'))
     if (j.photo) rows.push(row('Photo', `attached as ${escapeHtml(j.photo.filename)}`))
     else if (j.photoNote) rows.push(row('Photo', escapeHtml(j.photoNote)))
@@ -1548,6 +1551,7 @@ function renderDispatchJobHtml(j: DispatchJob, n: number): string {
     title = `${n}) ${addr} <span style="color: #9B1C47;">— SERVICE TRIP: ${escapeHtml(j.type)}</span>${j.status === 'completed' ? ' <span style="color: #666;">(already marked completed)</span>' : ''}`
     rows.push(row('Date', escapeHtml(dispatchDayLabel(j.requestedDate, 'long'))))
     rows.push(row('Agent', agent(j.agent)))
+    if (j.listingAgent) rows.push(row('For agent', `${escapeHtml(j.listingAgent.name)}${j.listingAgent.phone ? ` (${escapeHtml(j.listingAgent.phone)})` : ''}`))
     if (j.description) rows.push(row('Request', escapeHtml(j.description)))
     if (j.installedHere) rows.push(row(`Installed here (${escapeHtml(j.installedHere.orderNumber)})`, lines(j.installedHere.lines)))
     if (j.ridersOnSite.length) rows.push(row('Riders on site', escapeHtml(j.ridersOnSite.join(', '))))

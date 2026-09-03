@@ -24,6 +24,8 @@ export interface OrderFormData {
   is_gated_community: boolean
   gate_code?: string
   has_marker_placed: boolean
+  // undefined = not answered yet — the property step blocks until picked
+  street_numbers_visible?: boolean
   sign_orientation: 'perpendicular' | 'parallel' | 'corner' | 'installer_decides' | 'other'
   sign_orientation_other?: string
 

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { sendAdminServiceRequestNotification, sendServiceRequestConfirmationEmail } from '@/lib/email'
+import { closedDayReason } from '@/lib/scheduling'
 
 // Statuses a customer is allowed to edit. Once a request is in_progress,
 // completed, or cancelled it can no longer be edited by the customer.
@@ -182,6 +183,17 @@ export async function PATCH(
           { error: 'A valid preferred date is required for service requests.' },
           { status: 400 }
         )
+      }
+      // Closed-day gate — but only when the customer actually MOVES the date.
+      // The edit form resubmits the existing date on notes-only saves, and an
+      // old request already sitting on a now-closed day must stay editable.
+      const newDay = requested_date.trim()
+      const currentDay = existing.requestedDate ? existing.requestedDate.toISOString().slice(0, 10) : null
+      if (newDay !== currentDay) {
+        const closedReason = closedDayReason(newDay)
+        if (closedReason) {
+          return NextResponse.json({ error: closedReason }, { status: 400 })
+        }
       }
       // Store at noon UTC so the calendar date is stable across timezones
       // (mirrors POST /api/service-requests and the admin PUT).

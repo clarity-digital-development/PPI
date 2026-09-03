@@ -76,6 +76,10 @@ export async function GET(request: NextRequest) {
               order: {
                 select: {
                   orderNumber: true,
+                  // Broker accounts (Semonin/Redfin): the agent the original
+                  // order was placed for — Ryan 2026-09-01, removals showed
+                  // only the broker account name.
+                  placedForAgentName: true,
                   orderItems: {
                     select: { description: true, quantity: true, itemType: true },
                   },

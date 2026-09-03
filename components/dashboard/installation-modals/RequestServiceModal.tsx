@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { Modal, Button, Input, Select } from '@/components/ui'
 import { Loader2, AlertCircle, CheckCircle } from 'lucide-react'
+import { getNextAvailableDate, toDateStr, closedDayReason } from '@/lib/scheduling'
 
 interface RequestServiceModalProps {
   isOpen: boolean
@@ -89,10 +90,9 @@ export function RequestServiceModal({
     onClose()
   }
 
-  // Calculate minimum date (tomorrow)
-  const tomorrow = new Date()
-  tomorrow.setDate(tomorrow.getDate() + 1)
-  const minDate = tomorrow.toISOString().split('T')[0]
+  // Earliest allowed date — honors the 4pm cutoff and closed days
+  // (Sat/Sun/holidays), same rules as installs.
+  const minDate = toDateStr(getNextAvailableDate())
 
   return (
     <Modal isOpen={isOpen} onClose={handleClose} title="Request Service">
@@ -137,7 +137,16 @@ export function RequestServiceModal({
               type="date"
               label="Preferred Date"
               value={preferredDate}
-              onChange={(e) => setPreferredDate(e.target.value)}
+              onChange={(e) => {
+                const v = e.target.value
+                const reason = v ? closedDayReason(v) : null
+                if (reason) {
+                  setError(reason)
+                  return
+                }
+                setError(null)
+                setPreferredDate(v)
+              }}
               min={minDate}
               required
             />

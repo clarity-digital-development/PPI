@@ -39,6 +39,7 @@ export const DISPATCH_ORDER_SELECT = {
   isGatedCommunity: true,
   gateCode: true,
   hasMarkerPlaced: true,
+  streetNumbersVisible: true,
   signOrientation: true,
   signOrientationOther: true,
   installationLocation: true,
@@ -69,7 +70,7 @@ export const DISPATCH_SR_SELECT = {
   unlistedCity: true,
   unlistedState: true,
   unlistedZip: true,
-  user: { select: { fullName: true, name: true, email: true, phone: true, company: true } },
+  user: { select: { fullName: true, name: true, email: true, phone: true, company: true, teamId: true } },
   installation: {
     select: {
       propertyAddress: true,
@@ -79,6 +80,9 @@ export const DISPATCH_SR_SELECT = {
       order: {
         select: {
           orderNumber: true,
+          // Broker accounts: the agent the original order was placed for
+          // (Ryan 2026-09-01 — removal dispatches showed only the broker).
+          placedForAgentName: true,
           orderItems: {
             where: { itemType: { in: [...INSTALLABLE_ITEM_TYPES] } },
             select: { description: true, quantity: true },
@@ -195,6 +199,7 @@ export async function loadDispatchJobs(input: {
       isGated: o.isGatedCommunity,
       gateCode: o.gateCode ?? null,
       markerPlaced: o.hasMarkerPlaced,
+      streetNumbersVisible: o.streetNumbersVisible ?? null,
       notes: o.propertyNotes ?? null,
       lines: o.orderItems.map((it) => ({ description: it.description, quantity: it.quantity })),
       photo: null,
@@ -237,6 +242,10 @@ export async function loadDispatchJobs(input: {
     const label = onFile ? `${address.line1}, ${address.city}` : `service request ${id.slice(-6).toUpperCase()}`
     if (s.status === 'cancelled') { skipped.push({ kind: 'service_request', id, label, reason: 'cancelled' }); continue }
 
+    const listingAgent = inst?.order?.placedForAgentName
+      ? await resolveAssignedAgent({ placedForAgentName: inst.order.placedForAgentName, teamId: s.user.teamId })
+      : null
+
     const job: DispatchServiceJob = {
       kind: 'service_request',
       id: s.id,
@@ -246,6 +255,7 @@ export async function loadDispatchJobs(input: {
       mapsUrl: onFile ? mapsUrl(address) : '',
       requestedDate: dayString(s.requestedDate),
       agent: { name: s.user.fullName || s.user.name || s.user.email, phone: s.user.phone ?? null, company: s.user.company ?? null },
+      listingAgent,
       description: cleanServiceDescription(s.description ?? null, unlisted),
       notes: s.notes ?? null,
       installedHere: inst?.order && inst.order.orderItems.length

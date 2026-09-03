@@ -386,7 +386,7 @@ export default function CustomerDetailPage() {
     }
   }
 
-  async function handleUpdateQuantity(type: 'rider' | 'lockbox', catalogId: string, newQuantity: number) {
+  async function handleUpdateQuantity(type: 'rider' | 'lockbox' | 'brochure_box', catalogId: string, newQuantity: number) {
     try {
       const res = await fetch(`/api/admin/customers/${id}/inventory`, {
         method: 'PATCH',
@@ -1454,11 +1454,36 @@ export default function CustomerDetailPage() {
                 Add
               </Button>
             </div>
-            <div className="p-3 bg-gray-50 rounded-lg">
-              <p className="text-2xl font-bold text-gray-900">
-                {data.inventory.brochureBoxes?.quantity || 0}
-              </p>
-              <p className="text-sm text-gray-500">in storage</p>
+            <div className="p-3 bg-gray-50 rounded-lg flex items-center justify-between">
+              <div>
+                <p className="text-2xl font-bold text-gray-900">
+                  {data.inventory.brochureBoxes?.quantity || 0}
+                </p>
+                <p className="text-sm text-gray-500">in storage</p>
+              </div>
+              {/* item_id is required by the endpoint but unused for brochure
+                  boxes (no catalog id — the row count is the quantity). */}
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => handleUpdateQuantity('brochure_box', data.inventory.brochureBoxes?.id || 'brochure', (data.inventory.brochureBoxes?.quantity || 0) - 1)}
+                  disabled={!(data.inventory.brochureBoxes?.quantity)}
+                  className="w-7 h-7 flex items-center justify-center rounded bg-gray-200 hover:bg-gray-300 text-gray-700 disabled:opacity-50"
+                  title="Remove one"
+                  aria-label="Remove one brochure box"
+                >
+                  <Minus className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleUpdateQuantity('brochure_box', data.inventory.brochureBoxes?.id || 'brochure', (data.inventory.brochureBoxes?.quantity || 0) + 1)}
+                  className="w-7 h-7 flex items-center justify-center rounded bg-gray-200 hover:bg-gray-300 text-gray-700"
+                  title="Add one"
+                  aria-label="Add one brochure box"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
           </CardContent>
         </Card>

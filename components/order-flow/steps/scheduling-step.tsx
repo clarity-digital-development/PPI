@@ -1,82 +1,42 @@
 'use client'
 
+import { useState } from 'react'
 import { Zap, Calendar, Clock, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { StepProps } from '../types'
 import { PRICING } from '../types'
-
-/**
- * Get the current time in EST/EDT timezone.
- * Returns { hours, dayOfWeek } where dayOfWeek: 0=Sun, 6=Sat
- */
-function getEasternTime() {
-  const now = new Date()
-  const eastern = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }))
-  return {
-    hours: eastern.getHours(),
-    dayOfWeek: eastern.getDay(),
-    date: eastern,
-  }
-}
-
-/**
- * Get the next available business day (skips Sundays).
- * If after 4pm EST, pushes one additional day.
- */
-function getNextAvailableDate(): Date {
-  const { hours, date: easternNow } = getEasternTime()
-  const isAfter4pm = hours >= 16
-
-  // Start from tomorrow
-  const next = new Date(easternNow)
-  next.setDate(next.getDate() + 1)
-
-  // If after 4pm, push one more day
-  if (isAfter4pm) {
-    next.setDate(next.getDate() + 1)
-  }
-
-  // Skip Sunday (0)
-  if (next.getDay() === 0) {
-    next.setDate(next.getDate() + 1)
-  }
-
-  return next
-}
-
-function toDateStr(d: Date): string {
-  const year = d.getFullYear()
-  const month = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
+// One source of truth for closed days and the 4pm cutoff — this step used
+// to carry its own copy of these rules, which silently drifted from the
+// server's (Ryan 2026-08-31: Saturdays are now closed too).
+import { getEasternTime, getNextAvailableDate, toDateStr, canExpediteNow, closedDayReason } from '@/lib/scheduling'
 
 export function SchedulingStep({ formData, updateFormData }: StepProps) {
-  const { hours } = getEasternTime()
+  const { hours, date: easternNowDate } = getEasternTime()
   const isAfter4pm = hours >= 16
+  const todayClosed = closedDayReason(toDateStr(easternNowDate)) !== null
+  const [dateError, setDateError] = useState<string | null>(null)
 
   const nextAvailable = getNextAvailableDate()
   const minDateStr = toDateStr(nextAvailable)
 
-  // Same day only available before 4pm EST
-  const canExpedite = !isAfter4pm
+  // Same day only available before 4pm EST on an open day
+  const canExpedite = canExpediteNow()
 
   // If user had expedited selected but it's now after 4pm, reset
   if (formData.schedule_type === 'expedited' && !canExpedite) {
     updateFormData({ schedule_type: 'next_available', requested_date: undefined })
   }
 
-  // Validate that selected date isn't a Sunday
+  // Reject closed days with a visible message instead of silently bumping
+  // the date (the old behavior moved Sunday picks to Monday without saying so).
   const handleDateChange = (dateStr: string) => {
-    const [year, month, day] = dateStr.split('-').map(Number)
-    const selected = new Date(year, month - 1, day)
-    if (selected.getDay() === 0) {
-      // Skip to Monday
-      selected.setDate(selected.getDate() + 1)
-      updateFormData({ requested_date: toDateStr(selected) })
-    } else {
-      updateFormData({ requested_date: dateStr })
+    const reason = dateStr ? closedDayReason(dateStr) : null
+    if (reason) {
+      setDateError(reason)
+      return
     }
+    setDateError(null)
+    updateFormData({ requested_date: dateStr })
   }
 
   return (
@@ -114,7 +74,7 @@ export function SchedulingStep({ formData, updateFormData }: StepProps) {
             <h3 className="font-semibold text-gray-900">Next available day</h3>
             <p className="text-sm text-gray-600">
               {isAfter4pm
-                ? `Since it's after 4pm EST, the earliest install date is ${nextAvailable.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}. (We're closed Sundays.)`
+                ? `Since it's after 4pm EST, the earliest install date is ${nextAvailable.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}. (We're closed Saturdays and Sundays.)`
                 : `Orders placed before 4pm EST are installed the next business day (${nextAvailable.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}).`
               }
             </p>
@@ -170,8 +130,11 @@ export function SchedulingStep({ formData, updateFormData }: StepProps) {
               onChange={(e) => handleDateChange(e.target.value)}
               className="w-full px-4 py-2.5 rounded-lg border border-gray-200 focus:border-pink-500 focus:ring-2 focus:ring-pink-200 outline-none transition-all"
             />
+            {dateError && (
+              <p className="text-xs text-red-600 mt-2">{dateError}</p>
+            )}
             <p className="text-xs text-gray-500 mt-2">
-              Sundays are not available for installation.
+              We&apos;re closed Saturdays, Sundays, and holidays.
             </p>
           </div>
         )}
@@ -217,7 +180,9 @@ export function SchedulingStep({ formData, updateFormData }: StepProps) {
             <p className={cn("text-sm", canExpedite ? "text-gray-600" : "text-gray-400")}>
               {canExpedite
                 ? 'Rush installation today, subject to availability'
-                : 'Same day service is only available for orders placed before 4pm EST'
+                : todayClosed
+                  ? "Same day service isn't available on days we're closed"
+                  : 'Same day service is only available for orders placed before 4pm EST'
               }
             </p>
             {canExpedite && (
@@ -243,7 +208,7 @@ export function SchedulingStep({ formData, updateFormData }: StepProps) {
         <AlertTriangle className="w-5 h-5 flex-shrink-0 text-blue-600 mt-0.5" />
         <div className="space-y-1">
           <p>Next day install orders must be placed before 4pm EST. Orders placed after 4pm EST will be installed the following business day unless rush request is processed.</p>
-          <p>We are closed on Sunday.</p>
+          <p>We are closed Saturday and Sunday.</p>
         </div>
       </div>
     </div>

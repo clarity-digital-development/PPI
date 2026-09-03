@@ -529,6 +529,7 @@ export async function POST(request: NextRequest) {
         isGatedCommunity: orderData.is_gated_community || false,
         gateCode: orderData.gate_code,
         hasMarkerPlaced: orderData.has_marker_placed || false,
+        streetNumbersVisible: orderData.street_numbers_visible ?? null,
         signOrientation: orderData.sign_orientation,
         signOrientationOther: orderData.sign_orientation_other,
         installationLocation: orderData.installation_location,

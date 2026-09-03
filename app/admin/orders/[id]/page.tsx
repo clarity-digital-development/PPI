@@ -80,6 +80,7 @@ interface Order {
   isGatedCommunity: boolean
   gateCode: string | null
   hasMarkerPlaced: boolean
+  streetNumbersVisible?: boolean | null
   signOrientation: string | null
   signOrientationOther: string | null
   installationLocation: string | null
@@ -704,6 +705,14 @@ export default function AdminOrderDetailPage() {
                   <p className="text-sm text-gray-500">Marker Placed</p>
                   <p className="font-medium text-gray-900">
                     {order.hasMarkerPlaced ? 'Yes' : 'No'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-500">Street Numbers Visible</p>
+                  <p className="font-medium text-gray-900">
+                    {order.streetNumbersVisible === false ? (
+                      <span className="text-amber-700">No — see location details</span>
+                    ) : order.streetNumbersVisible ? 'Yes' : 'Not asked'}
                   </p>
                 </div>
                 <div>

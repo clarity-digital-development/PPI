@@ -184,6 +184,7 @@ export default function CartPage() {
             is_gated_community: fd.is_gated_community,
             gate_code: fd.gate_code,
             has_marker_placed: fd.has_marker_placed,
+            street_numbers_visible: fd.street_numbers_visible,
             sign_orientation: fd.sign_orientation,
             sign_orientation_other: fd.sign_orientation_other,
             post_type: fd.post_type,

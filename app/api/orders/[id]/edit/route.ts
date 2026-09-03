@@ -48,6 +48,7 @@ const editOrderSchema = z.object({
   is_gated_community: z.boolean().optional(),
   gate_code: z.string().optional(),
   has_marker_placed: z.boolean().optional(),
+  street_numbers_visible: z.boolean().optional(),
   sign_orientation: z.string().optional(),
   sign_orientation_other: z.string().optional(),
   // Scheduling
@@ -735,6 +736,7 @@ export async function PATCH(
           isGatedCommunity: editData.is_gated_community ?? existingOrder.isGatedCommunity,
           gateCode: editData.gate_code ?? existingOrder.gateCode,
           hasMarkerPlaced: editData.has_marker_placed ?? existingOrder.hasMarkerPlaced,
+          streetNumbersVisible: editData.street_numbers_visible ?? existingOrder.streetNumbersVisible,
           signOrientation: editData.sign_orientation ?? existingOrder.signOrientation,
           signOrientationOther: editData.sign_orientation_other ?? existingOrder.signOrientationOther,
           // Scheduling

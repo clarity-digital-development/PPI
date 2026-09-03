@@ -40,6 +40,7 @@ export interface OrderLike {
   isGatedCommunity: boolean
   gateCode?: string | null
   hasMarkerPlaced: boolean
+  streetNumbersVisible?: boolean | null
   signOrientation?: string | null
   signOrientationOther?: string | null
   scheduledDate?: string | null
@@ -302,6 +303,9 @@ export function orderToFormData(order: OrderLike): OrderFormData {
     is_gated_community: order.isGatedCommunity,
     gate_code: order.gateCode || '',
     has_marker_placed: order.hasMarkerPlaced,
+    // null (never asked) maps to undefined so editing a legacy order forces
+    // the question instead of silently pre-answering "No".
+    street_numbers_visible: order.streetNumbersVisible ?? undefined,
     sign_orientation: (order.signOrientation as OrderFormData['sign_orientation']) || 'installer_decides',
     sign_orientation_other: order.signOrientationOther || '',
     // Post

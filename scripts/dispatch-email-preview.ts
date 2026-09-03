@@ -36,6 +36,7 @@ const jobs: DispatchJob[] = redactAllStrings<DispatchJob[]>([
     isGated: true,
     gateCode: '$1234',
     markerPlaced: true,
+    streetNumbersVisible: false,
     // Forms the 2026-08-25 review found leaking: 80$, USD 80, $  80,
     // 80-dollar, eighty dollars.
     notes: 'total $1,234.56 was quoted; also 80 dollars cash mentioned; crew got 80$ tip; USD 80 and $  80 and 80-dollar and eighty dollars said',
@@ -55,7 +56,8 @@ const jobs: DispatchJob[] = redactAllStrings<DispatchJob[]>([
     address: { line1: '9 Main St', city: 'Richmond', state: 'KY', zip: '40475', unlisted: false, onFile: true },
     mapsUrl: 'https://www.google.com/maps/search/?api=1&query=9%20Main%20St',
     requestedDate: '2026-08-25',
-    agent: { name: 'Sam Agent', phone: null, company: null },
+    agent: { name: 'Semonin Support', phone: null, company: 'Semonin Realtors' },
+    listingAgent: { name: 'Pat Team Agent', phone: '502-555-0142' },
     description: 'Remove sign — agent says the $40 was already paid',
     notes: null,
     installedHere: { orderNumber: 'PPI-TEST-0000', lines: [{ description: 'Black Vinyl Post (install & pickup)', quantity: 1 }] },

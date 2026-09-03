@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { createNotification } from '@/lib/notifications'
 import { sendAdminServiceRequestNotification, sendServiceRequestConfirmationEmail } from '@/lib/email'
+import { closedDayReason } from '@/lib/scheduling'
 
 // POST - Create a service request for an unlisted address
 // This is used when the system doesn't show an existing installation
@@ -37,6 +38,13 @@ export async function POST(request: NextRequest) {
         { error: 'A valid preferred date is required for service requests.' },
         { status: 400 }
       )
+    }
+
+    // Closed-day gate (Ryan 2026-08-31: Saturdays closed + holiday list).
+    // The modals guard client-side; this stops direct API calls and stale tabs.
+    const closedReason = closedDayReason(requested_date.trim())
+    if (closedReason) {
+      return NextResponse.json({ error: closedReason }, { status: 400 })
     }
 
     // Try to attach this request to an existing installation at the same address.

@@ -69,6 +69,7 @@ interface ServiceRequest {
     status: string
     order?: {
       orderNumber: string
+      placedForAgentName?: string | null
       orderItems: Array<{ description: string; quantity: number; itemType: string }>
     }
   } | null
@@ -509,6 +510,13 @@ export default function ServiceRequestsPage() {
                       </span>
                     </div>
 
+                    {request.installation?.order?.placedForAgentName && (
+                      <div className="flex items-center gap-2 text-sm text-pink-700 mt-1">
+                        <User className="w-4 h-4 flex-shrink-0" />
+                        <span>Agent: {request.installation.order.placedForAgentName}</span>
+                      </div>
+                    )}
+
                     {request.description && (
                       <p className="mt-2 text-sm text-gray-600 line-clamp-2">
                         {request.description}
@@ -616,6 +624,11 @@ export default function ServiceRequestsPage() {
                 {selectedRequest.user.company && (
                   <p className="text-gray-500">{selectedRequest.user.company}</p>
                 )}
+                {selectedRequest.installation?.order?.placedForAgentName && (
+                  <p className="text-pink-700 font-medium pt-1">
+                    Agent: {selectedRequest.installation.order.placedForAgentName}
+                  </p>
+                )}
               </div>
             </div>
 
@@ -636,7 +649,8 @@ export default function ServiceRequestsPage() {
             {selectedRequest.notes && (
               <div>
                 <h4 className="font-medium text-gray-900 mb-2">Customer Notes</h4>
-                <p className="text-sm text-gray-600">{selectedRequest.notes}</p>
+                {/* pre-line: removal SRs put the lockbox answer on its own line */}
+                <p className="text-sm text-gray-600 whitespace-pre-line">{selectedRequest.notes}</p>
               </div>
             )}
 

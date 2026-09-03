@@ -85,6 +85,8 @@ export interface DispatchOrderJob {
   isGated: boolean
   gateCode: string | null
   markerPlaced: boolean
+  /** null = order predates the question; only an explicit false is flagged. */
+  streetNumbersVisible: boolean | null
   notes: string | null
   lines: DispatchLine[]
   photo: DispatchPhoto | null
@@ -102,6 +104,8 @@ export interface DispatchServiceJob {
   mapsUrl: string
   requestedDate: string | null
   agent: { name: string; phone: string | null; company: string | null }
+  /** Broker accounts: the team agent the original order was placed for. */
+  listingAgent: { name: string; phone: string | null } | null
   description: string | null
   notes: string | null
   installedHere: { orderNumber: string; lines: DispatchLine[] } | null

@@ -623,6 +623,11 @@ export function ReviewStep({
       setError('Cart is only available for team admin accounts.')
       return
     }
+    // Cart re-edit also allows free step jumps — same guard as handleSaveEdit.
+    if (formData.street_numbers_visible === undefined) {
+      setError('Please answer "Are the street numbers visible?" on the Property Info step.')
+      return
+    }
     setAddingToCart(true)
     setError(null)
     try {
@@ -1110,6 +1115,12 @@ export function ReviewStep({
       setError('Please keep at least one item on the order')
       return
     }
+    // Edit mode allows jumping straight to Review, so canProceed's property-
+    // step gate never runs — enforce the required question here too.
+    if (formData.street_numbers_visible === undefined) {
+      setError('Please answer "Are the street numbers visible?" on the Property Info step.')
+      return
+    }
     setIsSubmitting?.(true)
     setError(null)
     try {
@@ -1147,6 +1158,7 @@ export function ReviewStep({
           is_gated_community: formData.is_gated_community,
           gate_code: formData.gate_code,
           has_marker_placed: formData.has_marker_placed,
+          street_numbers_visible: formData.street_numbers_visible,
           sign_orientation: formData.sign_orientation,
           sign_orientation_other: formData.sign_orientation_other,
           requested_date: formData.requested_date,
@@ -1235,6 +1247,7 @@ export function ReviewStep({
           is_gated_community: formData.is_gated_community,
           gate_code: formData.gate_code,
           has_marker_placed: formData.has_marker_placed,
+          street_numbers_visible: formData.street_numbers_visible,
           sign_orientation: formData.sign_orientation,
           sign_orientation_other: formData.sign_orientation_other,
           post_type: formData.post_type,

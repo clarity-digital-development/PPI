@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { sendAdminServiceRequestNotification, sendServiceRequestConfirmationEmail } from '@/lib/email'
 import { chargeSecondOutOfAreaFee } from '@/lib/orders/out-of-area-charge'
+import { closedDayReason } from '@/lib/scheduling'
 
 export async function POST(
   request: NextRequest,
@@ -39,6 +40,13 @@ export async function POST(
         { error: 'A valid preferred date is required for service requests.' },
         { status: 400 }
       )
+    }
+
+    // Closed-day gate (Ryan 2026-08-31: Saturdays closed + holiday list).
+    // The modals guard client-side; this stops direct API calls and stale tabs.
+    const closedReason = closedDayReason(requested_date.trim())
+    if (closedReason) {
+      return NextResponse.json({ error: closedReason }, { status: 400 })
     }
 
     // Validate type

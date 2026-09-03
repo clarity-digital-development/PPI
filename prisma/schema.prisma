@@ -413,6 +413,10 @@ model Order {
   signOrientation      String? @map("sign_orientation")
   signOrientationOther String? @map("sign_orientation_other")
   installationLocation String? @map("installation_location")
+  // Ryan 2026-08-31: forced yes/no on the wizard ("Are the street numbers
+  // visible?"). Nullable — orders placed before the question exists were
+  // never asked, which must not read as "No".
+  streetNumbersVisible Boolean? @map("street_numbers_visible")
 
   // Scheduling
   scheduledDate DateTime? @map("scheduled_date")

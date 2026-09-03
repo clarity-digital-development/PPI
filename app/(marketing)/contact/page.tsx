@@ -95,11 +95,11 @@ export default function ContactPage() {
                 <div className="flex-1">
                   <div className="space-y-2">
                     <div className="flex justify-between">
-                      <span className="text-gray-600">Monday - Saturday</span>
+                      <span className="text-gray-600">Monday - Friday</span>
                       <span className="font-medium text-gray-900">Open</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-gray-600">Sunday</span>
+                      <span className="text-gray-600">Saturday - Sunday</span>
                       <span className="font-medium text-gray-900">Closed</span>
                     </div>
                   </div>

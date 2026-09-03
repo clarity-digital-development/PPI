@@ -47,6 +47,7 @@ export const createOrderSchema = z.object({
   is_gated_community: z.boolean().default(false),
   gate_code: z.string().optional(),
   has_marker_placed: z.boolean().default(false),
+  street_numbers_visible: z.boolean().optional(),
   sign_orientation: z.string().optional(),
   sign_orientation_other: z.string().optional(),
   // Required consent for the split out-of-area fee ($25 now / $25 at

@@ -288,6 +288,53 @@ export function PropertyStep({ formData, updateFormData }: StepProps) {
         )}
       </div>
 
+      {/* Street numbers visible (Ryan 2026-08-31): required with NO default —
+          a pre-answered yes/no gets blown through without reading. */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-3">
+          Are the street numbers visible? (If vacant land select no) *
+        </label>
+        <div className="flex gap-4">
+          <button
+            type="button"
+            onClick={() => updateFormData({ street_numbers_visible: true })}
+            className={cn(
+              'flex-1 py-3 px-4 rounded-lg border-2 font-medium transition-all',
+              formData.street_numbers_visible === true
+                ? 'border-pink-500 bg-pink-50 text-pink-700'
+                : 'border-gray-200 hover:border-gray-300 text-gray-700'
+            )}
+          >
+            Yes
+          </button>
+          <button
+            type="button"
+            onClick={() => updateFormData({ street_numbers_visible: false })}
+            className={cn(
+              'flex-1 py-3 px-4 rounded-lg border-2 font-medium transition-all',
+              formData.street_numbers_visible === false
+                ? 'border-pink-500 bg-pink-50 text-pink-700'
+                : 'border-gray-200 hover:border-gray-300 text-gray-700'
+            )}
+          >
+            No
+          </button>
+        </div>
+        {formData.street_numbers_visible === false && (
+          <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
+            <p>
+              Please include specific details of where you want the post installed and if
+              possible, include a picture of where you want it installed. Please note, if
+              instructions are not clear or provided, and you want us to change placement,
+              a trip request must apply.
+            </p>
+            <p className="mt-1 text-amber-700">
+              Use the Installation Location field below — the paperclip attaches a picture.
+            </p>
+          </div>
+        )}
+      </div>
+
       {/* Installation Details */}
       <div className="space-y-4">
         <div>

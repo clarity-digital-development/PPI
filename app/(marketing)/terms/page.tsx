@@ -40,8 +40,8 @@ export default function TermsPage() {
                     Rush orders are subject to availability.
                   </p>
                   <p>
-                    Business days are <strong>Monday through Saturday</strong>. Sunday we are closed.
-                    Any orders made after 4pm EST on Saturday will be installed Monday.
+                    Business days are <strong>Monday through Friday</strong>. Saturday and Sunday we are closed.
+                    Any orders made after 4pm EST on Friday will be installed Monday.
                   </p>
                 </div>
               </section>

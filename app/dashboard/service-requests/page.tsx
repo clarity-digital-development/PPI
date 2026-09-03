@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { Header } from '@/components/dashboard'
 import { Card, CardContent, Badge, Tabs, TabsList, TabsTrigger, TabsContent, Button, Modal, Input, Select } from '@/components/ui'
 import { ScheduleTripModal, ScheduleRemovalModal } from '@/components/dashboard/installation-modals'
+import { getNextAvailableDate, toDateStr, closedDayReason } from '@/lib/scheduling'
 import {
   Loader2,
   MapPin,
@@ -193,11 +194,8 @@ export default function ServiceRequestsPage() {
   // Min-date for the picker = tomorrow (matches the create-modal convention from
   // RequestServiceModal / ScheduleTripModal). Keeps the customer from saving a
   // request dated in the past, which would silently bounce server-side.
-  const editMinDate = (() => {
-    const t = new Date()
-    t.setDate(t.getDate() + 1)
-    return t.toISOString().split('T')[0]
-  })()
+  // Honors the 4pm cutoff and closed days (Sat/Sun/holidays).
+  const editMinDate = toDateStr(getNextAvailableDate())
 
   const saveEdit = async () => {
     if (!editing) return
@@ -574,7 +572,16 @@ export default function ServiceRequestsPage() {
             type="date"
             label="Requested Date"
             value={editDate}
-            onChange={(e) => setEditDate(e.target.value)}
+            onChange={(e) => {
+              const v = e.target.value
+              const reason = v ? closedDayReason(v) : null
+              if (reason) {
+                setEditError(reason)
+                return
+              }
+              setEditError(null)
+              setEditDate(v)
+            }}
             min={editMinDate}
             required
           />

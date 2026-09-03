@@ -40,6 +40,7 @@ const defaultFormData: OrderFormData = {
   is_gated_community: false,
   gate_code: '',
   has_marker_placed: false,
+  street_numbers_visible: undefined,
   sign_orientation: 'installer_decides',
   sign_orientation_other: '',
   // Post
@@ -195,12 +196,16 @@ export function OrderWizard({ inventory, paymentMethods, onBehalfOf, placedForMe
       case 'property':
         const gateCodeValid = !formData.is_gated_community || formData.gate_code
         const orientationValid = formData.sign_orientation !== 'other' || formData.sign_orientation_other
+        // Deliberately un-defaulted (Ryan 2026-08-31): the agent must pick
+        // yes or no; a pre-answered button gets blown through.
+        const streetNumbersAnswered = formData.street_numbers_visible !== undefined
         return (
           formData.property_type &&
           formData.property_address &&
           formData.property_city &&
           formData.property_zip &&
           formData.sign_orientation &&
+          streetNumbersAnswered &&
           gateCodeValid &&
           orientationValid
         )
