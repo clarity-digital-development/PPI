@@ -21,23 +21,26 @@ export async function GET(request: NextRequest) {
         ? { assignedToMemberId: memberFilter }
         : {}
 
+  // inStorage on all four: the page labels these "in storage" and offers them
+  // for assignment, but deployed items were listed too (Redfin, 2026-09-08:
+  // 23 of 34 signs were out at properties and still counted as available).
   const [signs, riders, lockboxes, brochureBoxes, members] = await Promise.all([
     prisma.customerSign.findMany({
-      where: { userId: user.id, ...assignWhere },
+      where: { userId: user.id, inStorage: true, ...assignWhere },
       orderBy: { createdAt: 'desc' },
     }),
     prisma.customerRider.findMany({
-      where: { userId: user.id, ...assignWhere },
+      where: { userId: user.id, inStorage: true, ...assignWhere },
       include: { rider: true },
       orderBy: { createdAt: 'desc' },
     }),
     prisma.customerLockbox.findMany({
-      where: { userId: user.id, ...assignWhere },
+      where: { userId: user.id, inStorage: true, ...assignWhere },
       include: { lockboxType: true },
       orderBy: { createdAt: 'desc' },
     }),
     prisma.customerBrochureBox.findMany({
-      where: { userId: user.id, ...assignWhere },
+      where: { userId: user.id, inStorage: true, ...assignWhere },
       orderBy: { createdAt: 'desc' },
     }),
     user.teamId
