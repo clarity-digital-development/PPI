@@ -21,26 +21,23 @@ export async function GET(request: NextRequest) {
         ? { assignedToMemberId: memberFilter }
         : {}
 
-  // inStorage on all four: the page labels these "in storage" and offers them
-  // for assignment, but deployed items were listed too (Redfin, 2026-09-08:
-  // 23 of 34 signs were out at properties and still counted as available).
-  const [signs, riders, lockboxes, brochureBoxes, members] = await Promise.all([
+  const [allSigns, allRiders, allLockboxes, allBrochureBoxes, members] = await Promise.all([
     prisma.customerSign.findMany({
-      where: { userId: user.id, inStorage: true, ...assignWhere },
+      where: { userId: user.id, ...assignWhere },
       orderBy: { createdAt: 'desc' },
     }),
     prisma.customerRider.findMany({
-      where: { userId: user.id, inStorage: true, ...assignWhere },
+      where: { userId: user.id, ...assignWhere },
       include: { rider: true },
       orderBy: { createdAt: 'desc' },
     }),
     prisma.customerLockbox.findMany({
-      where: { userId: user.id, inStorage: true, ...assignWhere },
+      where: { userId: user.id, ...assignWhere },
       include: { lockboxType: true },
       orderBy: { createdAt: 'desc' },
     }),
     prisma.customerBrochureBox.findMany({
-      where: { userId: user.id, inStorage: true, ...assignWhere },
+      where: { userId: user.id, ...assignWhere },
       orderBy: { createdAt: 'desc' },
     }),
     user.teamId
@@ -51,33 +48,52 @@ export async function GET(request: NextRequest) {
       : Promise.resolve([]),
   ])
 
+  // IN STORAGE AND DEPLOYED ARE TWO LISTS. The page used to get one list,
+  // label it "in storage" and offer all of it for assignment — Redfin's
+  // brokers assigned eight signs that were all out at properties, then
+  // couldn't order with them (Ryan, 2026-09-08). Only stored items are
+  // assignable; deployed ones are returned separately, read-only, so the
+  // broker can still see where everything is.
+  const signs = allSigns.map((s) => ({
+    id: s.id,
+    label: s.description,
+    inStorage: s.inStorage,
+    assignedToMemberId: s.assignedToMemberId,
+  }))
+  const riders = allRiders.map((r) => ({
+    id: r.id,
+    label: r.rider?.name ?? 'Rider',
+    inStorage: r.inStorage,
+    assignedToMemberId: r.assignedToMemberId,
+  }))
+  const lockboxes = allLockboxes.map((l) => ({
+    id: l.id,
+    label: l.lockboxType?.name ?? 'Lockbox',
+    code: l.code,
+    inStorage: l.inStorage,
+    assignedToMemberId: l.assignedToMemberId,
+  }))
+  const brochureBoxes = allBrochureBoxes.map((b) => ({
+    id: b.id,
+    label: b.description || 'Brochure Box',
+    inStorage: b.inStorage,
+    assignedToMemberId: b.assignedToMemberId,
+  }))
+  const stored = <T extends { inStorage: boolean }>(rows: T[]) => rows.filter((r) => r.inStorage)
+  const deployed = <T extends { inStorage: boolean }>(rows: T[]) => rows.filter((r) => !r.inStorage)
+
   return NextResponse.json({
     members: members.map((m) => ({ id: m.id, name: m.name })),
-    signs: signs.map((s) => ({
-      id: s.id,
-      label: s.description,
-      inStorage: s.inStorage,
-      assignedToMemberId: s.assignedToMemberId,
-    })),
-    riders: riders.map((r) => ({
-      id: r.id,
-      label: r.rider?.name ?? 'Rider',
-      inStorage: r.inStorage,
-      assignedToMemberId: r.assignedToMemberId,
-    })),
-    lockboxes: lockboxes.map((l) => ({
-      id: l.id,
-      label: l.lockboxType?.name ?? 'Lockbox',
-      code: l.code,
-      inStorage: l.inStorage,
-      assignedToMemberId: l.assignedToMemberId,
-    })),
-    brochureBoxes: brochureBoxes.map((b) => ({
-      id: b.id,
-      label: b.description || 'Brochure Box',
-      inStorage: b.inStorage,
-      assignedToMemberId: b.assignedToMemberId,
-    })),
+    signs: stored(signs),
+    riders: stored(riders),
+    lockboxes: stored(lockboxes),
+    brochureBoxes: stored(brochureBoxes),
+    deployed: {
+      signs: deployed(signs),
+      riders: deployed(riders),
+      lockboxes: deployed(lockboxes),
+      brochureBoxes: deployed(brochureBoxes),
+    },
   })
 }
 

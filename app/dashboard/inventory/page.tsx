@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { Header } from '@/components/dashboard'
 import { Card, CardContent, SearchableSelect } from '@/components/ui'
-import { Package, FileImage, Tag, Lock, Archive, Info } from 'lucide-react'
+import { Package, FileImage, Tag, Lock, Archive, Info, MapPin } from 'lucide-react'
 
 interface InventoryData {
   signs: Array<{ id: string; description: string; size: string | null }>
@@ -29,10 +29,19 @@ interface TeamItem {
 
 interface TeamInventoryData {
   members: TeamMemberOption[]
+  // In storage — the only items that can be assigned or ordered with.
   signs: TeamItem[]
   riders: TeamItem[]
   lockboxes: TeamItem[]
   brochureBoxes: TeamItem[]
+  // Out at properties, read-only. Optional so an older cached response
+  // still renders.
+  deployed?: {
+    signs: TeamItem[]
+    riders: TeamItem[]
+    lockboxes: TeamItem[]
+    brochureBoxes: TeamItem[]
+  }
 }
 
 type AssignableType = 'sign' | 'rider' | 'lockbox' | 'brochure_box'
@@ -329,6 +338,23 @@ export default function InventoryPage() {
       teamInventory.brochureBoxes.length > 0
     )
 
+    // Deployed items, bundled the same way as storage ("label ×N" per agent)
+    // but read-only: getting them back into storage is Pink Posts' job, from
+    // the admin side, once the sign is physically back.
+    const deployedRaw = teamInventory?.deployed
+    const deployedGroups: Array<{ type: string; bundles: ItemBundle[] }> = deployedRaw
+      ? [
+          { type: 'Sign', bundles: groupTeamItems(deployedRaw.signs) },
+          { type: 'Rider', bundles: groupTeamItems(deployedRaw.riders) },
+          { type: 'Lockbox', bundles: groupTeamItems(deployedRaw.lockboxes) },
+          { type: 'Brochure box', bundles: groupTeamItems(deployedRaw.brochureBoxes) },
+        ].filter((g) => g.bundles.length > 0)
+      : []
+    const deployedCount = deployedRaw
+      ? deployedRaw.signs.length + deployedRaw.riders.length + deployedRaw.lockboxes.length + deployedRaw.brochureBoxes.length
+      : 0
+    const memberNameById = new Map(members.map((m) => [m.id, m.name]))
+
     // Reassign every item in a bundle to a new agent. Fires N PATCH requests
     // in parallel (one per id) because the existing /api/teams/inventory PATCH
     // accepts a single id at a time. Partial failures roll back only the
@@ -497,6 +523,8 @@ export default function InventoryPage() {
                   <p className="text-sm text-gray-700">
                     These are items Pink Posts Installations currently has in storage for your team.
                     Assign individual items to team members so everyone knows what&apos;s theirs.
+                    Items that are out at a property are listed separately below and come back
+                    here once we have them in storage again.
                   </p>
                 </div>
               </div>
@@ -532,9 +560,11 @@ export default function InventoryPage() {
                 <Archive className="w-12 h-12 text-gray-300 mx-auto mb-4" />
                 <h3 className="text-lg font-medium text-gray-900 mb-2">No Items in Storage</h3>
                 <p className="text-gray-500 max-w-md mx-auto">
-                  {agentFilter
-                    ? 'No items match this filter. Try selecting a different agent.'
-                    : "You don't have any items stored with us yet. When you have signs, riders, lockboxes, or brochure boxes in our storage, they'll appear here and can be assigned to your team."}
+                  {deployedCount > 0
+                    ? `Everything ${agentFilter ? 'for this agent' : 'you have with us'} is currently out at a property — see below.`
+                    : agentFilter
+                      ? 'No items match this filter. Try selecting a different agent.'
+                      : "You don't have any items stored with us yet. When you have signs, riders, lockboxes, or brochure boxes in our storage, they'll appear here and can be assigned to your team."}
                 </p>
               </CardContent>
             </Card>
@@ -641,6 +671,52 @@ export default function InventoryPage() {
                 </CardContent>
               </Card>
             </div>
+          )}
+
+          {/* Currently deployed — its own section, never mixed into the
+              storage counts (Ryan 2026-09-08: brokers couldn't tell what they
+              actually had available). Follows the agent filter. */}
+          {!loading && !teamLoading && deployedCount > 0 && (
+            <Card variant="bordered" className="border-amber-200 bg-amber-50/40">
+              <CardContent className="p-6">
+                <div className="flex items-center gap-3 mb-1">
+                  <div className="w-10 h-10 rounded-lg bg-amber-100 flex items-center justify-center">
+                    <MapPin className="w-5 h-5 text-amber-700" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-900">Currently Out at Properties</h3>
+                    <p className="text-sm text-gray-500">{deployedCount} item{deployedCount === 1 ? '' : 's'} installed right now</p>
+                  </div>
+                </div>
+                <p className="text-sm text-gray-600 mb-4">
+                  These can&apos;t be assigned or ordered with until they&apos;re back in storage. They return to the
+                  lists above automatically once Pink Posts has them again.
+                </p>
+                <div className={deployedCount > 8 ? 'space-y-2 max-h-[320px] overflow-y-auto pr-1 -mr-1' : 'space-y-2'}>
+                  {deployedGroups.map((group) =>
+                    group.bundles.map((b) => (
+                      <div key={`${group.type}:${b.key}`} className="flex items-center justify-between gap-3 p-3 bg-white rounded-lg border border-amber-200">
+                        <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                          <span className="text-xs text-amber-700 font-medium uppercase flex-shrink-0">{group.type}</span>
+                          <span className="text-sm text-gray-900 truncate">{b.label}</span>
+                          {b.ids.length > 1 && (
+                            <span className="text-xs font-semibold text-amber-700 bg-amber-100 border border-amber-200 rounded px-1.5 py-0.5 flex-shrink-0">
+                              ×{b.ids.length}
+                            </span>
+                          )}
+                          {b.code && (
+                            <span className="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded flex-shrink-0">{b.code}</span>
+                          )}
+                        </div>
+                        <span className="text-xs text-gray-600 flex-shrink-0">
+                          {b.assignedToMemberId ? (memberNameById.get(b.assignedToMemberId) ?? 'Assigned') : 'Unassigned'}
+                        </span>
+                      </div>
+                    )),
+                  )}
+                </div>
+              </CardContent>
+            </Card>
           )}
 
           {/* How it works */}
