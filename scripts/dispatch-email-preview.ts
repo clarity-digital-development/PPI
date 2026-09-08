@@ -45,7 +45,8 @@ const jobs: DispatchJob[] = redactAllStrings<DispatchJob[]>([
       { description: 'Wire Frame Sign Install × 2 — $5 each by driveway', quantity: 1 },
       { description: 'Solar Lighting', quantity: 2 },
     ],
-    photo: null,
+    // A stand-in photo so the inline-image wiring (cid ↔ attachment) is checked.
+    photo: { filename: 'PPI-TEST-0001-location.jpg', content: Buffer.from('not-a-real-jpeg') },
     photoNote: null,
   },
   {
@@ -91,6 +92,18 @@ if (markerCount < expectedMarkers) { console.error(`FAIL: expected ≥${expected
 if (!/Price Reduced/.test(rendered.text)) { console.error('FAIL: legitimate "Price Reduced" rider was lost'); failed = true }
 if (!/Total Realty/.test(rendered.text)) { console.error('FAIL: legitimate "Total Realty" company was lost'); failed = true }
 if (/Trip fee/i.test(rendered.text)) { console.error('FAIL: "Trip fee" wording reached the crew'); failed = true }
+
+// The photo must be embedded INSIDE its job card (Ryan 2026-09-08: plain
+// attachments piled up at the bottom and read as the last job's), and the
+// attachment must carry the matching Content-ID.
+if (!rendered.html.includes('src="cid:photo-job-1"')) { console.error('FAIL: job 1 photo is not inlined in its card'); failed = true }
+if (rendered.attachments.length !== 1 || rendered.attachments[0].contentId !== 'photo-job-1') {
+  console.error(`FAIL: expected one attachment with contentId photo-job-1, got ${JSON.stringify(rendered.attachments.map((a) => a.contentId))}`); failed = true
+}
+// The cid must appear inside the first card, before the second job's title.
+const cidAt = rendered.html.indexOf('cid:photo-job-1')
+const secondJobAt = rendered.html.indexOf('SERVICE TRIP')
+if (cidAt === -1 || secondJobAt === -1 || cidAt > secondJobAt) { console.error('FAIL: inline photo is not placed within job 1'); failed = true }
 
 // The trip modal's app-composed "Address: … Trip fee: $40" suffix must be
 // stripped by the loader, not merely redacted (a "[amount removed]" after

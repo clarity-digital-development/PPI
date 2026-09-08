@@ -1488,7 +1488,7 @@ function renderDispatchOrderText(j: DispatchOrderJob, n: number): string {
   if (j.streetNumbersVisible === false) out.push('   Street numbers: NOT visible — check the location details/photo')
   if (j.isGated) out.push(`   Gated: yes${j.gateCode ? ` — code ${j.gateCode}` : ' (no code on file — call agent)'}`)
   if (j.notes) out.push(`   Notes: ${j.notes}`)
-  if (j.photo) out.push(`   Photo: attached as ${j.photo.filename}`)
+  if (j.photo) out.push(`   Photo: attached as ${j.photo.filename} (shown under this job in the email)`)
   else if (j.photoNote) out.push(`   Photo: ${j.photoNote}`)
   return out.join('\n')
 }
@@ -1542,8 +1542,7 @@ function renderDispatchJobHtml(j: DispatchJob, n: number): string {
     rows.push(row('Marker placed', j.markerPlaced ? 'yes' : 'no'))
     if (j.streetNumbersVisible === false) rows.push(row('Street numbers', '<strong>NOT visible</strong> — check the location details/photo'))
     if (j.isGated) rows.push(row('Gated', j.gateCode ? `yes — code <strong>${escapeHtml(j.gateCode)}</strong>` : 'yes (no code on file — call agent)'))
-    if (j.photo) rows.push(row('Photo', `attached as ${escapeHtml(j.photo.filename)}`))
-    else if (j.photoNote) rows.push(row('Photo', escapeHtml(j.photoNote)))
+    if (j.photoNote) rows.push(row('Photo', escapeHtml(j.photoNote)))
   } else {
     const addr = j.address.onFile
       ? `<a href="${j.mapsUrl}" style="color: #E84A7A;">${escapeHtml(`${j.address.line1}, ${j.address.city} ${j.address.state} ${j.address.zip}`)}</a>`
@@ -1561,6 +1560,14 @@ function renderDispatchJobHtml(j: DispatchJob, n: number): string {
     ? `<div style="background-color: #FFFBEB; border-left: 4px solid #F59E0B; border-radius: 4px; padding: 10px 12px; margin: 12px 0 0;"><p style="margin: 0 0 4px; color: #92400E; font-weight: bold; font-size: 13px;">Notes</p><p style="margin: 0; color: #333; white-space: pre-wrap;">${escapeHtml(j.notes)}</p></div>`
     : ''
   const lockboxes = j.kind === 'service_request' ? renderExistingLockboxesHtml(j.lockboxesOnSite) : ''
+  // THE PHOTO SITS INSIDE ITS OWN JOB CARD. As a plain attachment every
+  // mail client stacked the photos at the bottom of the message, where
+  // they read as belonging to the last job (Ryan, 2026-09-08). Inline via
+  // the attachment's Content-ID; the same file is still attached for
+  // clients that don't render cid images.
+  const photo = j.kind === 'order' && j.photo
+    ? `<div style="margin: 12px 0 0;"><p style="margin: 0 0 4px; color: #666; font-size: 13px;">Install location photo</p><img src="cid:${dispatchPhotoContentId(n)}" alt="Install location for this job" style="display: block; max-width: 100%; height: auto; max-height: 360px; border-radius: 8px; border: 1px solid #F3D1DB;"></div>`
+    : ''
 
   return `
     <div style="background-color: white; border: 1px solid #F3D1DB; border-radius: 10px; padding: 16px 18px; margin: 0 0 14px;">
@@ -1568,14 +1575,22 @@ function renderDispatchJobHtml(j: DispatchJob, n: number): string {
       <table style="border-collapse: collapse; font-size: 14px;">${rows.join('')}</table>
       ${notes}
       ${lockboxes}
+      ${photo}
     </div>`
+}
+
+// Content-ID for job N's photo. Deliberately NOT built from the order id or
+// number: the money guard scans the html, and an id that happened to end in
+// "…5usd" would refuse the whole send. The job index is unique per email.
+function dispatchPhotoContentId(n: number): string {
+  return `photo-job-${n}`
 }
 
 export function renderInstallerDispatchEmail(props: InstallerDispatchEmailProps): {
   subject: string
   text: string
   html: string
-  attachments: Array<{ filename: string; content: Buffer }>
+  attachments: Array<{ filename: string; content: Buffer; contentId: string }>
 } {
   const { jobs, note, sentByName, generatedAt } = props
   const dayOf = (j: DispatchJob) => (j.kind === 'order' ? j.scheduledDate : j.requestedDate)
@@ -1640,11 +1655,19 @@ export function renderInstallerDispatchEmail(props: InstallerDispatchEmailProps)
   // as "refuse to send".
   assertNoMoney(rendered)
 
-  const attachments = jobs.flatMap((j) =>
-    j.kind === 'order' && j.photo ? [{ filename: j.photo.filename, content: j.photo.content }] : []
+  // Same index the html renderer used for the cid, so the inline image and
+  // the attachment always refer to the same file.
+  const attachments = jobs.flatMap((j, i) =>
+    j.kind === 'order' && j.photo
+      ? [{ filename: j.photo.filename, content: j.photo.content, contentId: dispatchPhotoContentId(i + 1) }]
+      : []
   )
   return { ...rendered, attachments }
 }
+
+// Ryan (2026-09-08): a copy of every crew email, so there is never any doubt
+// it went out.
+const DISPATCH_CC = ['contact@pinkposts.com']
 
 export async function sendInstallerDispatchEmail(props: InstallerDispatchEmailProps): Promise<{ id: string | null }> {
   const { subject, text, html, attachments } = renderInstallerDispatchEmail(props)
@@ -1652,14 +1675,24 @@ export async function sendInstallerDispatchEmail(props: InstallerDispatchEmailPr
     from: 'Pink Posts Installations <orders@pinkposts.com>',
     reply_to: 'Pink Posts Installations <contact@pinkposts.com>',
     to: props.recipients,
+    // The office copy — but never a duplicate of an address already in To.
+    cc: DISPATCH_CC.filter((c) => !props.recipients.includes(c)),
     subject,
     text,
     html,
     // base64 strings, not Buffers: the SDK JSON-serializes the payload and a
     // Buffer becomes a {type,data:[…]} byte array (~4x the raw size), which
     // would push a 15 MB photo budget past Resend's 40 MB request cap.
+    // `content_id` is the API's field for inline (cid:) images; the installed
+    // SDK forwards the attachment objects verbatim, it just doesn't type it.
     ...(attachments.length
-      ? { attachments: attachments.map((a) => ({ filename: a.filename, content: a.content.toString('base64') })) }
+      ? {
+          attachments: attachments.map((a) => ({
+            filename: a.filename,
+            content: a.content.toString('base64'),
+            content_id: a.contentId,
+          })),
+        }
       : {}),
   })
   const r = result as { data?: { id?: string } | null; error?: { message?: string } | null }
