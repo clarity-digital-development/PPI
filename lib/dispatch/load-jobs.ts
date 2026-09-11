@@ -6,6 +6,7 @@
 import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
+import { compressPhotoBytes } from '@/lib/images/compress'
 import {
   INSTALLABLE_ITEM_TYPES,
   redactAllStrings,
@@ -217,12 +218,22 @@ export async function loadDispatchJobs(input: {
     if (!uri) continue
     const decoded = decodeDataUri(uri)
     if (!decoded) { job.photoNote = 'photo on file could not be read — see the admin order page'; continue }
-    if (decoded.content.length > MAX_PHOTO_BYTES || decoded.content.length > photoBudget) {
+    // Shrink before measuring. Orders placed before intake compression still
+    // carry the raw 4–5 MB phone photo, which used to trip the cap below and
+    // send the crew to the admin page instead (Ryan, 2026-09-08).
+    let filename = decoded.filename
+    let content = decoded.content
+    const smaller = await compressPhotoBytes(content)
+    if (smaller) {
+      content = smaller.content
+      filename = decoded.filename.replace(/\.[a-z0-9]+$/i, '') + '.' + smaller.ext
+    }
+    if (content.length > MAX_PHOTO_BYTES || content.length > photoBudget) {
       job.photoNote = 'photo too large to attach — see the admin order page'
       continue
     }
-    photoBudget -= decoded.content.length
-    job.photo = { filename: `${job.orderNumber}-${decoded.filename}`, content: decoded.content }
+    photoBudget -= content.length
+    job.photo = { filename: `${job.orderNumber}-${filename}`, content }
   }
 
   // ---- Service requests ----

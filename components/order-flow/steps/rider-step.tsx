@@ -143,10 +143,11 @@ export function RiderStep({ formData, updateFormData, inventory }: StepProps) {
       <div className="border-t border-gray-200 pt-6">
         <div className="flex items-center gap-2 mb-2">
           <MapPin className="w-5 h-5 text-pink-500" />
-          <h3 className="text-lg font-semibold text-gray-900">Wire Frame Sign Install</h3>
+          <h3 className="text-lg font-semibold text-gray-900">Wire Frame Installs</h3>
         </div>
         <p className="text-sm text-gray-600 mb-4">
-          Place directional/for sale/open house signs at the property or heading into the neighborhood from the road. ${PRICING.wire_frame_sign} each.
+          *Note these are your wire frame signs, please add a note of which wire frames you&apos;d like
+          to use and where they are to be installed (example: cross roads). ${PRICING.wire_frame_sign} each.
         </p>
 
         <div className="flex items-center gap-4 bg-gray-50 rounded-xl p-4">

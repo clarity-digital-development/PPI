@@ -31,7 +31,15 @@ const premiumPosts = [
   },
 ]
 
-export function PostStep({ formData, updateFormData }: StepProps) {
+export function PostStep({ formData, updateFormData, placedAsOpenHouse }: StepProps) {
+  // WIRE-FRAME-ONLY INSTALLS ARE DISCONTINUED (Ryan, 2026-09-11: "we aren't
+  // going to try to accommodate this anymore"). The tile is gone for new
+  // orders, but an order or cart row already placed on it still shows it —
+  // otherwise whoever opens one finds nothing selected and has to re-pick a
+  // post that was never sold. `placedAsOpenHouse` is captured once by the
+  // wizard rather than read off live form state, so tapping another post
+  // isn't a one-way door out of the retired option.
+  const showOpenHouse = placedAsOpenHouse || formData.post_type === 'open_house'
   return (
     <div className="space-y-6">
       <div>
@@ -262,7 +270,8 @@ export function PostStep({ formData, updateFormData }: StepProps) {
         )}
       </div>
 
-      {/* Open House / Wire Frame Only */}
+      {/* Open House / Wire Frame Only — retired; edit-mode only, see above */}
+      {showOpenHouse && (
       <div>
         <button
           type="button"
@@ -299,6 +308,7 @@ export function PostStep({ formData, updateFormData }: StepProps) {
           )}
         </button>
       </div>
+      )}
 
       {/* Divider */}
       <div className="relative">

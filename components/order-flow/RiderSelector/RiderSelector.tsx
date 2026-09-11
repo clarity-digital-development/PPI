@@ -123,7 +123,9 @@ export function RiderSelector({
       {source === 'at_property' && (
         <div className="p-3 border border-gray-200 rounded-lg bg-gray-50 space-y-2">
           <div>
-            <h3 className="text-sm font-medium text-gray-900">Add a custom rider</h3>
+            {/* "Unique", not "custom" — agents were reading "custom rider" as
+                "Pink Posts will make me a rider for $2" (Ryan, 2026-09-11). */}
+            <h3 className="text-sm font-medium text-gray-900">Add a unique rider</h3>
             <p className="text-xs text-gray-500">
               Not in the list below? Type the rider name and add it — ${installPrice} install.
             </p>

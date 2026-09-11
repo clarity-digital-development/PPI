@@ -130,6 +130,7 @@ export async function POST(
                 })),
                 isExpedited: order.isExpedited,
                 installationNotes: order.propertyNotes || undefined,
+                installationLocationImage: order.installationLocationImage,
                 assignedAgentName: assignedAgent?.name ?? null,
                 assignedAgentPhone: assignedAgent?.phone ?? null,
               }),

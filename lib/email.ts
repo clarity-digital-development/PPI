@@ -1,5 +1,11 @@
 import { Resend } from 'resend'
 import { shouldSendEmail, logSuppressed, type UserEmailPrefs } from '@/lib/email-preferences'
+import { decodeAndCompressDataUri } from '@/lib/images/compress'
+
+// Cap for the photo attached to the admin order notification. Well under
+// Resend's message limit, and compression normally lands an order of
+// magnitude below it.
+const ADMIN_PHOTO_MAX_BYTES = 3 * 1024 * 1024
 
 // Result of the diff charge attempted when admin saves an order edit. Drives
 // the one-liner shown in the customer + admin emails so accountants can
@@ -313,6 +319,10 @@ interface AdminNotificationEmailProps {
   // about the order without digging into the dashboard.
   assignedAgentName?: string | null
   assignedAgentPhone?: string | null
+  // The agent's "here's where the post goes" photo, as the data URI stored on
+  // the order. Attached to the email — before this it was never sent at all,
+  // so Ryan had to open the admin order page to see it (Ryan, 2026-09-08).
+  installationLocationImage?: string | null
   // True when this order was placed by an invoice-billing customer (no charge
   // collected at checkout). Surfaces a banner in the admin email so Ryan
   // doesn't expect a payment record.
@@ -358,6 +368,7 @@ export async function sendAdminOrderNotification({
   tax,
   assignedAgentName,
   assignedAgentPhone,
+  installationLocationImage,
   isInvoiceBilling,
   isEdited,
   originalTotal,
@@ -417,6 +428,17 @@ export async function sendAdminOrderNotification({
   }
   if (hasMarkerPlaced) {
     installationDetails += `\nMarker Placed: Yes`
+  }
+
+  // The location photo rides along as an attachment. Compressed first so a
+  // 5 MB phone picture doesn't bounce the whole notification.
+  const locationPhoto = await decodeAndCompressDataUri(installationLocationImage, {
+    maxBytes: ADMIN_PHOTO_MAX_BYTES,
+  })
+  if (locationPhoto) {
+    installationDetails += `\nInstall Location Photo: attached to this email`
+  } else if (installationLocationImage) {
+    installationDetails += `\nInstall Location Photo: on file but too large to attach — see the admin order page`
   }
   if (installationNotes) {
     installationDetails += `\n\nSpecial Requests / Notes:\n${installationNotes}`
@@ -512,6 +534,18 @@ View order details in the admin dashboard.
       // re-send in their inbox vs the original placement email.
       subject: `${isEdited ? '✏️ [EDITED] ' : ''}${isExpedited ? '⚡ EXPEDITED ' : ''}${isInvoiceBilling ? '📄 INVOICE ' : ''}${isEdited ? 'Updated Order' : 'New Order'}: ${orderNumber}`,
       text,
+      // base64, not a Buffer — the SDK JSON-serializes the payload and a
+      // Buffer would balloon into a {type,data:[…]} byte array.
+      ...(locationPhoto
+        ? {
+            attachments: [
+              {
+                filename: `${orderNumber}-${locationPhoto.filename}`,
+                content: locationPhoto.content.toString('base64'),
+              },
+            ],
+          }
+        : {}),
     })
     console.log(`Admin notification sent successfully for order ${orderNumber}:`, result)
     return result
@@ -1519,8 +1553,14 @@ function renderDispatchServiceText(j: DispatchServiceJob, n: number): string {
 }
 
 function renderDispatchJobHtml(j: DispatchJob, n: number): string {
+  // FIXED LABEL COLUMN. This used to be an auto-width table with
+  // `white-space: nowrap` on the label cell, so a long label — "Installed here
+  // (PPI-MQQNN334-5BFM)" — could not wrap and stretched column one across most
+  // of a phone screen, squeezing the values into one word per line (Ryan,
+  // 2026-09-08, pic 3). The width attribute is there for Outlook, which
+  // ignores table-layout.
   const row = (label: string, value: string) =>
-    `<tr><td style="padding: 4px 8px 4px 0; color: #666; vertical-align: top; white-space: nowrap;">${label}</td><td style="padding: 4px 0; color: #333;">${value}</td></tr>`
+    `<tr><td width="120" style="width: 120px; padding: 4px 8px 4px 0; color: #666; vertical-align: top; word-break: break-word;">${label}</td><td style="padding: 4px 0; color: #333; word-break: break-word;">${value}</td></tr>`
   const lines = (ls: { description: string; quantity: number }[]) =>
     `<ul style="margin: 4px 0 0; padding-left: 18px;">${ls.map((l) => `<li style="margin: 2px 0;">${escapeHtml(dispatchLineText(l))}</li>`).join('')}</ul>`
   const agent = (a: { name: string; phone: string | null; company: string | null }) =>
@@ -1552,7 +1592,15 @@ function renderDispatchJobHtml(j: DispatchJob, n: number): string {
     rows.push(row('Agent', agent(j.agent)))
     if (j.listingAgent) rows.push(row('For agent', `${escapeHtml(j.listingAgent.name)}${j.listingAgent.phone ? ` (${escapeHtml(j.listingAgent.phone)})` : ''}`))
     if (j.description) rows.push(row('Request', escapeHtml(j.description)))
-    if (j.installedHere) rows.push(row(`Installed here (${escapeHtml(j.installedHere.orderNumber)})`, lines(j.installedHere.lines)))
+    // The order number goes in the VALUE, not the label — it's a long
+    // unbreakable token and belongs on the wide side of the table.
+    if (j.installedHere)
+      rows.push(
+        row(
+          'Installed here',
+          `<span style="color: #666;">${escapeHtml(j.installedHere.orderNumber)}</span>${lines(j.installedHere.lines)}`
+        )
+      )
     if (j.ridersOnSite.length) rows.push(row('Riders on site', escapeHtml(j.ridersOnSite.join(', '))))
   }
 
@@ -1572,7 +1620,7 @@ function renderDispatchJobHtml(j: DispatchJob, n: number): string {
   return `
     <div style="background-color: white; border: 1px solid #F3D1DB; border-radius: 10px; padding: 16px 18px; margin: 0 0 14px;">
       <p style="margin: 0 0 8px; font-size: 16px; font-weight: bold; color: #333;">${title}</p>
-      <table style="border-collapse: collapse; font-size: 14px;">${rows.join('')}</table>
+      <table style="border-collapse: collapse; font-size: 14px; width: 100%; table-layout: fixed;">${rows.join('')}</table>
       ${notes}
       ${lockboxes}
       ${photo}

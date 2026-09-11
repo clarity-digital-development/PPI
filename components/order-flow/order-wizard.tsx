@@ -152,6 +152,11 @@ export function OrderWizard({ inventory, paymentMethods, onBehalfOf, placedForMe
   const [formData, setFormData] = useState<OrderFormData>(
     initialFormData ? { ...defaultFormData, ...initialFormData } : defaultFormData
   )
+  // Captured once from the order/cart row this wizard opened on. Steps remount
+  // on every navigation, so they can't hold their own "what did this start as"
+  // state — see the StepProps docs for both of these.
+  const [placedAsOpenHouse] = useState(() => initialFormData?.post_type === 'open_house')
+  const originalRequestedDate = isEdit ? initialFormData?.requested_date : undefined
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const updateFormData = useCallback((updates: Partial<OrderFormData>) => {
@@ -364,6 +369,8 @@ export function OrderWizard({ inventory, paymentMethods, onBehalfOf, placedForMe
               currentUserRole={currentUserRole}
               mode={mode}
               orderId={orderId}
+              originalRequestedDate={originalRequestedDate}
+              placedAsOpenHouse={placedAsOpenHouse}
               editMeta={editMeta}
               lockboxInstallFee={lockboxInstallFee}
               flatFee={flatFee}

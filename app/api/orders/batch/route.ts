@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { compressImageDataUri } from '@/lib/images/compress'
 import { getCurrentUser, generateOrderNumber } from '@/lib/auth-utils'
 import { createPaymentIntent, createCustomer, getStripeErrorMessage, stripe } from '@/lib/stripe/server'
 import { computeOrderPricing, computeFlatFeePricing } from '@/lib/orders/pricing'
@@ -416,11 +417,20 @@ export async function POST(request: NextRequest) {
     const heldItemIds = new Set<string>()
     for (const claim of allClaims) heldItemIds.add(`${claim.itemType}:${claim.itemId}`)
 
+    // Shrink the install-location photos BEFORE the tx opens — re-encoding a
+    // 5 MB phone photo takes long enough that doing it inside would hold the
+    // transaction open (Ryan, 2026-09-08). Sequential to bound peak memory.
+    const compressedImages: Array<string | null | undefined> = []
+    for (const c of computed) {
+      compressedImages.push(await compressImageDataUri(c.orderBody.installation_location_image))
+    }
+
     let createdOrders: Array<{ id: string; orderNumber: string; total: number }>
     try {
       createdOrders = await prisma.$transaction(async (tx) => {
         const out: Array<{ id: string; orderNumber: string; total: number }> = []
-        for (const c of computed) {
+        for (let ci = 0; ci < computed.length; ci++) {
+          const c = computed[ci]
           const o = c.orderBody
           const order = await tx.order.create({
             data: {
@@ -435,7 +445,7 @@ export async function POST(request: NextRequest) {
               propertyZip: o.property_zip,
               propertyNotes: o.installation_notes,
               installationLocation: o.installation_location,
-              installationLocationImage: o.installation_location_image,
+              installationLocationImage: compressedImages[ci],
               isGatedCommunity: o.is_gated_community || false,
               gateCode: o.gate_code,
               hasMarkerPlaced: o.has_marker_placed || false,
@@ -665,6 +675,7 @@ export async function POST(request: NextRequest) {
               noPostSurcharge: Number(full.noPostSurcharge),
               expediteFee: Number(full.expediteFee),
               tax: Number(full.tax),
+              installationLocationImage: full.installationLocationImage,
               assignedAgentName: assignedAgent?.name ?? null,
               assignedAgentPhone: assignedAgent?.phone ?? null,
               isInvoiceBilling: true,
@@ -870,6 +881,7 @@ export async function POST(request: NextRequest) {
               noPostSurcharge: Number(full.noPostSurcharge),
               expediteFee: Number(full.expediteFee),
               tax: Number(full.tax),
+              installationLocationImage: full.installationLocationImage,
               assignedAgentName: assignedAgent?.name ?? null,
               assignedAgentPhone: assignedAgent?.phone ?? null,
             }),

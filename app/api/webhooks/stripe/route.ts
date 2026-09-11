@@ -256,6 +256,7 @@ export async function POST(request: NextRequest) {
                 noPostSurcharge: Number(order.noPostSurcharge),
                 expediteFee: Number(order.expediteFee),
                 tax: Number(order.tax),
+                installationLocationImage: order.installationLocationImage,
                 assignedAgentName: assignedAgent?.name ?? null,
                 assignedAgentPhone: assignedAgent?.phone ?? null,
               }),

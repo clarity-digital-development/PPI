@@ -136,6 +136,17 @@ export interface StepProps {
   // (PATCH instead of POST, no re-charge) rather than creating a new one.
   mode?: 'create' | 'edit'
   orderId?: string
+  // The install date the order arrived with. Read from the order itself, NOT
+  // captured from mount-time formData: the wizard fully remounts each step on
+  // every navigation, so a mount-time baseline gets re-captured as whatever
+  // the date has since been changed to, and the "keep the booked date"
+  // exemption silently disappears after the first change.
+  originalRequestedDate?: string
+  // The order (or cart row) was placed on the retired "Open House / Wire Frame
+  // Only" option, so that tile stays available for this whole session even
+  // after another post is tapped. Without it the tile unmounts on the first
+  // other tap and there is no way back to the option the order was sold on.
+  placedAsOpenHouse?: boolean
   // Display-only metadata about the order being edited (review step shows the
   // original total alongside the recomputed one).
   // flatFeeBase / flatFeeFuel: the ORDER's own locked flat-fee base

@@ -284,6 +284,12 @@ export function orderToFormData(order: OrderLike): OrderFormData {
   let requested_date: string | undefined
   if (order.isExpedited) {
     schedule_type = 'expedited'
+    // An expedited order that an admin later dated via "Change Install Date"
+    // keeps isExpedited=true AND has a real scheduledDate. Carry that date so
+    // the edit round-trips it — without it the PATCH sends a null date, the
+    // server sees the schedule as changed, re-runs the same-day cutoff and
+    // refuses the edit after 4pm (and would wipe the date it did have).
+    if (order.scheduledDate) requested_date = String(order.scheduledDate).slice(0, 10)
   } else if (order.scheduledDate) {
     schedule_type = 'specific_date'
     // scheduledDate is stored at noon UTC — the date portion is the chosen day

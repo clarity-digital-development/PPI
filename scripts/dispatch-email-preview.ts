@@ -105,6 +105,15 @@ const cidAt = rendered.html.indexOf('cid:photo-job-1')
 const secondJobAt = rendered.html.indexOf('SERVICE TRIP')
 if (cidAt === -1 || secondJobAt === -1 || cidAt > secondJobAt) { console.error('FAIL: inline photo is not placed within job 1'); failed = true }
 
+// Two-column layout: the label column is pinned narrow so long values can't be
+// squeezed to one word per line on a phone (Ryan 2026-09-08, pic 3). No label
+// may be nowrap'd, and the order number belongs in the value, not the label.
+if (!rendered.html.includes('table-layout: fixed')) { console.error('FAIL: job table is not fixed-layout'); failed = true }
+if (/white-space: nowrap/.test(rendered.html)) { console.error('FAIL: a nowrap label can still stretch column one'); failed = true }
+if (!/<td width="120"/.test(rendered.html)) { console.error('FAIL: label column has no explicit width'); failed = true }
+if (/>Installed here \(/.test(rendered.html)) { console.error('FAIL: order number is still inside the label cell'); failed = true }
+if (!rendered.html.includes('>Installed here</td>')) { console.error('FAIL: "Installed here" label missing'); failed = true }
+
 // The trip modal's app-composed "Address: … Trip fee: $40" suffix must be
 // stripped by the loader, not merely redacted (a "[amount removed]" after
 // "Trip fee:" still tells the crew a charge exists).

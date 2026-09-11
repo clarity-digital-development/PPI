@@ -269,10 +269,14 @@ export function SecondPostStep({ formData, updateFormData, inventory }: StepProp
           </Collapsible>
 
           {/* Wire Frame Signs for second post */}
-          <Collapsible title="Wire Frame Signs" defaultOpen={wireFrameCount > 0} badge={wireFrameCount > 0 ? `×${wireFrameCount}` : undefined}>
+          <Collapsible title="Wire Frame Installs" defaultOpen={wireFrameCount > 0} badge={wireFrameCount > 0 ? `×${wireFrameCount}` : undefined}>
             <div className="space-y-3">
+              {/* Heading matches the first post's section (Ryan, 2026-09-11).
+                  The copy deliberately does NOT ask for a note here — unlike
+                  the first post, this step has no instructions field to put
+                  one in. Flagged to Ryan. */}
               <p className="text-sm text-gray-600">
-                ${PRICING.wire_frame_sign} each. Place directional/for sale/open house signs.
+                These are your own wire frame signs. ${PRICING.wire_frame_sign} each.
               </p>
               <div className="flex items-center gap-4 bg-gray-50 rounded-xl p-4">
                 <div className="flex-1">

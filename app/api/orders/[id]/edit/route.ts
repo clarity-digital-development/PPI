@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { compressImageDataUri } from '@/lib/images/compress'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { orderItemSchema } from '@/lib/validations'
 import { validateScheduling } from '@/lib/scheduling'
@@ -598,6 +599,15 @@ export async function PATCH(
       placedByUserId: existingOrder.placedByUserId,
     })
 
+    // Shrink a newly-attached install-location photo before the tx opens.
+    // The edit wizard round-trips the STORED photo back in the PATCH body, so
+    // compare against the row first — otherwise adding a note to an order would
+    // lossily re-encode a photo nobody touched, a little worse every edit.
+    const editedLocationImage =
+      editData.installation_location_image === existingOrder.installationLocationImage
+        ? editData.installation_location_image
+        : await compressImageDataUri(editData.installation_location_image)
+
     let raceLost = false
     const updatedOrder = await prisma.$transaction(async (tx) => {
       // Replace ALL line items (the post is included in items[] as item_type
@@ -731,7 +741,7 @@ export async function PATCH(
           propertyState: stateInput ?? existingOrder.propertyState,
           propertyZip: zipInput ?? existingOrder.propertyZip,
           installationLocation: editData.installation_location ?? existingOrder.installationLocation,
-          installationLocationImage: editData.installation_location_image ?? existingOrder.installationLocationImage,
+          installationLocationImage: editedLocationImage ?? existingOrder.installationLocationImage,
           propertyNotes: editData.installation_notes ?? existingOrder.propertyNotes,
           isGatedCommunity: editData.is_gated_community ?? existingOrder.isGatedCommunity,
           gateCode: editData.gate_code ?? existingOrder.gateCode,
@@ -1100,6 +1110,7 @@ export async function PATCH(
           noPostSurcharge: Number(fullOrder.noPostSurcharge),
           expediteFee: Number(fullOrder.expediteFee),
           tax: Number(fullOrder.tax),
+          installationLocationImage: fullOrder.installationLocationImage,
           assignedAgentName: assignedAgent?.name ?? null,
           assignedAgentPhone: assignedAgent?.phone ?? null,
           isInvoiceBilling: fullOrder.paymentStatus === 'pending_invoice',

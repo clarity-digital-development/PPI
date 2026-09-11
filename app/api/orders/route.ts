@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { compressImageDataUri } from '@/lib/images/compress'
 import { getCurrentUser, generateOrderNumber, canActOnBehalfOf } from '@/lib/auth-utils'
 import { createOrderSchema } from '@/lib/validations'
 import { validateScheduling } from '@/lib/scheduling'
@@ -412,6 +413,15 @@ export async function POST(request: NextRequest) {
     // accumulate as pending_invoice and an admin collects via /admin/invoices.
     const isInvoiceBilling = !!payer.invoiceBilling
 
+    // Shrink the install-location photo BEFORE any Stripe call. Phones hand us
+    // 4–5 MB, which used to blow past the installer email's photo cap and bloat
+    // every admin page load (Ryan, 2026-09-08). Re-encoding takes a few hundred
+    // ms, and the PaymentIntent below captures immediately — doing this after
+    // the charge would widen the charged-but-no-order window for no reason.
+    // The batch route compresses before its transaction for the same reason.
+    // Best-effort: on any failure this returns the original string.
+    const locationImage = await compressImageDataUri(orderData.installation_location_image)
+
     // Create or get Stripe customer — always the payer (who is charged),
     // never the agent. For on-behalf-of orders this means the team_admin's
     // Stripe customer. Skipped entirely for invoice-billing payers.
@@ -524,7 +534,7 @@ export async function POST(request: NextRequest) {
         propertyState: orderData.property_state || 'KY',
         propertyZip: orderData.property_zip,
         propertyNotes: orderData.installation_notes,
-        installationLocationImage: orderData.installation_location_image,
+        installationLocationImage: locationImage,
         // Installation details
         isGatedCommunity: orderData.is_gated_community || false,
         gateCode: orderData.gate_code,
@@ -712,6 +722,7 @@ export async function POST(request: NextRequest) {
               noPostSurcharge: pricing.noPostSurcharge,
               expediteFee: pricing.expediteFee,
               tax: pricing.tax,
+              installationLocationImage: order.installationLocationImage,
               assignedAgentName: assignedAgent?.name ?? null,
               assignedAgentPhone: assignedAgent?.phone ?? null,
               isInvoiceBilling,
