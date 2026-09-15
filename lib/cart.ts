@@ -74,10 +74,35 @@ function readCart(): CartItem[] {
     if (!raw) return []
     const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
-    return parsed
+    return parsed.map(restoreNoPost)
   } catch {
     return []
   }
+}
+
+/**
+ * "No Post Needed" is `post_type: undefined`, and JSON.stringify DROPS keys
+ * whose value is undefined — so the key comes back missing rather than
+ * present-and-undefined. Checkout reads `fd.post_type` and is fine either way,
+ * but re-opening the row to edit it seeds the wizard with
+ * `{ ...defaultFormData, ...formData }`, and a missing key lets
+ * defaultFormData's 'Signature Pink Post' win: the row silently gains a $65
+ * post the customer never chose and loses the $40 no-post service-trip fee.
+ *
+ * Restoring the key here (the single read boundary) fixes it for every
+ * consumer. Deliberately NOT done in OrderWizard: create mode is also seeded
+ * with partial presets that legitimately fall through to the default post.
+ * post_type is the only field at risk — every other undefined-able field in
+ * defaultFormData already defaults to undefined.
+ */
+function restoreNoPost(row: CartItem): CartItem {
+  if (!row || typeof row !== 'object') return row
+  // Partial<>, because OrderFormData declares post_type as required-but-
+  // nullable: without it TS treats "key absent" as impossible and narrows the
+  // branch below to never. Stored rows really can be missing the key.
+  const fd = row.formData as Partial<OrderFormData> | undefined
+  if (!fd || typeof fd !== 'object' || 'post_type' in fd) return row
+  return { ...row, formData: { ...(fd as OrderFormData), post_type: undefined } }
 }
 
 function writeCart(items: CartItem[]) {
