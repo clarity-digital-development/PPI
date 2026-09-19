@@ -17,6 +17,29 @@
 
 export const FUEL_SURCHARGE = 3.49
 export const NO_POST_SURCHARGE = 40
+
+/** The post type an agent picks when they supply the post themselves. */
+export const BYO_POST_TYPE = 'My Own Post'
+
+/**
+ * Whether recurring post-rental billing applies to an order's post type.
+ *
+ * Post-rental charges for leaving OUR post in someone's yard for months. Three
+ * cases leave no PPI post out there and must never accrue rent:
+ *   - no post at all           (post_type undefined)
+ *   - open house / wire frames (post_type 'open_house' — no post is planted)
+ *   - the agent's own post     (post_type 'My Own Post' — we don't own it)
+ *
+ * The create/batch routes previously expressed this as `!post_type`, whose
+ * comment already claimed to cover "agent's own post" but could not: both
+ * 'open_house' and 'My Own Post' are truthy and would have switched rent ON
+ * for a post PPI does not own. Billing is dormant today
+ * (POST_RENTAL_BILLING_START_AT defaults to 2099) so no money moved, but the
+ * flag is stamped at order-create time and would be wrong the day it's enabled.
+ */
+export function postRentalApplies(postType: string | null | undefined): boolean {
+  return !!postType && postType !== BYO_POST_TYPE && postType !== 'open_house'
+}
 export const FALLBACK_TAX_RATE = 0.06 // KY 6% fallback when Stripe Tax unavailable / returns 0
 export const EXPEDITE_FEE = 50
 

@@ -30,7 +30,7 @@ export interface OrderFormData {
   sign_orientation_other?: string
 
   // Post Selection
-  post_type: 'White Vinyl Post' | 'Black Vinyl Post' | 'Signature Pink Post' | 'Metal Frame Sign' | 'Wood Panel Post' | 'open_house' | undefined
+  post_type: 'White Vinyl Post' | 'Black Vinyl Post' | 'Signature Pink Post' | 'Metal Frame Sign' | 'Wood Panel Post' | 'My Own Post' | 'open_house' | undefined
 
   // Wood Panel Post add-ons (only used when post_type === 'Wood Panel Post')
   wood_panel_sign_build: boolean // +$55 if Pink Posts builds the sign
@@ -187,6 +187,10 @@ export const PRICING = {
     'Signature Pink Post': 65,
     'Metal Frame Sign': 50,
     'Wood Panel Post': 95,
+    // Agent supplies the post; we install and pick it up. Same $59 as our own
+    // vinyl posts (Ryan, 2026-09-11) — agents were picking "No Post Needed"
+    // when they had their own, which charges the $40 service-trip fee instead.
+    'My Own Post': 59,
   },
   wood_panel_sign_build: 55,
   wood_panel_materials: 55,

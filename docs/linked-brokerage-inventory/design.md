@@ -1,6 +1,6 @@
-# Linked brokerage inventory — design (PLAN, awaiting Ryan's answers + Tanner's go)
+# Linked brokerage inventory — design (APPROVED, building)
 
-**Status:** plan · **Requested:** Ryan, Slack 2026-09-08 ("agents link to see and use the full admin inventory") · **Scouted:** 2026-09-08 (read-only, three agents)
+**Status:** approved, in build · **Requested:** Ryan, Slack 2026-09-08 ("agents link to see and use the full admin inventory") · **Scouted:** 2026-09-08 (read-only, three agents) · **Ryan answered:** 2026-09-08 · **Tanner go:** 2026-09-19
 
 ## What Ryan described
 
@@ -41,12 +41,22 @@ None required for Phase A. (Optional later: `OrderItem.consumedFromUserId` if Ry
 
 `dashboard/inventory/page.tsx:666,683`, `HowInventoryWorks`, `RiderSelector.tsx:103-109`, `sign-step.tsx:55-59`, `lockbox-step.tsx:103-125` — becomes "yours" vs "<Brokerage>'s" sections.
 
-## Questions for Ryan
+## Ryan's answers (2026-09-08) — LOCKED
 
-1. **Whole pool or only what's tagged to them?** "Full inventory" reads as the whole pool (any agent can take any brokerage sign). Alternative: the brokerage tags signs to agents and each agent sees only theirs + untagged. Default: whole pool.
-2. **Who pays?** Agent's own card for the whole order (post + install of the brokerage sign + rider) — yes? Or is the brokerage invoiced like Semonin? Default: agent pays by card.
-3. **Should the brokerage login see its agents' orders** (and be able to schedule removals)? Default: yes, Phase B.
-4. **Lockboxes from the pool** — the code the agent enters on the order is per-order; fine. Confirm the pool includes lockboxes and brochure boxes (Ryan said lockboxes; brochure boxes assumed purchase-only).
+1. **Whole pool.** "Whole pool for sure. That may be something we need to change if it becomes a problem but so far every admin has all their signs open." → the `assignedToMemberId` tag becomes a soft preference, NOT a filter. Pool read is every in-storage broker row regardless of tag.
+2. **Agent pays.** "Agent pays (or whoever is processing the order under that admin, this should only be an inventory link, not a pay link)." → **the link must not touch billing at all.** No `invoiceBilling` inheritance, no payer re-resolution. Critically, the promote-to-`team_admin` path at `admin/customers/[id]/route.ts:412-421` currently forces `invoiceBilling=true`; that must become an explicit choice so linking a brokerage doesn't silently move it to invoice billing.
+3. **Phase B is CUT.** "I'm going to go w no for now. When these are done, the admin actually wants to be fully hands off and not be the middle man… let's not over build bc the more we give them, the more they get confused with."
+   → Do **not** build broker-side visibility of agent orders. Do **not** extend the six team_admin ownership predicates. Scope drops from ~4 days to ~3.
+4. **Whole inventory in the pool.** "Signs, riders, and lockboxes. Riders we will def run into, I guess brochure boxes if they have them but that should be rare."
+   → Brochure boxes ARE in the pool. This reverses the v1 "purchase-only" assumption: the wizard never sends `customer_brochure_box_id` today, so that field has to be plumbed through the order path as part of this build (create, batch, edit, ownership predicate). Small but real added scope.
+
+## Revised scope (post-answers)
+
+Phase A only, as described above, with these deltas:
+- Pool read ignores `assignedToMemberId` entirely (answer 1).
+- Brochure boxes join signs/riders/lockboxes everywhere (answer 4) — including a new `customer_brochure_box_id` on the wizard→API contract.
+- No Phase B (answer 3).
+- Linking is inventory-only and must be provably billing-neutral (answer 2) — the review must assert an agent's `invoiceBilling`, `flatFeeBilling` and payer resolution are untouched by linking.
 
 ## Risks
 

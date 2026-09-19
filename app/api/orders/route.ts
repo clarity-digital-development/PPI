@@ -9,7 +9,7 @@ import { createPaymentIntent, createCustomer, calculateTax, getStripeErrorMessag
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 import { resolveServiceArea } from '@/lib/service-area'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
-import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal } from '@/lib/orders/pricing'
+import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, postRentalApplies } from '@/lib/orders/pricing'
 
 export async function GET(request: NextRequest) {
   try {
@@ -347,6 +347,21 @@ export async function POST(request: NextRequest) {
         })
       }
 
+      // Same for the no-post service-trip fee. The helper's tax base includes
+      // it, so leaving it out here meant Stripe priced a base $40 short and
+      // that result became the taxOverride — the same order was taxed $2.40
+      // less when Stripe answered than when the 6% fallback ran, and less
+      // than the identical order placed through the cart. Not in
+      // orderData.items (the helper derives it from hasPostType), so it has
+      // to be pushed explicitly, like the expedite fee above.
+      if (fallbackPricing.noPostSurcharge > 0) {
+        taxLineItems.push({
+          amount: Math.round(fallbackPricing.noPostSurcharge * 100),
+          reference: 'no_post_surcharge',
+          tax_code: 'txcd_99999999',
+        })
+      }
+
       // Apply discount proportionally (reduce first item amount for simplicity)
       if (discount > 0 && taxLineItems.length > 0) {
         const discountCents = Math.round(discount * 100)
@@ -412,6 +427,51 @@ export async function POST(request: NextRequest) {
     // Invoice-billing payers skip the Stripe charge at checkout — their orders
     // accumulate as pending_invoice and an admin collects via /admin/invoices.
     const isInvoiceBilling = !!payer.invoiceBilling
+
+    // EVERY 400 MUST FIRE BEFORE THE CARD IS TOUCHED. These two checks used to
+    // sit just above prisma.order.create — i.e. AFTER createPaymentIntent had
+    // already captured. An unknown post type therefore charged the customer and
+    // then returned "Invalid post type" with no Order row, no confirmation
+    // email, and no refund or PI cancel; the agent retried and was charged
+    // again. Latent until now (the wizard only ever sent names that existed),
+    // but shipping a new post tile whose DB row lands separately would have
+    // made it fire on every "My Own Post" order in the gap between the deploy
+    // and the insert script. The batch route already validates before it
+    // charges (batch/route.ts:271-281 then :738).
+    //
+    // Both blocks read only `orderData` and write only `postTypeId`, which is
+    // not consumed until prisma.order.create far below — so this is a pure
+    // move with no reordering of anything else.
+
+    // Get the post type (optional - orders can be for other services only)
+    // open_house is handled as no-post (wire frames are the service)
+    let postTypeId: string | null = null
+    if (orderData.post_type && orderData.post_type !== 'open_house') {
+      console.log('Looking up post type:', orderData.post_type)
+      const postType = await prisma.postType.findFirst({
+        where: { name: orderData.post_type },
+      })
+
+      if (!postType) {
+        console.error('Post type not found:', orderData.post_type)
+        // List available post types for debugging
+        const availableTypes = await prisma.postType.findMany({ select: { name: true } })
+        console.error('Available post types:', availableTypes.map(t => t.name))
+        return NextResponse.json({ error: `Invalid post type: ${orderData.post_type}` }, { status: 400 })
+      }
+      console.log('Found post type:', postType.name, postType.id)
+      postTypeId = postType.id
+    } else {
+      console.log('No post type selected (or open house) - order is for other services only')
+    }
+
+    // Validate property type before creating order
+    const validPropertyTypes = ['residential', 'commercial', 'land', 'multi_family', 'house', 'construction', 'bare_land']
+    if (!validPropertyTypes.includes(orderData.property_type)) {
+      console.error('Invalid property type:', orderData.property_type)
+      return NextResponse.json({ error: `Invalid property type: ${orderData.property_type}` }, { status: 400 })
+    }
+    console.log('Property type valid:', orderData.property_type)
 
     // Shrink the install-location photo BEFORE any Stripe call. Phones hand us
     // 4–5 MB, which used to blow past the installer email's photo cap and bloat
@@ -483,36 +543,6 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Get the post type (optional - orders can be for other services only)
-    // open_house is handled as no-post (wire frames are the service)
-    let postTypeId: string | null = null
-    if (orderData.post_type && orderData.post_type !== 'open_house') {
-      console.log('Looking up post type:', orderData.post_type)
-      const postType = await prisma.postType.findFirst({
-        where: { name: orderData.post_type },
-      })
-
-      if (!postType) {
-        console.error('Post type not found:', orderData.post_type)
-        // List available post types for debugging
-        const availableTypes = await prisma.postType.findMany({ select: { name: true } })
-        console.error('Available post types:', availableTypes.map(t => t.name))
-        return NextResponse.json({ error: `Invalid post type: ${orderData.post_type}` }, { status: 400 })
-      }
-      console.log('Found post type:', postType.name, postType.id)
-      postTypeId = postType.id
-    } else {
-      console.log('No post type selected (or open house) - order is for other services only')
-    }
-
-    // Validate property type before creating order
-    const validPropertyTypes = ['residential', 'commercial', 'land', 'multi_family', 'house', 'construction', 'bare_land']
-    if (!validPropertyTypes.includes(orderData.property_type)) {
-      console.error('Invalid property type:', orderData.property_type)
-      return NextResponse.json({ error: `Invalid property type: ${orderData.property_type}` }, { status: 400 })
-    }
-    console.log('Property type valid:', orderData.property_type)
-
     // Create order
     console.log('Creating order with data:', {
       postTypeId,
@@ -548,9 +578,11 @@ export async function POST(request: NextRequest) {
         subtotal: finalSubtotal,
         fuelSurcharge: finalFuelSurcharge,
         noPostSurcharge: finalNoPostSurcharge,
-        // CR2: no PPI post in the ground (agent's own post / no post) ⇒ no
-        // recurring post-rental. Mirrors the noPostSurcharge condition.
-        postRentalDisabled: !orderData.post_type,
+        // CR2: no PPI post in the ground (agent's own post / open house / no
+        // post) ⇒ no recurring post-rental. See postRentalApplies — this used
+        // to be `!post_type`, which could not actually cover the "agent's own
+        // post" case its comment claimed.
+        postRentalDisabled: !postRentalApplies(orderData.post_type),
         expediteFee: finalExpediteFee,
         discount: finalDiscount,
         tax: finalTax,
@@ -715,13 +747,20 @@ export async function POST(request: NextRequest) {
               hasMarkerPlaced: orderData.has_marker_placed,
               signOrientation: orderData.sign_orientation || undefined,
               signOrientationOther: orderData.sign_orientation_other || undefined,
-              subtotal: pricing.subtotal,
-              discount,
+              // The CLAMPED figures — the same ones written to the order row
+              // and summing to `total` above. This block used to pass the raw
+              // `pricing.*`, so a flat-fee account's admin email itemised a
+              // subtotal, discount, expedite fee, $40 no-post fee and tax that
+              // were never charged, next to a flat-fee total they don't add up
+              // to. Flat-fee clamps every one of these to 0 or a fixed value
+              // (see finalSubtotal/finalNoPostSurcharge etc. above).
+              subtotal: finalSubtotal,
+              discount: finalDiscount,
               promoCode: orderData.promo_code || undefined,
-              fuelSurcharge: pricing.fuelSurcharge,
-              noPostSurcharge: pricing.noPostSurcharge,
-              expediteFee: pricing.expediteFee,
-              tax: pricing.tax,
+              fuelSurcharge: finalFuelSurcharge,
+              noPostSurcharge: finalNoPostSurcharge,
+              expediteFee: finalExpediteFee,
+              tax: finalTax,
               installationLocationImage: order.installationLocationImage,
               assignedAgentName: assignedAgent?.name ?? null,
               assignedAgentPhone: assignedAgent?.phone ?? null,

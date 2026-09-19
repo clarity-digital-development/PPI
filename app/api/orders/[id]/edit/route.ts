@@ -9,7 +9,7 @@ import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
 import { audit, AuditAction } from '@/lib/audit'
 import { chargePaymentMethod, isDetachedPaymentMethodError } from '@/lib/stripe'
 import { resolveEffectivePayer } from '@/lib/orders/effective-payer'
-import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, NO_POST_SURCHARGE, type OrderItemForPricing } from '@/lib/orders/pricing'
+import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, NO_POST_SURCHARGE, postRentalApplies, type OrderItemForPricing } from '@/lib/orders/pricing'
 import { resolveServiceArea } from '@/lib/service-area'
 import { z } from 'zod'
 
@@ -248,6 +248,15 @@ export async function PATCH(
       newPostTypeId = postType.id
       noPostSurcharge = 0
     }
+
+    // Keep recurring post-rental in step with the post this edit lands on. The
+    // create paths compute this via postRentalApplies; the edit path never
+    // touched the flag at all, so an order edited ONTO "My Own Post" or an open
+    // house kept rent accruing on a post PPI doesn't own, and one edited OFF
+    // them kept rent switched off forever. Note 'none'/'' must normalise to
+    // null — postRentalApplies would read the literal string 'none' as a real
+    // post name.
+    const newPostRentalDisabled = !postRentalApplies(!pt || pt === 'none' ? null : pt)
 
     // ---- Recompute pricing ----
     // The diff between this new total and the existing order.total is charged
@@ -731,6 +740,13 @@ export async function PATCH(
         },
         data: {
           postTypeId: newPostTypeId,
+          // Only when the post actually moved. postRentalDisabled doubles as
+          // the admin's manual opt-out, so recomputing it on a date-only or
+          // notes-only edit would silently switch billing back on for an order
+          // an admin had deliberately excluded.
+          ...(newPostTypeId !== existingOrder.postTypeId
+            ? { postRentalDisabled: newPostRentalDisabled }
+            : {}),
           // Property
           propertyType: propertyType as never,
           // Use the trimmed-to-undefined variants so a blank field ('' from a

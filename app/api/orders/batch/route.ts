@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { compressImageDataUri } from '@/lib/images/compress'
 import { getCurrentUser, generateOrderNumber } from '@/lib/auth-utils'
 import { createPaymentIntent, createCustomer, getStripeErrorMessage, stripe } from '@/lib/stripe/server'
-import { computeOrderPricing, computeFlatFeePricing } from '@/lib/orders/pricing'
+import { computeOrderPricing, computeFlatFeePricing, postRentalApplies } from '@/lib/orders/pricing'
 import { claimHoldsInTx, HoldConflictError, releaseHolds, describeHoldItems, type HoldClaim } from '@/lib/inventory-holds'
 import { validateScheduling } from '@/lib/scheduling'
 import crypto from 'node:crypto'
@@ -458,7 +458,7 @@ export async function POST(request: NextRequest) {
               fuelSurcharge: c.pricing.fuelSurcharge,
               noPostSurcharge: c.pricing.noPostSurcharge,
               // CR2: agent's own post / no PPI post ⇒ no recurring post-rental.
-              postRentalDisabled: !o.post_type,
+              postRentalDisabled: !postRentalApplies(o.post_type),
               expediteFee: c.pricing.expediteFee,
               discount: c.pricing.discount,
               tax: c.pricing.tax,

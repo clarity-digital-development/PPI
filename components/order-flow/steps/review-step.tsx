@@ -397,8 +397,20 @@ export function ReviewStep({
       items.push({ item_type: 'brochure_box', total_price: PRICING.brochure_box_install })
     }
 
+    // The $40 no-post service-trip fee IS in the tax base on the server
+    // (lib/orders/pricing.ts:138) but was missing here, so the preview quoted
+    // tax on a base $40 short and the cart charged $2.40 more than the screen
+    // showed. Mirrors `hasPostType: !!post_type` exactly — an open_house order
+    // has a truthy post_type and pays no surcharge, so it must not be added.
+    if (!formData.post_type) {
+      items.push({ item_type: 'no_post_surcharge', total_price: PRICING.no_post_surcharge })
+    }
+
     return items
-  }, [formData.post_type, formData.sign_option, formData.riders, formData.lockbox_option, formData.wire_frame_quantity, formData.solar_lighting_quantity, formData.second_post_enabled, formData.second_post_sign_option, formData.second_post_riders, formData.second_post_wire_frame_quantity, formData.second_post_solar_lighting_quantity, formData.brochure_option])
+    // wood_panel_* and lockboxInstall were read above but missing here, so
+    // toggling a Wood Panel add-on left the tax preview stale — the same
+    // "quoted tax ≠ charged tax" problem this function was just fixed for.
+  }, [formData.post_type, formData.sign_option, formData.riders, formData.lockbox_option, formData.wire_frame_quantity, formData.solar_lighting_quantity, formData.second_post_enabled, formData.second_post_sign_option, formData.second_post_riders, formData.second_post_wire_frame_quantity, formData.second_post_solar_lighting_quantity, formData.brochure_option, formData.wood_panel_sign_build, formData.wood_panel_materials, lockboxInstall])
 
   // Fetch tax from Stripe Tax API
   useEffect(() => {

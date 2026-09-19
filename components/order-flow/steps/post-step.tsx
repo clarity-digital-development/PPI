@@ -1,7 +1,7 @@
 'use client'
 
 import Image from 'next/image'
-import { Flag } from 'lucide-react'
+import { Flag, PackageCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { StepProps } from '../types'
 import { PRICING } from '../types'
@@ -309,6 +309,52 @@ export function PostStep({ formData, updateFormData, placedAsOpenHouse }: StepPr
         </button>
       </div>
       )}
+
+      {/* My Own Post — sits directly above "No Post Needed" because that is the
+          option agents were mis-picking when they had their own post (Ryan,
+          2026-09-18). Same $59 as our vinyl posts: we still install and pick up. */}
+      <div>
+        <div className="flex items-center gap-2 mb-3">
+          <span className="text-xs font-semibold uppercase tracking-wider text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
+            Your own post
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => updateFormData({ post_type: 'My Own Post' })}
+          className={cn(
+            'w-full flex items-center gap-4 p-4 rounded-xl border-2 transition-all text-left',
+            formData.post_type === 'My Own Post'
+              ? 'border-pink-500 ring-2 ring-pink-200 bg-pink-50'
+              : 'border-gray-200 hover:border-gray-300 bg-gray-50'
+          )}
+        >
+          <div className={cn(
+            'w-12 h-12 rounded-full flex items-center justify-center flex-shrink-0',
+            formData.post_type === 'My Own Post' ? 'bg-pink-500 text-white' : 'bg-gray-100 text-gray-500'
+          )}>
+            <PackageCheck className="w-6 h-6" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="font-semibold text-gray-900">My own post</h3>
+            <p className="text-sm text-gray-500 mt-0.5">
+              You&apos;re supplying the post — we install it and pick it back up. Choose this
+              instead of &quot;No post needed&quot; so we know to bring your post out.
+            </p>
+          </div>
+          <div className="text-right flex-shrink-0">
+            <span className="text-xl font-bold text-gray-700">${PRICING.posts['My Own Post']}</span>
+            <p className="text-xs text-gray-500">install &amp; pickup</p>
+          </div>
+          {formData.post_type === 'My Own Post' && (
+            <div className="w-6 h-6 bg-pink-500 rounded-full flex items-center justify-center flex-shrink-0">
+              <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+          )}
+        </button>
+      </div>
 
       {/* Divider */}
       <div className="relative">
