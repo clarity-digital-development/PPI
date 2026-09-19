@@ -116,7 +116,10 @@ export async function PUT(
       })
       if (existing && existing.propertyZip !== newZip) {
         const owner = existing.user
-        const isExempt = owner.role === 'team_admin' || owner.isServiceAreaExempt
+        // Mirrors lib/service-area.ts — only the per-account flag exempts.
+        // Brokers are no longer exempt by role, so an admin ZIP override on a
+        // broker order must raise the WARN audit again.
+        const isExempt = owner.isServiceAreaExempt
         if (!isExempt) {
           await audit({
             actor: { id: user.id, email: user.email, role: user.role },

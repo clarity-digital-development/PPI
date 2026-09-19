@@ -16,6 +16,12 @@ const centerPatchSchema = z.object({
   standardMinutes: z.number().int().positive().max(600).optional(),
   surchargeMinutes: z.number().int().positive().max(600).optional(),
   surchargeCents: z.number().int().min(0).max(1_000_000).optional(),
+  // Road-mile pricing (Ryan 2026-09-08). Explicit null clears the radius and
+  // drops the centre back to the legacy minute bands.
+  freeRadiusMiles: z.number().int().min(0).max(500).nullable().optional(),
+  includedOverageMiles: z.number().int().min(0).max(500).optional(),
+  perMileCents: z.number().int().min(0).max(100_000).optional(),
+  baseFeeCents: z.number().int().min(0).max(1_000_000).optional(),
   contactPhone: z.string().trim().min(7).max(20).optional(),
   isActive: z.boolean().optional(),
 })
@@ -108,6 +114,10 @@ export async function PATCH(
         ...(data.standardMinutes !== undefined ? { standardMinutes: data.standardMinutes } : {}),
         ...(data.surchargeMinutes !== undefined ? { surchargeMinutes: data.surchargeMinutes } : {}),
         ...(data.surchargeCents !== undefined ? { surchargeCents: data.surchargeCents } : {}),
+        ...(data.freeRadiusMiles !== undefined ? { freeRadiusMiles: data.freeRadiusMiles } : {}),
+        ...(data.includedOverageMiles !== undefined ? { includedOverageMiles: data.includedOverageMiles } : {}),
+        ...(data.perMileCents !== undefined ? { perMileCents: data.perMileCents } : {}),
+        ...(data.baseFeeCents !== undefined ? { baseFeeCents: data.baseFeeCents } : {}),
         ...(data.contactPhone !== undefined ? { contactPhone: data.contactPhone } : {}),
         ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
       },

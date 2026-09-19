@@ -433,6 +433,10 @@ model Order {
   // Values: 'haversine_estimate' | 'zip_cache' | 'address_lookup' | 'address_cache'.
   // Null for exempt orders, override-decided orders, and pre-Round-25 rows.
   serviceAreaDriveMinutes                Int?                           @map("service_area_drive_minutes")
+  // Road miles the fee was actually priced from (Ryan 2026-09-08). Audit
+  // trail: without it there is no way to re-derive why an order was charged
+  // $45 rather than $25 once cache rows expire.
+  serviceAreaDriveMiles                  Decimal?                       @db.Decimal(7, 2) @map("service_area_drive_miles")
   serviceAreaDriveTimeSource             String?                        @map("service_area_drive_time_source")
   // Split out-of-area fee (Ryan, 2026-07-09/12): the OOA surcharge splits
   // into half charged now (folded into `total` via the surcharge OrderItem)
@@ -1085,11 +1089,29 @@ model ServiceCenter {
   // Geocoded once at create time — used by haversine to ZIP centroid.
   lat              Decimal  @db.Decimal(9, 6)
   lng              Decimal  @db.Decimal(9, 6)
+  // ---- Legacy drive-TIME bands (Round 25-27) ----
+  // Superseded by the road-mile fields below (Ryan 2026-09-08: "Instead of
+  // drive time, let's go off miles"). Kept until every center is seeded with
+  // a freeRadiusMiles, because the resolver falls back to these for any
+  // center that has no radius yet — that is what makes deploy-before-seed
+  // safe. Drop in a later cleanup once all centers carry a radius.
   // Upper bound of standard band in minutes (<= = standard tier).
   standardMinutes  Int      @map("standard_minutes")
   // Upper bound of surcharge band in minutes (> = out_of_area tier).
   surchargeMinutes Int      @map("surcharge_minutes")
   surchargeCents   Int      @default(5000) @map("surcharge_cents")
+
+  // ---- Road-mile pricing (Ryan 2026-09-08) ----
+  // Free radius in ROAD miles from this center. NULL = not migrated yet, use
+  // the legacy minute bands above. Beyond the radius: baseFeeCents covers the
+  // first includedOverageMiles, then perMileCents for every mile past that.
+  // All PER TRIP — Ryan confirmed the fee is charged again at pickup, so the
+  // resolver doubles it before returning (the existing 50/50 split then puts
+  // half on the order and half on the removal, unchanged).
+  freeRadiusMiles      Int? @map("free_radius_miles")
+  includedOverageMiles Int  @default(20) @map("included_overage_miles")
+  perMileCents         Int  @default(200) @map("per_mile_cents")
+  baseFeeCents         Int  @default(2500) @map("base_fee_cents")
   contactPhone     String   @default("859-395-8188") @map("contact_phone")
   isActive         Boolean  @default(true) @map("is_active")
   createdAt        DateTime @default(now()) @map("created_at")
@@ -1137,6 +1159,10 @@ model ZipDriveTimeCache {
   zip          String   @db.VarChar(5)
   centerId     String   @map("center_id")
   driveMinutes Int      @map("drive_minutes")
+  // Road miles for the same route. NULL on rows cached before the switch to
+  // mile-based pricing — the resolver treats a null as a MISS for miles and
+  // re-fetches, so old rows self-heal on next use rather than pricing at 0.
+  driveMiles   Decimal? @map("drive_miles") @db.Decimal(7, 2)
   source       String   @default("google_routes")
   cachedAt     DateTime @default(now()) @map("cached_at")
 
@@ -1150,6 +1176,8 @@ model AddressDriveTimeCache {
   centerId     String   @map("center_id")
   address      String
   driveMinutes Int      @map("drive_minutes")
+  // See ZipDriveTimeCache.driveMiles — null means "re-fetch", never 0 miles.
+  driveMiles   Decimal? @map("drive_miles") @db.Decimal(7, 2)
   source       String   @default("google_routes")
   cachedAt     DateTime @default(now()) @map("cached_at")
 

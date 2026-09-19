@@ -48,10 +48,20 @@ function waypointBody(wp: WaypointInput) {
  * The Routes API responds with one element per (origin, destination)
  * pair. We always send 1x1, so we expect exactly one element back.
  */
-export async function fetchDriveMinutes(
+export interface RouteMeasurement {
+  /** Drive minutes, rounded to the nearest int (unchanged from Round 25). */
+  minutes: number
+  /** Road miles along the same route, 1dp. Null when Google omitted
+   *  distanceMeters — callers must treat that as "unknown", never as 0. */
+  miles: number | null
+}
+
+const METERS_PER_MILE = 1609.344
+
+export async function fetchRoute(
   origin: WaypointInput,
   destination: WaypointInput
-): Promise<number | null> {
+): Promise<RouteMeasurement | null> {
   const apiKey = process.env.GOOGLE_MAPS_SERVER_API_KEY
   if (!apiKey) {
     if (!missingKeyWarned) {
@@ -71,12 +81,13 @@ export async function fetchDriveMinutes(
         'Content-Type': 'application/json',
         'X-Goog-Api-Key': apiKey,
         // Field mask is REQUIRED by the Routes API — without it the call
-        // 400s. We ask for duration + status + condition to distinguish a
-        // genuine ROUTE_NOT_FOUND (no road connects the points) from a
-        // transport error, while keeping billing at the Essentials tier
+        // 400s. We ask for duration + distanceMeters + status + condition to
+        // distinguish a genuine ROUTE_NOT_FOUND (no road connects the points)
+        // from a transport error, while keeping billing at the Essentials tier
         // (asking for traffic-aware or toll fields would bump us to the
-        // Pro SKU at 2x price).
-        'X-Goog-FieldMask': 'originIndex,destinationIndex,duration,status,condition',
+        // Pro SKU at 2x price). distanceMeters is Essentials too — it is what
+        // the mile-based out-of-area fee prices from (Ryan, 2026-09-08).
+        'X-Goog-FieldMask': 'originIndex,destinationIndex,duration,distanceMeters,status,condition',
       },
       body: JSON.stringify({
         origins: [waypointBody(origin)],
@@ -99,6 +110,7 @@ export async function fetchDriveMinutes(
       status?: { code?: number; message?: string }
       condition?: string // 'ROUTE_EXISTS' | 'ROUTE_NOT_FOUND'
       duration?: string // protobuf duration: "1234s"
+      distanceMeters?: number
     }>
 
     const first = Array.isArray(data) ? data[0] : null
@@ -125,7 +137,15 @@ export async function fetchDriveMinutes(
     const seconds = Number.parseFloat(durationStr.slice(0, -1))
     if (!Number.isFinite(seconds) || seconds < 0) return null
 
-    return Math.round(seconds / 60)
+    // distanceMeters is absent on a zero-length route (origin == destination),
+    // where 0 is the truthful answer. Only a non-numeric value is "unknown".
+    const meters = first.distanceMeters
+    const miles =
+      typeof meters === 'number' && Number.isFinite(meters) && meters >= 0
+        ? Math.round((meters / METERS_PER_MILE) * 10) / 10
+        : null
+
+    return { minutes: Math.round(seconds / 60), miles }
   } catch (err) {
     const name = (err as { name?: string } | null)?.name
     if (name === 'AbortError') {
@@ -142,16 +162,26 @@ export async function fetchDriveMinutes(
 // Convenience shims so the resolver and seed script don't have to think
 // about waypoint shapes.
 
-export function fetchDriveMinutesByLatLng(origin: LatLng, dest: LatLng): Promise<number | null> {
-  return fetchDriveMinutes(
+export function fetchRouteByLatLng(origin: LatLng, dest: LatLng): Promise<RouteMeasurement | null> {
+  return fetchRoute(
     { kind: 'latlng', lat: origin.lat, lng: origin.lng },
     { kind: 'latlng', lat: dest.lat, lng: dest.lng }
   )
 }
 
-export function fetchDriveMinutesByAddress(address: string, dest: LatLng): Promise<number | null> {
-  return fetchDriveMinutes(
+export function fetchRouteByAddress(address: string, dest: LatLng): Promise<RouteMeasurement | null> {
+  return fetchRoute(
     { kind: 'address', address },
     { kind: 'latlng', lat: dest.lat, lng: dest.lng }
   )
+}
+
+// Minutes-only shims, kept so the Round 25 ZIP seed script and any external
+// caller keep compiling. New code should use fetchRoute* and read .miles.
+export async function fetchDriveMinutesByLatLng(origin: LatLng, dest: LatLng): Promise<number | null> {
+  return (await fetchRouteByLatLng(origin, dest))?.minutes ?? null
+}
+
+export async function fetchDriveMinutesByAddress(address: string, dest: LatLng): Promise<number | null> {
+  return (await fetchRouteByAddress(address, dest))?.minutes ?? null
 }

@@ -33,7 +33,13 @@
 
 import { prisma } from '@/lib/prisma'
 import { getZipCentroid, type LatLng } from '@/lib/service-area/zip-centroid'
-import { fetchDriveMinutesByAddress } from '@/lib/service-area/google-routes'
+import { fetchRouteByAddress } from '@/lib/service-area/google-routes'
+import {
+  computeMileageFee,
+  describeMileageFee,
+  roundMiles,
+  type MileageFeeConfig,
+} from '@/lib/service-area/mileage-fee'
 import {
   hashAddress,
   readAddressDriveTime,
@@ -92,6 +98,14 @@ export interface DecidedBy {
    *  'haversine_estimate' is the fallback; 'zip_cache' is the seeded
    *  cache; 'address_lookup' is a fresh borderline upgrade. */
   driveTimeSource: 'haversine_estimate' | 'zip_cache' | 'address_lookup' | 'address_cache'
+  /** Road miles the fee was priced from. Null for a centre still on minutes. */
+  driveMiles?: number | null
+  /** Miles past the free radius, 0 when inside it. */
+  overMiles?: number
+  /** Plain-English reason for the review page, e.g.
+   *  "41 road miles from Lexington (21 over the free 20)". Never contains a
+   *  dollar amount — the caller renders the money separately. */
+  explanation?: string
 }
 
 export interface ResolveResult {
@@ -115,6 +129,23 @@ interface ServiceCenterRow {
   surchargeCents: number
   contactPhone: string
   isActive: boolean
+  // Mile-based pricing (Ryan 2026-09-08). freeRadiusMiles null => this centre
+  // has not been migrated yet and still prices off the minute bands above.
+  freeRadiusMiles: number | null
+  includedOverageMiles: number
+  perMileCents: number
+  baseFeeCents: number
+}
+
+/** Mile config for a centre, or null when it still prices by minutes. */
+function mileageConfig(c: ServiceCenterRow): MileageFeeConfig | null {
+  if (c.freeRadiusMiles == null) return null
+  return {
+    freeRadiusMiles: c.freeRadiusMiles,
+    includedOverageMiles: c.includedOverageMiles,
+    perMileCents: c.perMileCents,
+    baseFeeCents: c.baseFeeCents,
+  }
 }
 
 function toNum(v: number | { toNumber(): number }): number {
@@ -150,10 +181,68 @@ export function estDriveMinutes(miles: number): number {
 
 type CenterTier = 'standard' | 'surcharge' | 'out_of_area'
 
+/** Legacy minute-band tier. Only used for centres with no freeRadiusMiles. */
 function tierForCenter(minutes: number, center: ServiceCenterRow): CenterTier {
   if (minutes <= center.standardMinutes) return 'standard'
   if (minutes <= center.surchargeMinutes) return 'surcharge'
   return 'out_of_area'
+}
+
+/** What a centre would charge for this property, and at what tier. */
+interface CenterPrice {
+  tier: CenterTier
+  /** Fee for BOTH trips — the order route splits it 50/50. */
+  feeCents: number
+  overMiles: number
+  explanation?: string
+}
+
+/**
+ * Price one centre. Miles win whenever the centre has a radius AND we know the
+ * route distance; otherwise fall back to the legacy minute bands so a centre
+ * that has not been seeded yet still prices sanely. That fallback is what makes
+ * it safe to deploy before the seed script runs.
+ *
+ * NOTE: mile-based pricing NEVER returns 'out_of_area'. Ryan removed the
+ * distance cutoff — "let's let the agent decide how much they want us to
+ * drive". Only the legacy path can still refuse on distance.
+ */
+function priceCenter(
+  center: ServiceCenterRow,
+  minutes: number,
+  miles: number | null,
+  /** True only when `miles` came from a real Google route measurement. */
+  measured: boolean
+): CenterPrice {
+  const cfg = mileageConfig(center)
+  if (cfg && miles != null) {
+    const fee = computeMileageFee(miles, cfg)
+    // ESTIMATE SAFETY RAIL. When Google is unavailable (no API key, timeout,
+    // ROUTE_NOT_FOUND) `miles` is straight-line x 1.18, which is fine for
+    // deciding "is this far?" but is not something to bill an uncapped
+    // per-mile rate from — a bad estimate would put a large variable charge on
+    // a live card with nothing measured behind it. Cap an UNMEASURED fee at
+    // the centre's legacy flat amount, so we only ever bill above the old flat
+    // fee when we actually measured the road distance. Ryan removed the
+    // distance cutoff, not the requirement that the number be real.
+    const cappedBoth = measured
+      ? fee.bothTripsCents
+      : Math.min(fee.bothTripsCents, center.surchargeCents)
+    return {
+      tier: cappedBoth > 0 ? 'surcharge' : 'standard',
+      feeCents: cappedBoth,
+      overMiles: fee.overMiles,
+      explanation: measured
+        ? describeMileageFee(center.name, miles, cfg, fee)
+        : `approx ${roundMiles(miles)} miles from ${center.name}`,
+    }
+  }
+  const tier = tierForCenter(minutes, center)
+  return {
+    tier,
+    feeCents: tier === 'surcharge' ? center.surchargeCents : 0,
+    overMiles: 0,
+  }
 }
 
 /** Retained for backwards compat — Round 27 always upgrades when an
@@ -174,7 +263,11 @@ const TIER_RANK: Record<CenterTier, number> = {
 interface ScoredCenter {
   center: ServiceCenterRow
   minutes: number
+  miles: number | null
   tier: CenterTier
+  feeCents: number
+  overMiles: number
+  explanation?: string
   source: DecidedBy['driveTimeSource']
 }
 
@@ -188,22 +281,40 @@ async function scoreCenterFromZip(
   zip: string,
   zipLL: LatLng
 ): Promise<ScoredCenter> {
+  const centerLLForEstimate: LatLng = { lat: toNum(center.lat), lng: toNum(center.lng) }
   const cached = await readZipDriveTime(zip, center.id)
   if (cached) {
+    // A ZIP row cached before mile pricing has no miles. Fall back to the
+    // haversine ESTIMATE rather than to the legacy minute bands: dropping to
+    // minutes here would price a cached ZIP as a flat $50 while an uncached
+    // one a mile away priced per-mile. The address-level upgrade replaces the
+    // estimate with the real route distance on any checkout that has an
+    // address; only the cart-preview quote (no address) ever ships it.
+    const estMiles =
+      cached.driveMiles ??
+      (mileageConfig(center) ? roundMiles(haversineMiles(zipLL, centerLLForEstimate) * ROAD_FACTOR) : null)
     return {
       center,
       minutes: cached.driveMinutes,
-      tier: tierForCenter(cached.driveMinutes, center),
+      miles: estMiles,
       source: 'zip_cache',
+      ...priceCenter(center, cached.driveMinutes, estMiles, cached.driveMiles != null),
     }
   }
   const centerLL: LatLng = { lat: toNum(center.lat), lng: toNum(center.lng) }
-  const minutes = estDriveMinutes(haversineMiles(zipLL, centerLL))
+  // Straight-line miles x ROAD_FACTOR is the same approximation the minute
+  // estimate has always used; it is only a placeholder until the address-level
+  // Google lookup below replaces it with the real route distance. Cart-preview
+  // quotes (no address) are the one path that prices off this estimate.
+  const straightMiles = haversineMiles(zipLL, centerLL)
+  const estMiles = roundMiles(straightMiles * ROAD_FACTOR)
+  const minutes = estDriveMinutes(straightMiles)
   return {
     center,
     minutes,
-    tier: tierForCenter(minutes, center),
+    miles: estMiles,
     source: 'haversine_estimate',
+    ...priceCenter(center, minutes, estMiles, false),
   }
 }
 
@@ -218,25 +329,41 @@ async function upgradeWithAddress(
   address: ResolveAddress,
   addressHashValue: string
 ): Promise<ScoredCenter> {
+  const needsMiles = mileageConfig(scored.center) != null
   const cached = await readAddressDriveTime(addressHashValue, scored.center.id)
-  if (cached) {
+  // A cached row with no mileage is a MISS once this centre prices by miles —
+  // rows written before the switch carry minutes only, and reusing one would
+  // silently fall back to the haversine estimate for the whole 30-day TTL.
+  if (cached && !(needsMiles && cached.driveMiles == null)) {
     return {
       ...scored,
       minutes: cached.driveMinutes,
-      tier: tierForCenter(cached.driveMinutes, scored.center),
+      miles: cached.driveMiles ?? scored.miles,
       source: 'address_cache',
+      ...priceCenter(scored.center, cached.driveMinutes, cached.driveMiles ?? scored.miles, cached.driveMiles != null),
     }
   }
   const addressLine = `${address.street}, ${address.city}, ${address.state} ${address.zip}`
   const centerLL: LatLng = { lat: toNum(scored.center.lat), lng: toNum(scored.center.lng) }
-  const live = await fetchDriveMinutesByAddress(addressLine, centerLL)
+  const live = await fetchRouteByAddress(addressLine, centerLL)
   if (live == null) return scored
-  await writeAddressDriveTime(addressHashValue, scored.center.id, addressLine, live)
+  await writeAddressDriveTime(
+    addressHashValue,
+    scored.center.id,
+    addressLine,
+    live.minutes,
+    'google_routes',
+    live.miles
+  )
+  // Google answered but omitted distance: keep the estimate rather than
+  // pricing a long drive as 0 miles.
+  const miles = live.miles ?? scored.miles
   return {
     ...scored,
-    minutes: live,
-    tier: tierForCenter(live, scored.center),
+    minutes: live.minutes,
+    miles,
     source: 'address_lookup',
+    ...priceCenter(scored.center, live.minutes, miles, live.miles != null),
   }
 }
 
@@ -252,8 +379,19 @@ async function upgradeWithAddress(
  * loud warning when that happens.
  */
 export async function resolveServiceArea(input: ResolveInput): Promise<ResolveResult> {
-  // 1. Exempt fast-path — no DB hit. Per Ryan, team_admins always pass.
-  if (input.user && (input.user.role === 'team_admin' || input.user.isServiceAreaExempt)) {
+  // 1. Exempt fast-path — no DB hit.
+  //
+  // ONLY the per-account flag exempts. This used to also exempt every
+  // `role === 'team_admin'`, which meant EVERY broker order skipped the
+  // distance maths entirely at any distance — confirmed on order
+  // PPI-MTSSKOFZ-AKCL (309 West Main Street, Blanchester OH, ~40 miles east of
+  // Cincinnati, Redfin): surcharge 0, centre null, minutes null. Ryan reported
+  // two of these (2026-09-14, 2026-09-15) as orders that should have been
+  // charged. Of the four exempt accounts only Semonin actually had
+  // isServiceAreaExempt set; the rest were exempt purely by role. The flag is
+  // the intended mechanism, so Semonin keeps its exemption and the other
+  // brokers start paying. (Tanner, 2026-09-19.)
+  if (input.user && input.user.isServiceAreaExempt) {
     return { tier: 'exempt', surchargeCents: 0 }
   }
 
@@ -321,10 +459,19 @@ export async function resolveServiceArea(input: ResolveInput): Promise<ResolveRe
     })
   }
 
-  // 7. Best-tier wins; within the winning tier, closest center.
+  // 7. CHEAPEST wins, then closest. Under minute bands every surcharge centre
+  // charged the same flat amount, so "best tier, then fewest minutes" was the
+  // same thing as cheapest. With per-mile pricing two centres in the surcharge
+  // tier can differ by tens of dollars, so the fee has to be the primary key —
+  // otherwise a property 6 miles outside Frankfort could be priced from
+  // Lexington just because Lexington happened to be marginally closer in
+  // minutes. Tier still leads so a standard (free) centre always beats a paid
+  // one, and out_of_area always loses.
   scored.sort((a, b) => {
     const r = TIER_RANK[a.tier] - TIER_RANK[b.tier]
-    return r !== 0 ? r : a.minutes - b.minutes
+    if (r !== 0) return r
+    if (a.feeCents !== b.feeCents) return a.feeCents - b.feeCents
+    return a.minutes - b.minutes
   })
   const winner = scored[0]
 
@@ -342,12 +489,17 @@ export async function resolveServiceArea(input: ResolveInput): Promise<ResolveRe
     centerName: winner.center.name,
     driveTimeMinutes: Math.round(winner.minutes),
     driveTimeSource: winner.source,
+    driveMiles: winner.miles,
+    overMiles: winner.overMiles,
+    explanation: winner.explanation,
   }
 
   if (winner.tier === 'surcharge') {
     return {
+      // The centre's own computed fee, not the flat surchargeCents column.
+      // Both trips; the order route splits it 50/50.
       tier: 'surcharge',
-      surchargeCents: winner.center.surchargeCents,
+      surchargeCents: winner.feeCents,
       decidedBy,
     }
   }

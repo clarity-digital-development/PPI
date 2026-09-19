@@ -17,6 +17,10 @@ interface ServiceCenter {
   standardMinutes: number
   surchargeMinutes: number
   surchargeCents: number
+  freeRadiusMiles: number | null
+  includedOverageMiles: number
+  perMileCents: number
+  baseFeeCents: number
   contactPhone: string
   isActive: boolean
   createdAt: string
@@ -35,6 +39,8 @@ interface FormState {
   surchargeMinutes: string
   // We collect dollars in the UI but POST cents to the API.
   surchargeDollars: string
+  // Road-mile pricing. Blank = leave this centre on the legacy minute bands.
+  freeRadiusMiles: string
   contactPhone: string
   isActive: boolean
 }
@@ -50,6 +56,7 @@ const EMPTY_FORM: FormState = {
   standardMinutes: '45',
   surchargeMinutes: '90',
   surchargeDollars: '50',
+  freeRadiusMiles: '',
   contactPhone: '859-395-8188',
   isActive: true,
 }
@@ -81,6 +88,7 @@ function centerToForm(c: ServiceCenter): FormState {
     standardMinutes: String(c.standardMinutes),
     surchargeMinutes: String(c.surchargeMinutes),
     surchargeDollars: (c.surchargeCents / 100).toFixed(2),
+    freeRadiusMiles: c.freeRadiusMiles == null ? '' : String(c.freeRadiusMiles),
     contactPhone: c.contactPhone,
     isActive: c.isActive,
   }
@@ -148,6 +156,13 @@ export default function ServiceAreasPage() {
     if (!Number.isInteger(surchargeMinutes) || surchargeMinutes <= 0) return setFormError('Surcharge band minutes must be a positive integer')
     if (surchargeMinutes <= standardMinutes) return setFormError('Surcharge band must exceed standard band')
     if (!Number.isFinite(surchargeDollars) || surchargeDollars < 0) return setFormError('Surcharge fee must be a non-negative number')
+    // Blank = leave this centre on the legacy minute bands. Any value must be
+    // a non-negative whole number of road miles.
+    const radiusRaw = form.freeRadiusMiles.trim()
+    const freeRadiusMiles = radiusRaw === '' ? null : Number(radiusRaw)
+    if (freeRadiusMiles !== null && (!Number.isInteger(freeRadiusMiles) || freeRadiusMiles < 0 || freeRadiusMiles > 500)) {
+      return setFormError('Free radius must be a whole number of miles between 0 and 500 (or blank to price by drive time)')
+    }
     if (!form.contactPhone.trim()) return setFormError('Contact phone is required')
 
     const payload = {
@@ -161,6 +176,7 @@ export default function ServiceAreasPage() {
       standardMinutes,
       surchargeMinutes,
       surchargeCents: Math.round(surchargeDollars * 100),
+      freeRadiusMiles,
       contactPhone: form.contactPhone.trim(),
       isActive: form.isActive,
     }
@@ -265,9 +281,8 @@ export default function ServiceAreasPage() {
                   <tr>
                     <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
                     <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Location</th>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Standard ≤</th>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Surcharge ≤</th>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Fee</th>
+                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Free radius</th>
+                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Beyond that</th>
                     <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Phone</th>
                     <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                     <th className="px-4 py-3"></th>
@@ -280,9 +295,24 @@ export default function ServiceAreasPage() {
                       <td className="px-4 py-3 text-sm text-gray-700">
                         {c.city}, {c.state} {c.zip}
                       </td>
-                      <td className="px-4 py-3 text-sm text-gray-700">{formatMinutes(c.standardMinutes)}</td>
-                      <td className="px-4 py-3 text-sm text-gray-700">{formatMinutes(c.surchargeMinutes)}</td>
-                      <td className="px-4 py-3 text-sm text-gray-700">{formatCents(c.surchargeCents)}</td>
+                      <td className="px-4 py-3 text-sm text-gray-700">
+                        {c.freeRadiusMiles == null ? (
+                          <span className="text-amber-700">by drive time ({formatMinutes(c.standardMinutes)})</span>
+                        ) : (
+                          `${c.freeRadiusMiles} mi`
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-700">
+                        {c.freeRadiusMiles == null
+                          ? `${formatCents(c.surchargeCents)} flat`
+                          : `${formatCents(c.baseFeeCents)} covers ${c.includedOverageMiles} mi, then ${formatCents(c.perMileCents)}/mi`}
+                        {/* The legacy column is the BOTH-TRIPS total; the mile
+                            fields are per trip. Labelling both "per trip" read
+                            as a halving of the legacy fee. */}
+                        <span className="block text-xs text-gray-400">
+                          {c.freeRadiusMiles == null ? 'install + pickup total' : 'per trip (charged twice)'}
+                        </span>
+                      </td>
                       <td className="px-4 py-3 text-sm text-gray-700">{c.contactPhone}</td>
                       <td className="px-4 py-3">
                         {c.isActive ? (
@@ -395,6 +425,18 @@ export default function ServiceAreasPage() {
             Tip: open Google Maps, right-click the shop, click the coordinates to copy. Paste lat first, then lng.
           </p>
 
+          {/* Road-mile pricing is the live rule (Ryan 2026-09-08). The minute
+              bands below only apply to a centre left with a blank radius. */}
+          <Input
+            label="Free radius (road miles)"
+            type="number"
+            min={0}
+            max={500}
+            value={form.freeRadiusMiles}
+            onChange={(e) => setForm({ ...form, freeRadiusMiles: e.target.value })}
+            helperText="Inside this many driving miles = no fee. Beyond it, $25 per trip covers the next 20 miles, then $2 per mile. Leave blank to fall back to the old drive-time bands."
+          />
+
           <div className="grid grid-cols-2 gap-3">
             <Input
               label="Standard band (minutes) *"
@@ -402,7 +444,7 @@ export default function ServiceAreasPage() {
               min={1}
               value={form.standardMinutes}
               onChange={(e) => setForm({ ...form, standardMinutes: e.target.value })}
-              helperText="Drive time ≤ this = no fee"
+              helperText="Only used when Free radius is blank"
             />
             <Input
               label="Surcharge band (minutes) *"
@@ -410,7 +452,7 @@ export default function ServiceAreasPage() {
               min={1}
               value={form.surchargeMinutes}
               onChange={(e) => setForm({ ...form, surchargeMinutes: e.target.value })}
-              helperText="Drive time ≤ this = flat fee. Above = no service."
+              helperText="Only used when Free radius is blank"
             />
           </div>
 

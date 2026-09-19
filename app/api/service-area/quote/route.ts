@@ -112,6 +112,12 @@ export async function GET(request: NextRequest) {
       surchargeCents: number
       centerName?: string
       driveTimeMinutes?: number
+      // Mile-based pricing (Ryan 2026-09-08): the review page shows the agent
+      // exactly why they were charged — "41 road miles from Lexington (21 over
+      // the free 20)" — instead of an unexplained flat fee.
+      driveMiles?: number
+      overMiles?: number
+      explanation?: string
       contactPhone?: string
       reason?: string
     } = {
@@ -121,6 +127,9 @@ export async function GET(request: NextRequest) {
     if (sa.decidedBy) {
       body.centerName = sa.decidedBy.centerName
       body.driveTimeMinutes = sa.decidedBy.driveTimeMinutes
+      if (sa.decidedBy.driveMiles != null) body.driveMiles = sa.decidedBy.driveMiles
+      if (sa.decidedBy.overMiles != null) body.overMiles = sa.decidedBy.overMiles
+      if (sa.decidedBy.explanation) body.explanation = sa.decidedBy.explanation
     }
     if (sa.contactPhone) body.contactPhone = sa.contactPhone
     if (sa.reason) body.reason = sa.reason

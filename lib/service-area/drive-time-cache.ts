@@ -46,8 +46,21 @@ export function hashAddress(parts: {
 
 export interface CachedDriveTime {
   driveMinutes: number
+  /** Road miles for the same route, or null on rows cached before mile-based
+   *  pricing shipped. The resolver treats null as a MISS and re-fetches — a
+   *  null must never be read as "0 miles", which would price every stale row
+   *  as inside the free radius. */
+  driveMiles: number | null
   source: string
   cachedAt: Date
+}
+
+/** Prisma Decimal | number | null -> number | null, without importing Decimal. */
+function milesToNum(v: unknown): number | null {
+  if (v == null) return null
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null
+  const n = Number((v as { toString(): string }).toString())
+  return Number.isFinite(n) ? n : null
 }
 
 export async function readZipDriveTime(zip: string, centerId: string): Promise<CachedDriveTime | null> {
@@ -55,14 +68,20 @@ export async function readZipDriveTime(zip: string, centerId: string): Promise<C
     where: { zip_centerId: { zip, centerId } },
   })
   if (!row || !isFresh(row.cachedAt)) return null
-  return { driveMinutes: row.driveMinutes, source: row.source, cachedAt: row.cachedAt }
+  return {
+    driveMinutes: row.driveMinutes,
+    driveMiles: milesToNum((row as { driveMiles?: unknown }).driveMiles),
+    source: row.source,
+    cachedAt: row.cachedAt,
+  }
 }
 
 export async function writeZipDriveTime(
   zip: string,
   centerId: string,
   driveMinutes: number,
-  source = 'google_routes'
+  source = 'google_routes',
+  driveMiles: number | null = null
 ): Promise<void> {
   // Cache writes are best-effort — never fail the checkout because we
   // couldn't cache. Race-safety: two concurrent POSTs for the same address
@@ -74,8 +93,10 @@ export async function writeZipDriveTime(
   try {
     await prisma.zipDriveTimeCache.upsert({
       where: { zip_centerId: { zip, centerId } },
-      create: { zip, centerId, driveMinutes, source },
-      update: { driveMinutes, source, cachedAt: new Date() },
+      create: { zip, centerId, driveMinutes, source, driveMiles },
+      // Never overwrite a known mileage with null — a caller that only has
+      // minutes (the legacy seed script) must not wipe a good measurement.
+      update: { driveMinutes, source, cachedAt: new Date(), ...(driveMiles != null ? { driveMiles } : {}) },
     })
   } catch (err) {
     if (isUniqueViolation(err)) return
@@ -91,7 +112,12 @@ export async function readAddressDriveTime(
     where: { addressHash_centerId: { addressHash, centerId } },
   })
   if (!row || !isFresh(row.cachedAt)) return null
-  return { driveMinutes: row.driveMinutes, source: row.source, cachedAt: row.cachedAt }
+  return {
+    driveMinutes: row.driveMinutes,
+    driveMiles: milesToNum((row as { driveMiles?: unknown }).driveMiles),
+    source: row.source,
+    cachedAt: row.cachedAt,
+  }
 }
 
 export async function writeAddressDriveTime(
@@ -99,14 +125,16 @@ export async function writeAddressDriveTime(
   centerId: string,
   address: string,
   driveMinutes: number,
-  source = 'google_routes'
+  source = 'google_routes',
+  driveMiles: number | null = null
 ): Promise<void> {
   // Same best-effort + non-fatal rationale as writeZipDriveTime above.
   try {
     await prisma.addressDriveTimeCache.upsert({
       where: { addressHash_centerId: { addressHash, centerId } },
-      create: { addressHash, centerId, address, driveMinutes, source },
-      update: { driveMinutes, source, address, cachedAt: new Date() },
+      create: { addressHash, centerId, address, driveMinutes, source, driveMiles },
+      // See writeZipDriveTime — a null mileage never clobbers a known one.
+      update: { driveMinutes, source, address, cachedAt: new Date(), ...(driveMiles != null ? { driveMiles } : {}) },
     })
   } catch (err) {
     if (isUniqueViolation(err)) return

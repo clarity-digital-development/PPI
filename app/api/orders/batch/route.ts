@@ -471,6 +471,7 @@ export async function POST(request: NextRequest) {
                 : c.serviceArea.tier === 'surcharge' ? c.serviceArea.surchargeCents : 0,
               serviceAreaCenterId: c.serviceArea.decidedBy?.centerId ?? null,
               serviceAreaDriveMinutes: c.serviceArea.decidedBy?.driveTimeMinutes ?? null,
+              serviceAreaDriveMiles: c.serviceArea.decidedBy?.driveMiles ?? null,
               serviceAreaDriveTimeSource: c.serviceArea.decidedBy?.driveTimeSource ?? null,
               paymentIntentId: null,
               paymentStatus: isInvoiceBilling ? 'pending_invoice' : 'pending',

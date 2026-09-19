@@ -70,6 +70,9 @@ export function ReviewStep({
     surchargeCents: number
     centerName?: string
     driveTimeMinutes?: number
+    driveMiles?: number
+    overMiles?: number
+    explanation?: string
     contactPhone?: string
     reason?: string
   } | null>(null)
@@ -253,19 +256,26 @@ export function ReviewStep({
   // sees/pays only HALF now; mirror the server's Math.round(cents / 2) exactly
   // so the confirmed total on this screen matches what Stripe actually charges.
   const isInvoiceBillingPayer = !!invoiceBilling
+  // WHO DOES NOT SPLIT: invoice-billing payers (server keeps their old
+  // single-line behaviour) AND the cart/batch path, which pushes the full
+  // both-trips fee as one OrderItem and never schedules a second charge
+  // (app/api/orders/batch/route.ts). Showing half on the cart understated the
+  // fee by exactly half of a now-variable amount — a broker carting a
+  // 150-mile property was quoted $127.50 and charged $255.00.
+  const skipsOOASplit = isInvoiceBillingPayer || cartEnabled
   const serviceAreaSurcharge = flatFee
     ? 0
     : serviceAreaQuote?.tier === 'surcharge'
-      ? isInvoiceBillingPayer
+      ? skipsOOASplit
         ? serviceAreaQuote.surchargeCents / 100
         : Math.round(serviceAreaQuote.surchargeCents / 2) / 100
       : 0
   // Required consent applies only to the direct create checkout for a
   // split-fee order: never in edit mode (no re-charge happens there), never
-  // in cart/batch mode (that path still charges the old full amount as one
-  // line with no split — team_admins are exempt from the surcharge in
-  // practice, so this is a narrow, intentionally out-of-scope carve-out),
-  // and never for invoice-billing payers (nothing splits for them).
+  // in cart/batch mode (no split there, and the server has no consent gate on
+  // that path — see the note to Tanner: whether broker carts should split and
+  // require consent like single orders do is a pricing-policy call, not a bug
+  // fix), and never for invoice-billing payers (nothing splits for them).
   const requiresOOAConsent =
     !isEdit && !cartEnabled && !isInvoiceBillingPayer && serviceAreaSurcharge > 0 && serviceAreaQuote?.tier === 'surcharge'
   const itemsSubtotal = orderItems.reduce((sum, item) => sum + item.price, 0)
@@ -1489,9 +1499,20 @@ export function ReviewStep({
                       reads like the install routes through Bardstown — caused a
                       cart cancellation 2026-06-27. Admin edit shell passes
                       adminView=true so admins still see which center triggered. */}
-                  {adminView && serviceAreaQuote.centerName && serviceAreaQuote.driveTimeMinutes != null
-                    ? ` — ${serviceAreaQuote.centerName} (~${serviceAreaQuote.driveTimeMinutes} min)`
-                    : ''}
+                  {/* Mileage is now shown to the CUSTOMER too (Ryan 2026-09-08):
+                      under per-mile pricing the amount varies, so an
+                      unexplained number invites a support call. The old
+                      drive-time breadcrumb stayed admin-only because
+                      "Bardstown (~51 min)" on a Harrodsburg install read like
+                      the install routed through Bardstown (cart cancellation,
+                      2026-06-27); "40 road miles from Cincinnati" cannot be
+                      misread that way. Falls back to the admin-only minutes
+                      line for any centre still on legacy minute bands. */}
+                  {serviceAreaQuote.explanation
+                    ? ` — ${serviceAreaQuote.explanation}`
+                    : adminView && serviceAreaQuote.centerName && serviceAreaQuote.driveTimeMinutes != null
+                      ? ` — ${serviceAreaQuote.centerName} (~${serviceAreaQuote.driveTimeMinutes} min)`
+                      : ''}
                   <span className="text-pink-600 underline text-xs font-medium group-open:hidden">
                     What&apos;s this?
                   </span>
@@ -1502,7 +1523,7 @@ export function ReviewStep({
                 <span className="text-gray-900">${serviceAreaSurcharge.toFixed(2)}</span>
               </summary>
               <p className="mt-2 text-xs text-gray-600 leading-relaxed bg-pink-50 rounded-lg p-3 border border-pink-100">
-                Trips that are approx 45 mins+ one way, out of town result in a $25 per trip (there to install and then pickup when sold). Pink Posts strives to keep prices as low and attainable as possible. When an installer drives to these locations, this results in 4 hours (there/back to install, install time, there/back for pickup) it becomes a loss for the company as payroll is beyond what we charge to install. This out of area fee allows Pink Posts to accommodate even your rural listings just as we do in town. We are consistently monitoring our service area and as we continue to grow, we hope to be able to service more areas without a fee.
+                Each city we service has a free radius measured in road miles — actual driving distance, not straight-line. Once a property sits outside that radius, a $25 fee per trip covers the first 20 extra miles, and anything past that is $2 per mile. It&apos;s charged twice: once to install, and again when we come back to pick up. Pink Posts strives to keep prices as low and attainable as possible. When an installer drives out this far it can mean 4 hours of payroll (there and back to install, install time, there and back for pickup), which is beyond what we charge for the install itself. This fee is what lets us accommodate your rural listings just as we do in town. We are consistently monitoring our service area and as we continue to grow, we hope to be able to service more areas without a fee.
               </p>
             </details>
           )}
@@ -1520,8 +1541,21 @@ export function ReviewStep({
                   onChange={(e) => updateFormData({ service_area_fee_agreed: e.target.checked })}
                   className="mt-0.5 w-4 h-4 text-pink-500 border-gray-300 rounded focus:ring-pink-500"
                 />
+                {/* The amount is COMPUTED, not the old hardcoded "$25". Under
+                    per-mile pricing a distant property can owe $45 or more per
+                    trip, and agreeing to "$25" then being charged $45 is the
+                    kind of surprise that generates a chargeback. Ryan asked us
+                    not to re-prompt everyone on the standing policy notice
+                    ("keep it as is and I'll handle those that have questions"),
+                    so lib/policy-notices.ts and CURRENT_NOTICE_VERSION are
+                    untouched — this per-order consent line is separate and has
+                    to state the real number. */}
                 <span className="text-xs text-gray-700 leading-relaxed">
-                  By selecting I Agree, there is a $25 out of area fee to install. When removal is scheduled, $25 to pickup will be charged.
+                  By selecting I Agree, there is a ${serviceAreaSurcharge.toFixed(2)} out of area fee to install. When removal is scheduled, ${(
+                    serviceAreaQuote && serviceAreaQuote.tier === 'surcharge'
+                      ? (serviceAreaQuote.surchargeCents - Math.round(serviceAreaQuote.surchargeCents / 2)) / 100
+                      : serviceAreaSurcharge
+                  ).toFixed(2)} to pickup will be charged.
                 </span>
               </label>
             </div>

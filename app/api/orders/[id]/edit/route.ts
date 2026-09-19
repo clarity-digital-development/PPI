@@ -309,24 +309,36 @@ export async function PATCH(
     // still belongs to the WALLET, not the acting admin.
     const payerForOOA = await prisma.user.findUnique({
       where: { id: existingOrder.placedByUserId ?? existingOrder.userId },
-      select: { id: true, role: true, isServiceAreaExempt: true },
+      // invoiceBilling / flatFeeBilling decide whether the fee splits 50/50,
+      // exactly as they do at create time.
+      select: { id: true, role: true, isServiceAreaExempt: true, invoiceBilling: true, flatFeeBilling: true },
     })
 
     // Exempt-promotion guard (adversarial review 2026-07-06): if the payer
-    // is NOW exempt (team_admin promotion / admin toggled isServiceAreaExempt)
-    // and the order was placed with a locked OOA surcharge, skip the
-    // re-resolve so we don't silently zero-out the historical charge and
-    // accrue a phantom refund in pendingCreditCents. Address-into-standard
-    // for a still-non-exempt customer still fires correctly. If Ryan
-    // explicitly wants retroactive refunds for promoted customers, undo
-    // this guard — but the default matches his tight-refund pattern.
-    const wouldFastPathExempt = !!payerForOOA && (payerForOOA.role === 'team_admin' || payerForOOA.isServiceAreaExempt)
+    // is NOW exempt (admin toggled isServiceAreaExempt) and the order was
+    // placed with a locked OOA surcharge, skip the re-resolve so we don't
+    // silently zero-out the historical charge and accrue a phantom refund in
+    // pendingCreditCents. Address-into-standard for a still-non-exempt
+    // customer still fires correctly. If Ryan explicitly wants retroactive
+    // refunds for promoted customers, undo this guard — but the default
+    // matches his tight-refund pattern.
+    //
+    // MUST mirror lib/service-area.ts's fast path exactly: ONLY the
+    // per-account flag exempts. It used to also match role === 'team_admin',
+    // which was harmless while brokers could never carry a surcharge — but the
+    // moment they can (2026-09-19), it meant every broker order silently
+    // skipped re-resolving on an address change, freezing the fee from the
+    // original address in both directions.
+    const wouldFastPathExempt = !!payerForOOA && payerForOOA.isServiceAreaExempt
     const hadPaidSurcharge = (existingOrder.serviceAreaSurchargeCents ?? 0) > 0
     const skipReresolveForExemptPromoted = wouldFastPathExempt && hadPaidSurcharge
 
     let resolvedSurchargeCents: number | null = null
     let resolvedCenterId: string | null | undefined = undefined
     let resolvedDriveMinutes: number | null | undefined = undefined
+    let resolvedDriveMiles: number | null | undefined = undefined
+    let resolvedSecondChargeCents: number | null | undefined = undefined
+    let resolvedSecondChargeStatus: 'pending' | null | undefined = undefined
     let resolvedDriveTimeSource: string | null | undefined = undefined
     if (propertyLocationChanged && !isFlatFee && !skipReresolveForExemptPromoted) {
       const newZip = zipInput ?? existingOrder.propertyZip
@@ -350,10 +362,35 @@ export async function PATCH(
           { status: 400 }
         )
       }
-      // exempt / standard → 0; surcharge → resolved cents.
-      resolvedSurchargeCents = sa.tier === 'surcharge' ? sa.surchargeCents : 0
+      // THE INSTALL HALF ONLY — mirroring what create stores.
+      //
+      // sa.surchargeCents is the BOTH-TRIPS total. app/api/orders/route.ts
+      // deliberately writes only the half that lands in this order's OrderItem
+      // into Order.serviceAreaSurchargeCents, because that column is the
+      // ground truth this route reconciles against. Assigning the full total
+      // here made an address edit re-price the order at install+pickup while
+      // serviceAreaSecondChargeCents still held the pickup half — so the
+      // customer paid the pickup portion twice (once folded into the edit
+      // diff, once when removal was scheduled). Harmless-looking while every
+      // fee was a flat $50/$25; with per-mile pricing the doubled amount
+      // scales with distance.
+      const oooSkipsSplit = !!payerForOOA && (payerForOOA.invoiceBilling || payerForOOA.flatFeeBilling)
+      const resolvedFullCents = sa.tier === 'surcharge' ? sa.surchargeCents : 0
+      resolvedSurchargeCents = oooSkipsSplit
+        ? resolvedFullCents
+        : Math.round(resolvedFullCents / 2)
+      // Re-arm the pickup half for the NEW address too — it used to keep the
+      // old address's amount forever. Never touched once it has already been
+      // collected ('paid') or hard-failed: re-arming a settled charge would
+      // bill the customer a second time.
+      if (existingOrder.serviceAreaSecondChargeStatus !== 'paid' && existingOrder.serviceAreaSecondChargeStatus !== 'failed') {
+        const secondHalf = oooSkipsSplit ? 0 : resolvedFullCents - resolvedSurchargeCents
+        resolvedSecondChargeCents = secondHalf > 0 ? secondHalf : null
+        resolvedSecondChargeStatus = secondHalf > 0 ? 'pending' : null
+      }
       resolvedCenterId = sa.decidedBy?.centerId ?? null
       resolvedDriveMinutes = sa.decidedBy?.driveTimeMinutes ?? null
+      resolvedDriveMiles = sa.decidedBy?.driveMiles ?? null
       resolvedDriveTimeSource = sa.decidedBy?.driveTimeSource ?? null
     }
 
@@ -779,8 +816,15 @@ export async function PATCH(
           ...(resolvedSurchargeCents !== null
             ? {
                 serviceAreaSurchargeCents: resolvedSurchargeCents,
+                ...(resolvedSecondChargeCents !== undefined
+                  ? {
+                      serviceAreaSecondChargeCents: resolvedSecondChargeCents,
+                      serviceAreaSecondChargeStatus: resolvedSecondChargeStatus,
+                    }
+                  : {}),
                 serviceAreaCenterId: resolvedCenterId,
                 serviceAreaDriveMinutes: resolvedDriveMinutes,
+                serviceAreaDriveMiles: resolvedDriveMiles,
                 serviceAreaDriveTimeSource: resolvedDriveTimeSource,
               }
             : {}),

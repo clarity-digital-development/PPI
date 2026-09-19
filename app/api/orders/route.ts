@@ -593,6 +593,7 @@ export async function POST(request: NextRequest) {
         serviceAreaSurchargeCents: finalServiceAreaSurchargeCents,
         serviceAreaCenterId: sa.decidedBy?.centerId ?? null,
         serviceAreaDriveMinutes: sa.decidedBy?.driveTimeMinutes ?? null,
+        serviceAreaDriveMiles: sa.decidedBy?.driveMiles ?? null,
         serviceAreaDriveTimeSource: sa.decidedBy?.driveTimeSource ?? null,
         serviceAreaSecondChargeCents: pendingSecondChargeCents > 0 ? pendingSecondChargeCents : null,
         serviceAreaSecondChargeStatus: pendingSecondChargeCents > 0 ? 'pending' : null,

@@ -30,7 +30,7 @@ export const CURRENT_NOTICE: PolicyNotice = {
       id: 'out-of-area-fee',
       title: 'New: Out of Area Fee (click here for information)',
       body:
-        'Starting today, all future orders that our in rural areas will need to have a one time $50 out of area fee. This will include pickup and install. The reason for this is we pay our employees $25 hourly and when they need to drive one hour one way for a single sign, that incurs two hours for the installation and two hours for the pickup. This will actually be a loss for the company, but we still want to accommodate our agents that have those further out properties as much as possible. The charge will be added when you place the address in our system. Thank you for your understanding and any additional questions, please let us know!',
+        'Orders outside our service area carry an out of area fee covering both the install and the pickup. Each city we service has a free radius measured in road miles — actual driving distance. Once a property is outside that radius, the fee is $25 per trip covering the first 20 extra miles, then $2 per mile beyond that. The reason for this is we pay our employees hourly, and a property an hour out incurs two hours for the installation and two more for the pickup, which is a loss for the company on a single sign. We still want to accommodate agents with those further out properties as much as possible. Your exact amount and the mileage behind it are shown on the review page before you pay. Thank you for your understanding and any additional questions, please let us know!',
     },
     {
       id: 'post-rental-fee',
@@ -47,8 +47,11 @@ export const CURRENT_NOTICE: PolicyNotice = {
 // as the array; expose both shapes so either import keeps compiling.
 export const POLICY_NOTICES: readonly PolicyNoticeSection[] = CURRENT_NOTICE.sections
 
-// WHY: mirrors lib/service-area.ts:134 exemption rule — team_admin (brokers
-// like Peggy/Semonin) and admin-flagged relationship customers skip the modal.
+// WHY: mirrors the service-area exemption rule for the MODAL only — brokers
+// and admin-flagged relationship customers skip it. Note this is deliberately
+// broader than lib/service-area.ts's fee exemption, which as of 2026-09-19 is
+// the isServiceAreaExempt flag alone: brokers now pay out-of-area fees but
+// still don't get the consumer-facing policy modal.
 // admin role included as defense-in-depth (Pink Posts staff shouldn't be
 // gated by their own customer-facing notice).
 export function isPolicyExempt(user: {
