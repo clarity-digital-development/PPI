@@ -138,6 +138,9 @@ type BatchOrderBody = {
   requested_date?: string
   is_expedited?: boolean
   placed_for_agent_name?: string
+  // Per-row agreement to the split out-of-area fee, captured in the wizard
+  // when the row was added to the cart.
+  service_area_fee_agreed?: boolean
 }
 
 // Field-to-itemType map for hold_ids: the cart sends the inventory column
@@ -181,6 +184,11 @@ export async function POST(request: NextRequest) {
       claims: HoldClaim[]
       // Service-area resolution for this order (surcharge winner is carried to OrderItem create).
       serviceArea: ResolveResult
+      // Cents that actually land in THIS order's surcharge OrderItem (the
+      // install half, or the full amount for payers who don't split), and the
+      // remainder collected when removal is scheduled.
+      surchargeItemCents: number
+      secondChargeCents: number
     }
     const computed: Computed[] = []
 
@@ -255,8 +263,34 @@ export async function POST(request: NextRequest) {
       // "Out of Area Service Fee" — no ZIP, no center name, no drive minutes.
       // Mirrors the single-order create route; adversarial review 2026-07-06
       // caught that this batch path was still emitting the old leaky text.
+      // SPLIT 50/50, exactly like the single-order route. This path used to
+      // push the full both-trips amount as one line with no second charge and
+      // no consent — which meant a broker was charged double what the cart
+      // screen quoted. Ryan: "split like everyone else... Semonin eventually
+      // will have out of area fees so this will be for everyone at some
+      // point" (2026-09-19).
+      let surchargeItemCents = 0
+      let secondChargeCents = 0
       if (sa.tier === 'surcharge' && sa.surchargeCents > 0) {
-        const surchargeDollars = sa.surchargeCents / 100
+        const skipsSplit = isInvoiceBilling || !!actor.flatFeeBilling
+        surchargeItemCents = sa.surchargeCents
+        if (!skipsSplit) {
+          // Server-side gate — the wizard's checkbox is client-side only and
+          // can't be trusted alone for a billing decision.
+          if (o.service_area_fee_agreed !== true) {
+            return NextResponse.json(
+              {
+                error: `Order ${i + 1}: please agree to the out-of-area fee terms before checking out. Open that order from the cart and tick the agreement.`,
+                code: 'service_area_consent_required',
+                order_index: i,
+              },
+              { status: 400 }
+            )
+          }
+          surchargeItemCents = Math.round(sa.surchargeCents / 2)
+          secondChargeCents = sa.surchargeCents - surchargeItemCents
+        }
+        const surchargeDollars = surchargeItemCents / 100
         const description = 'Out of Area Service Fee'
         o.items.push({
           item_type: 'surcharge',
@@ -309,7 +343,7 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      computed.push({ orderBody: o, pricing, postTypeId, claims, serviceArea: sa })
+      computed.push({ orderBody: o, pricing, postTypeId, claims, serviceArea: sa, surchargeItemCents, secondChargeCents })
     }
 
     // Any out-of-area order kills the whole batch — abort BEFORE Stripe.
@@ -465,10 +499,18 @@ export async function POST(request: NextRequest) {
               total: c.pricing.total,
               // CR4: mark flat-fee orders so edits recompute as flat (no diff).
               flatFeeApplied: !!actor.flatFeeBilling,
-              // WHY: persist actual surcharge so reporting + invoice math match what the customer paid.
-              serviceAreaSurchargeCents: actor.flatFeeBilling
-                ? 0
-                : c.serviceArea.tier === 'surcharge' ? c.serviceArea.surchargeCents : 0,
+              // WHY: persist actual surcharge so reporting + invoice math match
+              // what the customer paid. This MUST be what landed in the
+              // OrderItem (the install half for a split order), not the
+              // always-full surchargeCents — the edit route treats this column
+              // as ground truth for "how much of the total is the surcharge
+              // line" when reconciling a diff, and a disagreement overcharges
+              // on every subsequent edit. Mirrors app/api/orders/route.ts.
+              serviceAreaSurchargeCents: actor.flatFeeBilling ? 0 : c.surchargeItemCents,
+              // The pickup half, collected when removal is scheduled
+              // (lib/orders/out-of-area-charge.ts reads these two).
+              serviceAreaSecondChargeCents: c.secondChargeCents > 0 ? c.secondChargeCents : null,
+              serviceAreaSecondChargeStatus: c.secondChargeCents > 0 ? 'pending' : null,
               serviceAreaCenterId: c.serviceArea.decidedBy?.centerId ?? null,
               serviceAreaDriveMinutes: c.serviceArea.decidedBy?.driveTimeMinutes ?? null,
               serviceAreaDriveMiles: c.serviceArea.decidedBy?.driveMiles ?? null,

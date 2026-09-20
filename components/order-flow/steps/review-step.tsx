@@ -64,6 +64,11 @@ export function ReviewStep({
   // customer can never confirm against a stale/haversine-only number that a
   // moment later resolves to a different (Google Routes) surcharge.
   const [loadingServiceAreaQuote, setLoadingServiceAreaQuote] = useState(false)
+  // True when the quote endpoint errored or timed out. Distinct from "quote
+  // came back and there's no fee": on a failure we do NOT know whether this
+  // address carries an out-of-area fee, and the server will refuse the order
+  // if it does and no agreement was captured.
+  const [serviceAreaQuoteFailed, setServiceAreaQuoteFailed] = useState(false)
   // WHY: cart preview needs the same surcharge the server will inject — otherwise display ≠ charge.
   const [serviceAreaQuote, setServiceAreaQuote] = useState<{
     tier: 'standard' | 'surcharge' | 'out_of_area' | 'exempt'
@@ -256,13 +261,15 @@ export function ReviewStep({
   // sees/pays only HALF now; mirror the server's Math.round(cents / 2) exactly
   // so the confirmed total on this screen matches what Stripe actually charges.
   const isInvoiceBillingPayer = !!invoiceBilling
-  // WHO DOES NOT SPLIT: invoice-billing payers (server keeps their old
-  // single-line behaviour) AND the cart/batch path, which pushes the full
-  // both-trips fee as one OrderItem and never schedules a second charge
-  // (app/api/orders/batch/route.ts). Showing half on the cart understated the
-  // fee by exactly half of a now-variable amount — a broker carting a
-  // 150-mile property was quoted $127.50 and charged $255.00.
-  const skipsOOASplit = isInvoiceBillingPayer || cartEnabled
+  // ONLY invoice-billing payers skip the split — they pay the full both-trips
+  // fee as one line because nothing is collected at checkout for them anyway.
+  // The cart/batch path USED to skip it too (full amount, one line, no second
+  // charge, no consent box), which meant a broker carting a 150-mile property
+  // was quoted $127.50 and charged $255.00. Ryan chose to split it there as
+  // well — "split like everyone else... Semonin eventually will have out of
+  // area fees so this will be for everyone at some point" (2026-09-19) — so
+  // the cart now matches a single order exactly.
+  const skipsOOASplit = isInvoiceBillingPayer
   const serviceAreaSurcharge = flatFee
     ? 0
     : serviceAreaQuote?.tier === 'surcharge'
@@ -270,14 +277,21 @@ export function ReviewStep({
         ? serviceAreaQuote.surchargeCents / 100
         : Math.round(serviceAreaQuote.surchargeCents / 2) / 100
       : 0
-  // Required consent applies only to the direct create checkout for a
-  // split-fee order: never in edit mode (no re-charge happens there), never
-  // in cart/batch mode (no split there, and the server has no consent gate on
-  // that path — see the note to Tanner: whether broker carts should split and
-  // require consent like single orders do is a pricing-policy call, not a bug
-  // fix), and never for invoice-billing payers (nothing splits for them).
+  // Consent is required wherever money will actually move in two parts: the
+  // direct checkout AND the cart. Never in edit mode (no re-charge there) and
+  // never for invoice-billing payers (nothing splits for them).
   const requiresOOAConsent =
-    !isEdit && !cartEnabled && !isInvoiceBillingPayer && serviceAreaSurcharge > 0 && serviceAreaQuote?.tier === 'surcharge'
+    !isEdit && !isInvoiceBillingPayer && serviceAreaSurcharge > 0 && serviceAreaQuote?.tier === 'surcharge'
+  // When the quote failed we cannot know whether this address carries a
+  // splittable fee. Proceeding is a dead end either way: requiresOOAConsent is
+  // false so no agreement box renders, yet the server refuses the order if a
+  // fee turns out to apply — leaving the customer staring at "please agree to
+  // the out-of-area fee terms" with nothing to agree to. On the cart path it
+  // is worse: the bad row is persisted and then kills the whole batch at
+  // checkout. Block instead, and say why. Edit mode and payers who can never
+  // be charged a split fee are unaffected.
+  const blockedOnQuoteFailure =
+    serviceAreaQuoteFailed && !isEdit && !isInvoiceBillingPayer && !flatFee
   const itemsSubtotal = orderItems.reduce((sum, item) => sum + item.price, 0)
   const fuelSurchargeWaived = formData.fuel_surcharge_waived || false
 
@@ -519,13 +533,13 @@ export function ReviewStep({
         if (isEdit && orderId) params.set('orderId', orderId)
         const res = await fetch(`/api/service-area/quote?${params.toString()}`)
         if (!res.ok) {
-          if (!cancelled) setServiceAreaQuote(null)
+          if (!cancelled) { setServiceAreaQuote(null); setServiceAreaQuoteFailed(true) }
           return
         }
         const data = await res.json()
-        if (!cancelled) setServiceAreaQuote(data)
+        if (!cancelled) { setServiceAreaQuote(data); setServiceAreaQuoteFailed(false) }
       } catch {
-        if (!cancelled) setServiceAreaQuote(null)
+        if (!cancelled) { setServiceAreaQuote(null); setServiceAreaQuoteFailed(true) }
       } finally {
         if (!cancelled) setLoadingServiceAreaQuote(false)
       }
@@ -648,6 +662,17 @@ export function ReviewStep({
     // Cart re-edit also allows free step jumps — same guard as handleSaveEdit.
     if (formData.street_numbers_visible === undefined) {
       setError('Please answer "Are the street numbers visible?" on the Property Info step.')
+      return
+    }
+    // The cart splits the out-of-area fee too now, so the agreement is captured
+    // per row here rather than once at checkout — the batch endpoint rejects a
+    // row without it.
+    if (requiresOOAConsent && !formData.service_area_fee_agreed) {
+      setError('Please agree to the out-of-area fee terms before adding this order to the cart')
+      return
+    }
+    if (blockedOnQuoteFailure) {
+      setError("We couldn't check this address for out-of-area fees just now. Give it a moment and try again.")
       return
     }
     setAddingToCart(true)
@@ -1246,6 +1271,10 @@ export function ReviewStep({
       setError('Please agree to the out-of-area fee terms before placing your order')
       return
     }
+    if (blockedOnQuoteFailure) {
+      setError("We couldn't check this address for out-of-area fees just now. Give it a moment and try again.")
+      return
+    }
 
     setIsSubmitting?.(true)
     setError(null)
@@ -1532,6 +1561,16 @@ export function ReviewStep({
               auto-charged when removal gets scheduled. Full details live in
               the "What's this?" expander on the fee line right above —
               deliberately not duplicated here. */}
+          {/* A disabled button with no stated reason reads as a broken page. */}
+          {blockedOnQuoteFailure && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
+              <p className="text-xs text-amber-900 leading-relaxed">
+                We couldn&apos;t check this address for out-of-area fees just now. Give it a
+                moment — this usually clears on its own. If it keeps happening, call us on
+                859-395-8188 and we&apos;ll place the order for you.
+              </p>
+            </div>
+          )}
           {requiresOOAConsent && (
             <div className="rounded-lg border border-pink-200 bg-pink-50/60 p-3">
               <label className="flex items-start gap-2 cursor-pointer">
@@ -1758,7 +1797,16 @@ export function ReviewStep({
             size="lg"
             className="w-full"
             onClick={handleAddToCart}
-            disabled={isSubmitting || addingToCart || loadingServiceAreaQuote || serviceAreaQuote?.tier === 'out_of_area'}
+            disabled={
+              isSubmitting ||
+              addingToCart ||
+              loadingServiceAreaQuote ||
+              serviceAreaQuote?.tier === 'out_of_area' ||
+              // Same gate as Place Order — the cart splits the fee now, so the
+              // agreement has to be captured on the row before it can be added.
+              (requiresOOAConsent && !formData.service_area_fee_agreed) ||
+              blockedOnQuoteFailure
+            }
           >
             {addingToCart
               ? (editingCartItemId ? 'Saving…' : 'Adding…')
@@ -1784,7 +1832,8 @@ export function ReviewStep({
             loadingServiceAreaQuote ||
             (!activePaymentMethods?.length && !formData.payment_method_id) ||
             serviceAreaQuote?.tier === 'out_of_area' ||
-            (requiresOOAConsent && !formData.service_area_fee_agreed)
+            (requiresOOAConsent && !formData.service_area_fee_agreed) ||
+            blockedOnQuoteFailure
           }
         >
           {isSubmitting ? 'Processing...' : loadingServiceAreaQuote ? 'Checking address…' : `Place Order — $${displayTotal.toFixed(2)}`}

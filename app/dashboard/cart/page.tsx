@@ -191,6 +191,10 @@ export default function CartPage() {
             items: itemsWithHolds,
             requested_date: fd.requested_date,
             is_expedited: fd.schedule_type === 'expedited',
+            // Captured per row when the order was added to the cart. The batch
+            // endpoint refuses any row that would incur a split out-of-area
+            // fee without it, exactly like the single-order route.
+            service_area_fee_agreed: fd.service_area_fee_agreed,
             placed_for_agent_name: fd.placed_for_agent_name?.trim() || cartItem.agentName || undefined,
           }
         }),
@@ -204,8 +208,19 @@ export default function CartPage() {
       const data = await res.json()
 
       if (!res.ok) {
-        // Batch-wide failure — mark all rows errored with the message
-        setResults(items.map(i => ({ cartItemId: i.id, status: 'error', error: data.error || 'Batch failed' })))
+        // The server names the offending row for per-order failures (missing
+        // out-of-area agreement, bad schedule). Flag THAT row rather than
+        // stamping one message across all N — "Order 2: please agree…" on
+        // every row gives the broker nothing to act on.
+        const badIndex = typeof data.order_index === 'number' ? data.order_index : null
+        setResults(items.map((i, idx) => ({
+          cartItemId: i.id,
+          status: 'error' as const,
+          error:
+            badIndex === null || idx === badIndex
+              ? (data.error || 'Batch failed')
+              : 'Not placed — fix the flagged order above, then check out again.',
+        })))
         setCheckingOut(false)
         setDone(true)
         return

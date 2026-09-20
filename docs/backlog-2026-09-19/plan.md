@@ -122,6 +122,23 @@ Plus the confirmed broker leak: `lib/service-area.ts:256` exempts every
 `isServiceAreaExempt` set — the other three brokers are exempt by accident of
 role. Dropping the role clause charges Redfin and keeps Semonin exempt.
 
+**Ryan's follow-up answers (2026-09-19), after the review surfaced two policy
+questions:**
+
+- **Broker carts split like everyone else.** *"Please have it split for broker
+  accounts, keeping it the same for everyone seems easiest. Semonin eventually
+  will have out of area fees so this will be for everyone at some point. We're
+  losing money if we don't."* → the cart/batch path now charges half at
+  checkout, arms the pickup half as pending, and requires the same agreement
+  checkbox a single order does. Previously it charged the full both-trips
+  amount upfront with no consent gate, while the cart screen displayed half.
+- That also closes the mistyped-address concern: the agreement box, which
+  names the exact dollar amount, now appears on the cart path too, so no
+  out-of-area fee can be incurred anywhere without an explicit tick.
+
+Only invoice-billing payers still skip the split — nothing is collected at
+their checkout, so there is nothing to halve.
+
 ## W3 — Linked brokerage inventory
 
 Full spec:
