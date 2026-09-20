@@ -192,6 +192,12 @@ export async function GET(
       }
     }
 
+    // Brokerage inventory link (roster-based; see the brokerage route header).
+    const brokerageLink = await prisma.teamMember.findFirst({
+      where: { userId: id, removedAt: null },
+      select: { teamId: true },
+    })
+
     return NextResponse.json({
       customer: {
         id: customer.id,
@@ -205,6 +211,12 @@ export async function GET(
         invoice_billing: customer.invoiceBilling,
         flat_fee_billing: customer.flatFeeBilling,
         billing_email: customer.billingEmail,
+        // Which brokerage's inventory pool this agent draws from, if any.
+        // Read off the ROSTER row, not customer.teamId: the link deliberately
+        // does not write User.teamId, because that field carries act-as,
+        // refund-routing and billing-fallback authority. See
+        // app/api/admin/customers/[id]/brokerage/route.ts.
+        brokerage_team_id: brokerageLink?.teamId ?? null,
       },
       team,
       inventory: {
@@ -402,23 +414,21 @@ export async function PUT(
         updateData.role = body.role
         roleChangeAudit = { from: current.role, to: body.role }
 
-        // Cascade: when an API caller PROMOTES into team_admin without an
-        // opinion on invoice_billing, default it to ON. Brokerage accounts
-        // bill net-30 by policy. The admin UI always sends invoice_billing
-        // on every PUT (handled by the branch above), so this only fires
-        // for scripted/internal callers that mutate role in isolation. The
-        // UI also auto-ticks the checkbox client-side when role flips into
-        // team_admin, so the two paths converge on the same default.
-        if (body.role === 'team_admin' && body.invoice_billing === undefined) {
-          const ib = await prisma.user.findUnique({
-            where: { id },
-            select: { invoiceBilling: true },
-          })
-          if (ib && !ib.invoiceBilling) {
-            updateData.invoiceBilling = true
-            invoiceBillingAudit = { from: false, to: true }
-          }
-        }
+        // NO billing cascade on promotion. This used to default
+        // invoice_billing to ON whenever a caller promoted someone into
+        // team_admin without an opinion, on the assumption that every
+        // brokerage bills net-30.
+        //
+        // That assumption broke with linked brokerage inventory (Ryan,
+        // 2026-09-08): brokerages are now promoted purely so agents can draw
+        // from their sign pool, and Ryan was explicit that the link is
+        // "only ... an inventory link, not a pay link". The new brokerages
+        // pay by card. Silently moving them to net-30 would stop charging
+        // them at checkout and quietly accrue an unbilled balance.
+        //
+        // Billing mode is now always an explicit decision: the admin UI sends
+        // invoice_billing on every PUT, and a scripted caller that omits it
+        // leaves the existing value alone.
       }
     }
 
@@ -426,6 +436,36 @@ export async function PUT(
       where: { id },
       data: updateData,
     })
+
+    // Invariant: only ordinary customer accounts may draw from a brokerage
+    // pool. Promoting someone out of 'customer' releases any brokerage link
+    // here, server-side, rather than relying on the admin UI to sequence two
+    // requests correctly -- the brokerage route rejects non-customer targets,
+    // so a UI that PUT the role first could never unlink afterwards and the
+    // account would be stranded pointing at a brokerage with no way to undo it.
+    // Release, don't delete: the roster row reverts to name-only and keeps its
+    // history.
+    if (customer.role !== 'customer') {
+      // Capture the team first so the audit row can say which brokerage the
+      // agent lost access to -- updateMany cannot return it.
+      const priorLink = await prisma.teamMember.findFirst({
+        where: { userId: id },
+        select: { id: true, teamId: true },
+      })
+      if (priorLink) {
+        await prisma.teamMember.updateMany({ where: { userId: id }, data: { userId: null } })
+        // Audited for the same reason as the roster-removal path: a silent
+        // revocation leaves the log claiming access that no longer exists.
+        await audit({
+          action: AuditAction.AgentLinkedToBrokerage,
+          targetType: 'user',
+          targetId: id,
+          actor: user,
+          request,
+          metadata: { from: priorLink.teamId, to: null, via: 'role_change', member_id: priorLink.id },
+        })
+      }
+    }
 
     if (roleChangeAudit) {
       await audit({

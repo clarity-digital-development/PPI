@@ -18,6 +18,10 @@ export async function GET() {
       teamMembers: {
         where: { removedAt: null },
         orderBy: { createdAt: 'asc' },
+        // The linked login's own teamId, to distinguish a member of this team
+        // from an inventory-only brokerage link (whose teamId is NULL by
+        // design). See sharesTeamScope below.
+        include: { user: { select: { teamId: true } } },
       },
     },
   })
@@ -33,6 +37,15 @@ export async function GET() {
       phone: m.phone,
       hasLogin: !!m.userId,
       userId: m.userId,
+      // True only when the linked login is genuinely inside this team's
+      // visibility scope. Linked brokerage inventory (Ryan, 2026-09-08) gives
+      // agents a roster row WITHOUT putting them in the team's scope -- Ryan
+      // declined broker-side visibility -- so anything that lists members as
+      // "agents whose records I can see" must filter on this, not on hasLogin.
+      // Every query that scopes by team uses `user: { teamId }`, so a member
+      // failing this test can never match one and would render as an agent with
+      // permanently empty results.
+      sharesTeamScope: !!m.userId && m.user?.teamId === team.id,
     })),
   })
 }

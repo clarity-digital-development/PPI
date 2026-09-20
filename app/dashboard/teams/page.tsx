@@ -218,7 +218,7 @@ export default function TeamsPage() {
   }
 
   const removeMember = async (member: TeamMember) => {
-    if (!window.confirm(`Remove ${member.name} from your team? This cannot be undone.`)) {
+    if (!window.confirm(`Remove ${member.name} from your team? They'll come off the roster and, if they have a login linked to your brokerage, they'll no longer be able to order with your inventory. Past orders keep their name.`)) {
       return
     }
 

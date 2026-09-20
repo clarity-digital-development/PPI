@@ -74,6 +74,9 @@ export const AuditAction = {
   OrderRefundFail: 'order.refund.fail',
   OrderRefundWebhook: 'order.refund.webhook',
   InventoryAssign: 'inventory.assign',
+  // Linking an agent login to a brokerage so they can order from the
+  // brokerage's inventory pool. Inventory-only: this NEVER touches billing.
+  AgentLinkedToBrokerage: 'user.brokerage_link',
   InventoryReassignBulk: 'inventory.reassign.bulk',
   CartCheckoutBegin: 'cart.checkout.begin',
   CartCheckoutSucceed: 'cart.checkout.succeed',

@@ -24,6 +24,10 @@ interface CustomerData {
     is_service_area_exempt?: boolean
     invoice_billing?: boolean
     flat_fee_billing?: boolean
+    billing_email?: string | null
+    /** Brokerage whose inventory pool this agent may order from. Derived from
+     *  the roster row, NOT User.teamId -- see the brokerage route header. */
+    brokerage_team_id?: string | null
   }
   team: {
     id: string
@@ -139,6 +143,11 @@ export default function CustomerDetailPage() {
     billing_email: '',
   })
   const [saving, setSaving] = useState(false)
+  // Linked brokerage inventory (Ryan, 2026-09-08). Kept OUTSIDE editData
+  // because it is saved through its own endpoint: the link is inventory-only
+  // and must never ride along with a billing PUT.
+  const [brokerages, setBrokerages] = useState<{ teamId: string; name: string }[]>([])
+  const [brokerageTeamId, setBrokerageTeamId] = useState<string>('')
   // Per-row selection for the agent-grouped bulk-reassign action bar.
   // Maps a composite key `${type}:${id}` to {type, id} so we can both
   // dedupe and serialize to the bulk endpoint without losing the type.
@@ -166,6 +175,17 @@ export default function CustomerDetailPage() {
     fetchCustomer()
   }, [id])
 
+  // Brokerage picker options. Admin-only endpoint: a team_admin viewing this
+  // page gets a 403 and simply sees no picker, which is the intent.
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/admin/brokerages')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d?.brokerages) setBrokerages(d.brokerages) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
   async function fetchCustomer() {
     try {
       const res = await fetch(`/api/admin/customers/${id}`)
@@ -183,6 +203,7 @@ export default function CustomerDetailPage() {
           flat_fee_billing: data.customer.flat_fee_billing ?? false,
           billing_email: data.customer.billing_email || '',
         })
+        setBrokerageTeamId(data.customer.brokerage_team_id || '')
       }
     } catch (error) {
       console.error('Error fetching customer:', error)
@@ -209,13 +230,48 @@ export default function CustomerDetailPage() {
           billing_email: editData.billing_email,
         }),
       })
-      if (res.ok) {
-        setShowEditModal(false)
-        fetchCustomer()
-      } else {
+      if (!res.ok) {
         const err = await res.json().catch(() => ({}))
         alert(err.error || 'Failed to update customer')
+        return
       }
+
+      // Separate call on purpose -- the brokerage link is inventory-only and
+      // deliberately cannot be written through the customer PUT. Only fires
+      // when it actually changed, and only for ordinary customer accounts;
+      // promoting out of 'customer' releases the link server-side, so there is
+      // nothing to send here (and the brokerage route would reject it anyway).
+      const currentLink = data?.customer.brokerage_team_id || ''
+      if (editData.role === 'customer' && brokerageTeamId !== currentLink) {
+        // Caught locally: the outer catch only logs, so a network failure here
+        // would close the modal and look like a complete save.
+        const linkRes = await fetch(`/api/admin/customers/${id}/brokerage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ team_id: brokerageTeamId || null }),
+        }).catch(() => null)
+        if (!linkRes) {
+          alert(
+            'The rest of the profile was saved, but the brokerage link could not be reached. Your selection is still here — press Save to try again.'
+          )
+          return
+        }
+        if (!linkRes.ok) {
+          const err = await linkRes.json().catch(() => ({}))
+          // The profile save already succeeded. Say exactly that, and leave the
+          // modal OPEN with the admin's choice intact so a retry is a real
+          // retry -- refetching here would reset the picker to the stored value
+          // and make the next save a silent no-op.
+          alert(
+            (err.error || 'The brokerage link failed to update.') +
+              ' The rest of the profile was saved. Your brokerage selection is still here — press Save to try that part again.'
+          )
+          return
+        }
+      }
+
+      setShowEditModal(false)
+      fetchCustomer()
     } catch (error) {
       console.error('Error updating customer:', error)
     } finally {
@@ -279,7 +335,7 @@ export default function CustomerDetailPage() {
   }
 
   async function handleRemoveMember(member: { id: string; name: string }) {
-    if (!confirm(`Remove ${member.name} from this team? They stay in past-order records but won't appear in the roster or on new assignments.`)) return
+    if (!confirm(`Remove ${member.name} from this team? They stay in past-order records but won't appear in the roster or on new assignments. If they have a login linked to this brokerage, this also stops them ordering with the brokerage's inventory.`)) return
     setRemovingMemberId(member.id)
     try {
       const res = await fetch(`/api/teams/members/${member.id}`, { method: 'DELETE' })
@@ -1699,7 +1755,13 @@ export default function CustomerDetailPage() {
       {/* Edit Customer Modal */}
       <Modal
         isOpen={showEditModal}
-        onClose={() => setShowEditModal(false)}
+        onClose={() => {
+          // Discard the brokerage selection too. It lives outside editData, so
+          // without this an abandoned choice survives the cancel and is
+          // silently committed by the next unrelated save of this customer.
+          setBrokerageTeamId(data.customer.brokerage_team_id || '')
+          setShowEditModal(false)
+        }}
         title="Edit Customer Info"
       >
         <div className="space-y-4">
@@ -1730,18 +1792,13 @@ export default function CustomerDetailPage() {
               value={editData.role}
               onChange={(e) => {
                 const nextRole = e.target.value as 'customer' | 'team_admin' | 'admin'
-                setEditData((prev) => ({
-                  ...prev,
-                  role: nextRole,
-                  // Default invoice-billing ON when promoting INTO team_admin —
-                  // matches how brokerages pay (net-30, not card-at-checkout).
-                  // Admin can still untick before saving. Only fires on the
-                  // transition INTO team_admin so we don't override a manual
-                  // untick when admin just re-opens the modal.
-                  ...(nextRole === 'team_admin' && prev.role !== 'team_admin'
-                    ? { invoice_billing: true }
-                    : {}),
-                }))
+                // No billing default here. Promoting into team_admin used to
+                // pre-tick invoice billing, which was a trap once brokerages
+                // started being promoted purely to share an inventory pool
+                // (Ryan, 2026-09-08): the admin is thinking about signs, not
+                // net-30, and a pre-ticked box silently stops charging that
+                // account at checkout. The hint below makes it a decision.
+                setEditData((prev) => ({ ...prev, role: nextRole }))
               }}
               className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-pink-500 focus:outline-none focus:ring-1 focus:ring-pink-500"
             >
@@ -1749,6 +1806,12 @@ export default function CustomerDetailPage() {
               <option value="team_admin">Team Admin (brokerage)</option>
               <option value="admin">Admin (Pink Posts internal)</option>
             </select>
+            {editData.role === 'team_admin' && data.customer.role !== 'team_admin' && (
+              <p className="mt-1 text-xs text-amber-700">
+                Set <strong>billing</strong> below explicitly. Brokerages that pay by card should stay
+                on card &mdash; only tick invoice billing if this one is invoiced net-30.
+              </p>
+            )}
             {editData.role === 'admin' && data.customer.role !== 'admin' && (
               <p className="mt-1 text-xs text-amber-700">
                 Promoting to <strong>Admin</strong> grants full Pink Posts admin access (all customers, orders, billing).
@@ -1760,8 +1823,42 @@ export default function CustomerDetailPage() {
               </p>
             )}
           </div>
-          {/* Per-customer service-area exemption. team_admin role is exempt automatically;
-              this flag covers individual relationship/VIP customers we want to accommodate. */}
+
+          {/* Linked brokerage inventory (Ryan, 2026-09-08). Inventory-only:
+              this does not change who pays for anything. Hidden for brokerage
+              accounts, which ARE pools rather than drawing from one. */}
+          {editData.role === 'customer' && (brokerages.length > 0 || brokerageTeamId) && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Brokerage inventory</label>
+              <select
+                value={brokerageTeamId}
+                onChange={(e) => setBrokerageTeamId(e.target.value)}
+                className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-pink-500 focus:outline-none focus:ring-1 focus:ring-pink-500"
+              >
+                <option value="">None &mdash; own inventory only</option>
+                {brokerages.map((b) => (
+                  <option key={b.teamId} value={b.teamId}>{b.name}</option>
+                ))}
+                {/* A link to a brokerage missing from the list (list failed to
+                    load, or its team_admin was demoted) must not render as
+                    "None" -- that reads as unlinked and silently unlinks on
+                    the next save. */}
+                {brokerageTeamId && !brokerages.some((b) => b.teamId === brokerageTeamId) && (
+                  <option value={brokerageTeamId}>Currently linked brokerage</option>
+                )}
+              </select>
+              <p className="mt-1 text-xs text-gray-500">
+                Lets this agent select from the brokerage&apos;s signs, riders, lockboxes and brochure
+                boxes as well as their own. Does not change who pays &mdash; the agent still pays for
+                their own orders.
+              </p>
+            </div>
+          )}
+
+          {/* Per-customer service-area exemption. Note: the team_admin ROLE no
+              longer grants this automatically (that blanket exemption was an
+              out-of-area money leak, removed 2026-09-19) -- every exemption is
+              now this explicit per-account flag. */}
           <div>
             <label className="flex items-start gap-2 cursor-pointer">
               <input
@@ -1773,7 +1870,8 @@ export default function CustomerDetailPage() {
               <span className="text-sm">
                 <span className="font-medium text-gray-700">Exempt from out-of-area service fee</span>
                 <span className="block text-xs text-gray-500">
-                  Bypasses the surcharge band and the hard cutoff for this customer. Team Admin accounts are exempt automatically.
+                  Bypasses the out-of-area fee for this customer. Brokerage accounts are
+                  NOT exempt automatically &mdash; tick this for any account that should be.
                 </span>
               </span>
             </label>

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser, isAdminOrTeamAdmin } from '@/lib/auth-utils'
+import { audit, AuditAction } from '@/lib/audit'
 
 // Load a member only if the caller may manage it: admins can manage any team's
 // member; team_admins are scoped to their own team. Returns null otherwise so
@@ -65,6 +66,32 @@ export async function DELETE(
   const member = await loadManageable(user, id)
   if (!member) return NextResponse.json({ error: 'Member not found' }, { status: 404 })
 
-  await prisma.teamMember.update({ where: { id }, data: { removedAt: new Date() } })
+  // Clearing userId is what actually revokes access. Since linked brokerage
+  // inventory (Ryan, 2026-09-08) the roster row IS the inventory link, so
+  // removing an agent from the roster has to stop them drawing from the
+  // brokerage's pool -- otherwise the broker "removes" them and they keep
+  // ordering with the brokerage's signs. The row itself is still only
+  // soft-removed, so inventory and order history are preserved, and the agent's
+  // own login and inventory are untouched.
+  await prisma.teamMember.update({
+    where: { id },
+    data: { removedAt: new Date(), userId: null },
+  })
+
+  // Audit the REVOCATION, not just the grant. The link is created by an admin
+  // and audited there; without this a team_admin could quietly undo it and the
+  // log would still read as though the agent had pool access. Only fires when
+  // a link actually existed, so ordinary roster tidying stays quiet.
+  if (member.userId) {
+    await audit({
+      action: AuditAction.AgentLinkedToBrokerage,
+      targetType: 'user',
+      targetId: member.userId,
+      actor: user,
+      request,
+      metadata: { from: member.teamId, to: null, via: 'roster_removal', member_id: id },
+    })
+  }
+
   return NextResponse.json({ success: true })
 }

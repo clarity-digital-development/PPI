@@ -139,8 +139,15 @@ export default function ServiceRequestsPage() {
           const teamsRes = await fetch('/api/teams')
           if (teamsRes.ok) {
             const data = await teamsRes.json()
+            // sharesTeamScope, not hasLogin. Since linked brokerage inventory
+            // (Ryan, 2026-09-08) a roster row can carry a login that is only an
+            // inventory link, with User.teamId deliberately NULL. The service
+            // request query ANDs `user: { teamId }`, so such an agent can never
+            // match -- listing them here would show the broker a named agent
+            // whose requests always come back empty, and imply a visibility
+            // Ryan explicitly declined.
             const withLogin = (Array.isArray(data.members) ? data.members : [])
-              .filter((m: { hasLogin: boolean; userId: string | null }) => m.hasLogin && m.userId)
+              .filter((m: { sharesTeamScope?: boolean; userId: string | null }) => m.sharesTeamScope && m.userId)
               .map((m: { userId: string; name: string }) => ({ userId: m.userId, name: m.name }))
             setMembers(withLogin)
           }
