@@ -10,6 +10,7 @@ import { audit, AuditAction } from '@/lib/audit'
 import { chargePaymentMethod, isDetachedPaymentMethodError } from '@/lib/stripe'
 import { resolveEffectivePayer } from '@/lib/orders/effective-payer'
 import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, NO_POST_SURCHARGE, postRentalApplies, type OrderItemForPricing } from '@/lib/orders/pricing'
+import { allowedInventoryOwnerIds, checkInventoryOwnership, describeInventoryFailures } from '@/lib/orders/inventory-ownership'
 import { resolveServiceArea } from '@/lib/service-area'
 import { z } from 'zod'
 
@@ -644,6 +645,48 @@ export async function PATCH(
       userId: existingOrder.userId,
       placedByUserId: existingOrder.placedByUserId,
     })
+
+    // INVENTORY OWNERSHIP — same gate as the create route. An edit can attach
+    // inventory ids just like a placement can, and this path flipped them with
+    // an equally blind updateMany. See lib/orders/inventory-ownership.ts.
+    const editAllowedOwners = await allowedInventoryOwnerIds({
+      orderUserId: existingOrder.userId,
+      actorId: user.id,
+    })
+    // An on-behalf-of order draws on the PLACER's pool — inventory is held
+    // under the team_admin's account, not the agent's. Without this, an agent
+    // editing an order a broker placed for them is refused their own order's
+    // items as "not owned".
+    if (existingOrder.placedByUserId) editAllowedOwners.add(existingOrder.placedByUserId)
+
+    // Ids this order already consumed are inStorage:false BY DESIGN — the
+    // create route flipped them, and this route only restores them inside the
+    // transaction further down. The wizard round-trips them on every save, so
+    // the storage precondition must apply to NEWLY-added ids only. Ownership
+    // is still enforced for all of them, and a sign out at a DIFFERENT
+    // property is still refused.
+    const attachedIds = {
+      customer_sign_id: new Set(existingOrder.orderItems.map((i) => i.customerSignId).filter((x): x is string => !!x)),
+      customer_rider_id: new Set(existingOrder.orderItems.map((i) => i.customerRiderId).filter((x): x is string => !!x)),
+      customer_lockbox_id: new Set(existingOrder.orderItems.map((i) => i.customerLockboxId).filter((x): x is string => !!x)),
+      customer_brochure_box_id: new Set(existingOrder.orderItems.map((i) => i.customerBrochureBoxId).filter((x): x is string => !!x)),
+    }
+    const editInventoryFailures = await checkInventoryOwnership(
+      editData.items,
+      editAllowedOwners,
+      { alreadyAttached: attachedIds }
+    )
+    if (editInventoryFailures.length > 0) {
+      console.warn('[orders/edit] inventory ownership check failed', {
+        actorId: user.id,
+        orderId: id,
+        failures: editInventoryFailures.map((f) => ({ field: f.field, id: f.id, reason: f.reason })),
+      })
+      return NextResponse.json(
+        { error: describeInventoryFailures(editInventoryFailures), code: 'inventory_unavailable' },
+        { status: 400 }
+      )
+    }
 
     // Shrink a newly-attached install-location photo before the tx opens.
     // The edit wizard round-trips the STORED photo back in the PATCH body, so

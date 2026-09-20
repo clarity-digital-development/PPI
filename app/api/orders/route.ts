@@ -10,6 +10,7 @@ import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/em
 import { resolveServiceArea } from '@/lib/service-area'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
 import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, postRentalApplies } from '@/lib/orders/pricing'
+import { allowedInventoryOwnerIds, checkInventoryOwnership, describeInventoryFailures } from '@/lib/orders/inventory-ownership'
 
 export async function GET(request: NextRequest) {
   try {
@@ -428,6 +429,29 @@ export async function POST(request: NextRequest) {
     // accumulate as pending_invoice and an admin collects via /admin/invoices.
     const isInvoiceBilling = !!payer.invoiceBilling
 
+    // INVENTORY OWNERSHIP. Every customer_*_id on this order must belong to
+    // the agent or the actor, and must still be in storage. Until now the
+    // create path flipped these rows by id alone — see
+    // lib/orders/inventory-ownership.ts for why that was survivable and why it
+    // stops being so the moment agents can see a shared brokerage pool.
+    // Runs here, with the other 400s, so a bad id never reaches Stripe.
+    const allowedOwners = await allowedInventoryOwnerIds({
+      orderUserId: user.id,
+      actorId: actor.id,
+    })
+    const inventoryFailures = await checkInventoryOwnership(orderData.items, allowedOwners)
+    if (inventoryFailures.length > 0) {
+      console.warn('[orders] inventory ownership check failed', {
+        actorId: actor.id,
+        orderUserId: user.id,
+        failures: inventoryFailures.map((f) => ({ field: f.field, id: f.id, reason: f.reason })),
+      })
+      return NextResponse.json(
+        { error: describeInventoryFailures(inventoryFailures), code: 'inventory_unavailable' },
+        { status: 400 }
+      )
+    }
+
     // EVERY 400 MUST FIRE BEFORE THE CARD IS TOUCHED. These two checks used to
     // sit just above prisma.order.create — i.e. AFTER createPaymentIntent had
     // already captured. An unknown post type therefore charged the customer and
@@ -645,44 +669,59 @@ export async function POST(request: NextRequest) {
     // If payment later fails (3DS abandoned, card declined, etc.), the webhook
     // for payment_intent.payment_failed / canceled restores these items —
     // see app/api/webhooks/stripe/route.ts.
-    const inventoryUpdates: Promise<unknown>[] = []
+    // updateMany, not update, so `inStorage: true` and the owner allowlist can
+    // both sit in the WHERE. The ownership check above runs before Stripe, but
+    // a concurrent order could consume the same row in between — a bare
+    // `update({ where: { id } })` would happily flip an item already out at a
+    // property and attach it to a second live order. A zero match here means
+    // we lost that race; it is logged loudly rather than passing silently.
+    // (The single-order path still has no reservations; holds arrive with the
+    // shared brokerage pool, where contention becomes real.)
+    const allowedOwnerList = Array.from(allowedOwners)
+    const guard = (id: string) => ({ id, inStorage: true, userId: { in: allowedOwnerList } })
+    const inventoryUpdates: Promise<{ count: number }>[] = []
+    const inventoryRefs: Array<{ kind: string; id: string }> = []
+    // ONE ROW, ONE UPDATE. The wizard can legitimately put the same stored
+    // sign on the main post and the second post, and a second guarded
+    // updateMany for an id we just flipped necessarily matches 0 rows — which
+    // the race check below would report as a lost race on a perfectly fine
+    // order.
+    const seenInventory = new Set<string>()
+    const queue = (
+      kind: string,
+      id: string | null | undefined,
+      run: (id: string) => Promise<{ count: number }>
+    ) => {
+      if (!id) return
+      const key = `${kind}:${id}`
+      if (seenInventory.has(key)) return
+      seenInventory.add(key)
+      inventoryRefs.push({ kind, id })
+      inventoryUpdates.push(run(id))
+    }
     for (const item of orderData.items) {
-      if (item.customer_sign_id) {
-        inventoryUpdates.push(
-          prisma.customerSign.update({
-            where: { id: item.customer_sign_id },
-            data: { inStorage: false },
-          })
-        )
-      }
-      if (item.customer_rider_id) {
-        inventoryUpdates.push(
-          prisma.customerRider.update({
-            where: { id: item.customer_rider_id },
-            data: { inStorage: false },
-          })
-        )
-      }
-      if (item.customer_lockbox_id) {
-        inventoryUpdates.push(
-          prisma.customerLockbox.update({
-            where: { id: item.customer_lockbox_id },
-            data: { inStorage: false },
-          })
-        )
-      }
-      if (item.customer_brochure_box_id) {
-        inventoryUpdates.push(
-          prisma.customerBrochureBox.update({
-            where: { id: item.customer_brochure_box_id },
-            data: { inStorage: false },
-          })
-        )
-      }
+      queue('sign', item.customer_sign_id, (id) =>
+        prisma.customerSign.updateMany({ where: guard(id), data: { inStorage: false } }))
+      queue('rider', item.customer_rider_id, (id) =>
+        prisma.customerRider.updateMany({ where: guard(id), data: { inStorage: false } }))
+      queue('lockbox', item.customer_lockbox_id, (id) =>
+        prisma.customerLockbox.updateMany({ where: guard(id), data: { inStorage: false } }))
+      queue('brochure_box', item.customer_brochure_box_id, (id) =>
+        prisma.customerBrochureBox.updateMany({ where: guard(id), data: { inStorage: false } }))
     }
     if (inventoryUpdates.length > 0) {
-      await Promise.all(inventoryUpdates)
-      console.log(`Marked ${inventoryUpdates.length} inventory item(s) as out of storage for order ${order.orderNumber}`)
+      const results = await Promise.all(inventoryUpdates)
+      const missed = results
+        .map((r, i) => ({ r, ref: inventoryRefs[i] }))
+        .filter((x) => x.r.count === 0)
+        .map((x) => x.ref)
+      if (missed.length > 0) {
+        console.error(
+          `[orders] inventory race on ${order.orderNumber} — ${missed.length} item(s) were consumed between validation and write; they remain out of storage and the order still references them`,
+          { orderNumber: order.orderNumber, missed }
+        )
+      }
+      console.log(`Marked ${inventoryUpdates.length - missed.length} inventory item(s) as out of storage for order ${order.orderNumber}`)
     }
 
     // Record promo code usage AFTER order is successfully created

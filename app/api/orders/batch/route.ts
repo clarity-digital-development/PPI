@@ -12,6 +12,7 @@ import { resolveServiceArea, type ResolveResult } from '@/lib/service-area'
 import type { HoldItemType } from '@prisma/client'
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
+import { allowedInventoryOwnerIds, checkInventoryOwnership, describeInventoryFailures } from '@/lib/orders/inventory-ownership'
 
 type HoldConflict = {
   code: string
@@ -203,6 +204,31 @@ export async function POST(request: NextRequest) {
       }
       if (!o.property_address || !o.property_city || !o.property_zip || !o.property_type) {
         return NextResponse.json({ error: `Order ${i + 1} is missing a required property field` }, { status: 400 })
+      }
+
+      // INVENTORY OWNERSHIP — same gate as the single-order and edit routes.
+      // The cart is always placed by the actor under their own account, so the
+      // allowlist is just them. Holds cover contention for rows that carry a
+      // hold_id, but the blind-flip fallback (brochure boxes, pre-holds carts)
+      // had no ownership check at all. See lib/orders/inventory-ownership.ts.
+      const batchInventoryFailures = await checkInventoryOwnership(
+        o.items,
+        await allowedInventoryOwnerIds({ orderUserId: actor.id, actorId: actor.id })
+      )
+      if (batchInventoryFailures.length > 0) {
+        console.warn('[orders/batch] inventory ownership check failed', {
+          actorId: actor.id,
+          orderIndex: i,
+          failures: batchInventoryFailures.map((f) => ({ field: f.field, id: f.id, reason: f.reason })),
+        })
+        return NextResponse.json(
+          {
+            error: `Order ${i + 1}: ${describeInventoryFailures(batchInventoryFailures)}`,
+            code: 'inventory_unavailable',
+            order_index: i,
+          },
+          { status: 400 }
+        )
       }
 
       // Server-side schedule gate (same reason as /api/orders POST — wizard
