@@ -159,6 +159,13 @@ export async function PUT(
         await prisma.order.update({
           where: { id: removedInstallation.orderId },
           data: { postRentalStoppedAt: new Date() },
+          // Narrowed deliberately: nothing reads the result, and an unnarrowed
+          // update makes Prisma SELECT every Order column afterwards. When the
+          // schema is ahead of the database by even one column that SELECT
+          // throws, 500ing this route AFTER the serviceRequest + installation
+          // writes have already committed -- the admin sees "didn't complete",
+          // refreshes, and it's done. Exactly the 2026-09-20 report.
+          select: { id: true },
         })
       }
     }
