@@ -122,13 +122,20 @@ export function SecondPostStep({ formData, updateFormData, inventory }: StepProp
 
   const hasStoredSigns = inventory?.signs && inventory.signs.length > 0
 
-  // Group signs by description for the dropdown
+  // Group signs by description for the dropdown, keyed on description AND
+  // source. See sign-step.tsx for why: a brokerage pool can hold a sign
+  // described identically to the agent's own, and collapsing them hides the
+  // brokerage one behind the agent's id.
   const signOptions = useMemo(() => {
     if (!hasStoredSigns) return []
     const grouped: Record<string, { id: string; label: string }> = {}
     for (const sign of inventory!.signs) {
-      const label = `${sign.description}${sign.size ? ` (${sign.size})` : ''}`
-      if (!grouped[label]) grouped[label] = { id: sign.id, label }
+      const base = `${sign.description}${sign.size ? ` (${sign.size})` : ''}`
+      const label = sign.source === 'brokerage'
+        ? `${base} — ${sign.source_label || 'Brokerage'}`
+        : base
+      const key = `${base}::${sign.source ?? 'own'}`
+      if (!grouped[key]) grouped[key] = { id: sign.id, label }
     }
     return Object.values(grouped).map(g => ({ value: g.id, label: g.label }))
   }, [hasStoredSigns, inventory])

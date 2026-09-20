@@ -789,15 +789,28 @@ export async function PATCH(
       if (idsToRestore.brochureBoxes.length)
         await tx.customerBrochureBox.updateMany({ where: { id: { in: idsToRestore.brochureBoxes } }, data: { inStorage: true } })
 
-      // Lock inventory referenced by the NEW order (idempotent)
+      // Lock inventory referenced by the NEW order (idempotent).
+      //
+      // Owner-guarded, matching the create path (orders/route.ts). Without the
+      // guard these four flips took any id the transaction reached this far
+      // with and forced it out of storage regardless of who owns it now -- so a
+      // waived id (one already on this order) could be re-flipped on an account
+      // the actor no longer has access to, e.g. after a brokerage revoked their
+      // roster link. The ownership check above already rejects ids the actor
+      // may not use; this makes the write itself say the same thing, so the two
+      // can never drift.
+      const lockGuard = (ids: Set<string>) => ({
+        id: { in: Array.from(ids) },
+        userId: { in: Array.from(editAllowedOwners) },
+      })
       if (newSignIds.size)
-        await tx.customerSign.updateMany({ where: { id: { in: Array.from(newSignIds) } }, data: { inStorage: false } })
+        await tx.customerSign.updateMany({ where: lockGuard(newSignIds), data: { inStorage: false } })
       if (newRiderIds.size)
-        await tx.customerRider.updateMany({ where: { id: { in: Array.from(newRiderIds) } }, data: { inStorage: false } })
+        await tx.customerRider.updateMany({ where: lockGuard(newRiderIds), data: { inStorage: false } })
       if (newLockboxIds.size)
-        await tx.customerLockbox.updateMany({ where: { id: { in: Array.from(newLockboxIds) } }, data: { inStorage: false } })
+        await tx.customerLockbox.updateMany({ where: lockGuard(newLockboxIds), data: { inStorage: false } })
       if (newBrochureIds.size)
-        await tx.customerBrochureBox.updateMany({ where: { id: { in: Array.from(newBrochureIds) } }, data: { inStorage: false } })
+        await tx.customerBrochureBox.updateMany({ where: lockGuard(newBrochureIds), data: { inStorage: false } })
 
       // Race-safe: invoice-bundle job (admin/invoices) can stamp invoiceId on
       // a pending order at any moment via updateMany({ invoiceId: null }).

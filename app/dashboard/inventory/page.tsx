@@ -191,7 +191,19 @@ export default function InventoryPage() {
         const res = await fetch('/api/inventory')
         if (res.ok) {
           const data = await res.json()
-          setInventory(data)
+          // This page is "your inventory" -- what the agent owns and is
+          // accountable for. Since linked brokerage inventory (Ryan,
+          // 2026-09-08) /api/inventory also returns the brokerage's pooled
+          // signs for the order wizard, which would otherwise show here as
+          // hundreds of signs the agent does not own. Drop them; the wizard is
+          // where the pool belongs.
+          setInventory({
+            ...data,
+            signs: Array.isArray(data.signs)
+              ? data.signs.filter((s: { source?: string }) => s.source !== 'brokerage')
+              : data.signs,
+            brokeragePool: null,
+          })
         }
       } catch (error) {
         console.error('Error fetching inventory:', error)

@@ -3,6 +3,7 @@ import { HoldItemType } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser, canActOnBehalfOf, isAdminOrTeamAdmin } from '@/lib/auth-utils'
 import { acquireHold, releaseHolds, HoldConflictError } from '@/lib/inventory-holds'
+import { allowedInventoryOwnerIds } from '@/lib/orders/inventory-ownership'
 
 const VALID_ITEM_TYPES: readonly HoldItemType[] = ['sign', 'rider', 'lockbox'] as const
 
@@ -59,6 +60,37 @@ export async function POST(request: NextRequest) {
 
     const itemType = body.item_type
     const itemId = body.item_id
+
+    // Verify the caller may actually hold this item.
+    //
+    // This endpoint used to take item_id on trust: acquireHold has no ownership
+    // predicate (it is a reservation primitive -- authorisation was assumed to
+    // happen at order time). That was survivable only while nobody could see
+    // anyone else's ids. Linked brokerage inventory (Ryan, 2026-09-08) hands
+    // every linked agent the ids of the whole pool -- 317 signs for Semonin --
+    // so without this an agent could POST each one and, because a held row is
+    // filtered out of /api/inventory, make the entire pool unorderable for the
+    // brokerage itself and every other agent, renewing it indefinitely via the
+    // bump endpoint. Only Pink Posts staff could clear it. Each hold is also an
+    // unauthorised write to another account's row (heldByHoldId/heldUntil).
+    const holdAllowedOwners = await allowedInventoryOwnerIds({
+      orderUserId: ownerUserId,
+      actorId: user.id,
+    })
+    const itemOwner = await (async () => {
+      const sel = { select: { userId: true } }
+      if (itemType === 'sign') return prisma.customerSign.findUnique({ where: { id: itemId }, ...sel })
+      if (itemType === 'rider') return prisma.customerRider.findUnique({ where: { id: itemId }, ...sel })
+      return prisma.customerLockbox.findUnique({ where: { id: itemId }, ...sel })
+    })()
+    if (!itemOwner || !holdAllowedOwners.has(itemOwner.userId)) {
+      // Same opaque 409 the conflict path returns, so this cannot be used as an
+      // existence oracle for ids on other accounts.
+      return NextResponse.json(
+        { error: 'item_unavailable', code: 'item_unavailable' },
+        { status: 409 }
+      )
+    }
 
     try {
       const result = await acquireHold(

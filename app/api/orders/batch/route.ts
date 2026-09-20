@@ -197,6 +197,15 @@ export async function POST(request: NextRequest) {
     // so the customer's card isn't charged for a partially-doomed cart.
     const saBlocks: Array<{ orderIndex: number; zip: string; reason?: string; contactPhone?: string }> = []
 
+    // Loop-invariant: the cart is always placed by the actor under their own
+    // account, so the allow-list is the same for every row. Resolved once --
+    // it now hits the DB to look up any linked brokerage pool, and a 20-row
+    // cart was otherwise repeating that lookup 20 times.
+    const batchAllowedOwners = await allowedInventoryOwnerIds({
+      orderUserId: actor.id,
+      actorId: actor.id,
+    })
+
     for (let i = 0; i < orders.length; i++) {
       const o = orders[i]
       if (!o.items || o.items.length === 0) {
@@ -211,10 +220,7 @@ export async function POST(request: NextRequest) {
       // allowlist is just them. Holds cover contention for rows that carry a
       // hold_id, but the blind-flip fallback (brochure boxes, pre-holds carts)
       // had no ownership check at all. See lib/orders/inventory-ownership.ts.
-      const batchInventoryFailures = await checkInventoryOwnership(
-        o.items,
-        await allowedInventoryOwnerIds({ orderUserId: actor.id, actorId: actor.id })
-      )
+      const batchInventoryFailures = await checkInventoryOwnership(o.items, batchAllowedOwners)
       if (batchInventoryFailures.length > 0) {
         console.warn('[orders/batch] inventory ownership check failed', {
           actorId: actor.id,

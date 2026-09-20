@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser, canActOnBehalfOf } from '@/lib/auth-utils'
+import { resolveBrokeragePool } from '@/lib/inventory/brokerage-pool'
 
 export async function GET(request: NextRequest) {
   try {
@@ -44,6 +45,36 @@ export async function GET(request: NextRequest) {
       memberFilter = { assignedToMemberId: memberId }
     }
 
+    // Linked brokerage inventory (Ryan, 2026-09-08): an agent's pickers show
+    // the brokerage's pool alongside their own, so they can take a brokerage
+    // sign and add their own rider.
+    //
+    // Resolved for the TARGET (whose order this is), not the caller. Skipped
+    // entirely on the member_id branch: there the team_admin IS the pool, and
+    // the rows are theirs already.
+    const pool = memberFilter ? null : await resolveBrokeragePool(targetUserId)
+
+    // SIGNS ONLY for now, deliberately.
+    //
+    // Ryan's concrete description is "select 1 brokerage sign from the admin
+    // inventory and one name riders" -- the sign is the pooled item; the rider
+    // is the agent's own. Riders and lockboxes are pooled in a follow-up,
+    // because their pickers cannot yet express source: RiderSelector keys
+    // selection by rider TYPE (RiderSelector.tsx:174), so an own and a
+    // brokerage rider of the same type render as two chips that share one
+    // selection state, and the wizard then resolves the id by type and picks
+    // whichever sorted first -- consuming the wrong physical rider. Shipping
+    // pooled riders before that refactor would send the wrong item to a
+    // property. Brochure boxes stay own-only too: they are a bare count with no
+    // id, so pooling them would only inflate the number.
+    const signOwnerIds = pool ? [targetUserId, pool.ownerUserId] : [targetUserId]
+    const signOwnerFilter = { userId: { in: signOwnerIds } }
+    const ownerFilter = { userId: targetUserId }
+    const sourceOf = (rowUserId: string) =>
+      pool && rowUserId === pool.ownerUserId
+        ? { source: 'brokerage' as const, source_label: pool.name }
+        : { source: 'own' as const, source_label: null }
+
     // Single Date instance shared by the hold-visibility filter and the
     // held_until_other computation so a row that's "live" in the query is
     // consistently flagged as a foreign-cart hold in the response.
@@ -76,19 +107,19 @@ export async function GET(request: NextRequest) {
     // Fetch all inventory types in parallel
     const [rawSigns, rawRiders, rawLockboxes, rawBrochureBoxes] = await Promise.all([
       prisma.customerSign.findMany({
-        where: { userId: targetUserId, inStorage: true, ...memberFilter, ...holdVisibilityFilter },
+        where: { ...signOwnerFilter, inStorage: true, ...memberFilter, ...holdVisibilityFilter },
         orderBy: { createdAt: 'desc' },
       }),
       prisma.customerRider.findMany({
-        where: { userId: targetUserId, inStorage: true, ...memberFilter, ...holdVisibilityFilter },
+        where: { ...ownerFilter, inStorage: true, ...memberFilter, ...holdVisibilityFilter },
         include: { rider: true },
       }),
       prisma.customerLockbox.findMany({
-        where: { userId: targetUserId, inStorage: true, ...memberFilter, ...holdVisibilityFilter },
+        where: { ...ownerFilter, inStorage: true, ...memberFilter, ...holdVisibilityFilter },
         include: { lockboxType: true },
       }),
       prisma.customerBrochureBox.findMany({
-        where: { userId: targetUserId, inStorage: true, ...memberFilter },
+        where: { ...ownerFilter, inStorage: true, ...memberFilter },
       }),
     ])
 
@@ -111,48 +142,72 @@ export async function GET(request: NextRequest) {
     }
 
     // Transform signs to expected format
-    const signs = rawSigns.map(sign => ({
-      id: sign.id,
-      description: sign.description,
-      size: null, // Not tracked in current schema
-      ...holdFlagsFor(sign),
-    }))
+    const signs = rawSigns
+      .map(sign => ({
+        id: sign.id,
+        description: sign.description,
+        size: null, // Not tracked in current schema
+        ...sourceOf(sign.userId),
+        ...holdFlagsFor(sign),
+      }))
+      // Own inventory first so an agent's default pick stays their own.
+      .sort((a, b) => (a.source === b.source ? 0 : a.source === 'own' ? -1 : 1))
 
     // Aggregate riders by type with quantity counts. Hold flags are reported
     // per-type as "any row in this group held by me" / earliest foreign expiry
     // so the cart UI can label the aggregated chip.
+    //
+    // GROUPED BY TYPE **AND SOURCE**. Each group reports one representative
+    // `id`, and that id is what the wizard attaches to the order
+    // (`rider-step.tsx:45`) and therefore which PHYSICAL rider gets consumed.
+    // Merging an agent's own "For Sale" rider with the brokerage's into a
+    // single group would hand back one id for both and silently consume
+    // whichever happened to sort first -- taking a brokerage rider when the
+    // agent picked their own, or the reverse. Keeping the groups separate is
+    // what makes Ryan's "brokerage sign + their own rider" land on the right
+    // physical items.
     const riderCounts: Record<
       string,
       {
         id: string
         rider_type: string
         quantity: number
+        source: 'own' | 'brokerage'
+        source_label: string | null
         held_by_me: boolean
         held_until_other: string | null
       }
     > = {}
     for (const rider of rawRiders) {
       const riderType = rider.rider.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/, '')
+      const origin = sourceOf(rider.userId)
+      const key = `${riderType}::${origin.source}`
       const flags = holdFlagsFor(rider)
-      if (riderCounts[riderType]) {
-        riderCounts[riderType].quantity += 1
-        if (flags.held_by_me) riderCounts[riderType].held_by_me = true
+      if (riderCounts[key]) {
+        riderCounts[key].quantity += 1
+        if (flags.held_by_me) riderCounts[key].held_by_me = true
         if (flags.held_until_other) {
-          const existing = riderCounts[riderType].held_until_other
+          const existing = riderCounts[key].held_until_other
           if (!existing || flags.held_until_other < existing) {
-            riderCounts[riderType].held_until_other = flags.held_until_other
+            riderCounts[key].held_until_other = flags.held_until_other
           }
         }
       } else {
-        riderCounts[riderType] = {
+        riderCounts[key] = {
           id: rider.id,
           rider_type: riderType,
           quantity: 1,
+          ...origin,
           ...flags,
         }
       }
     }
-    const riders = Object.values(riderCounts)
+    // Own groups first. The wizard resolves a rider by the first entry matching
+    // the type, so this keeps "my own rider" the default when both exist --
+    // exactly the split Ryan described.
+    const riders = Object.values(riderCounts).sort((a, b) =>
+      a.source === b.source ? 0 : a.source === 'own' ? -1 : 1
+    )
 
     // Transform lockboxes — include both raw name and a 'family' tag so the UI
     // can group "SentriLock" vs "Mechanical (Customer Owned)" vs "Mechanical
@@ -172,9 +227,11 @@ export async function GET(request: NextRequest) {
         lockbox_code: lockbox.code,
         // Serial flows into the line-item description so installers know which physical box to bring
         serial_number: lockbox.serialNumber,
+        ...sourceOf(lockbox.userId),
         ...holdFlagsFor(lockbox),
       }
     })
+    lockboxes.sort((a, b) => (a.source === b.source ? 0 : a.source === 'own' ? -1 : 1))
 
     // Aggregate brochure boxes into quantity. No hold infrastructure on this
     // model, so the flags are always { held_by_me: false, held_until_other: null }.
@@ -187,6 +244,11 @@ export async function GET(request: NextRequest) {
       riders,
       lockboxes,
       brochureBoxes,
+      // Null for everyone not linked to a brokerage, which is the vast
+      // majority -- the UI shows no source labelling at all in that case.
+      // `pooled` names what is actually drawn from the pool today, so the UI
+      // cannot imply riders or lockboxes are shared when they are not.
+      brokeragePool: pool ? { name: pool.name, pooled: ['signs'] } : null,
     })
   } catch (error) {
     console.error('Error fetching inventory:', error)

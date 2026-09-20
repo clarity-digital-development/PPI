@@ -19,6 +19,7 @@
  *      be attached to two live orders.
  */
 import { prisma } from '@/lib/prisma'
+import { resolveBrokeragePool } from '@/lib/inventory/brokerage-pool'
 
 /** The inventory-bearing columns an order item can reference. */
 export const INVENTORY_FIELDS = [
@@ -49,15 +50,29 @@ const LABEL_FOR_FIELD: Record<InventoryField, string> = {
  *   - the order's owner (the agent the order is recorded under)
  *   - the actor placing it, so a team_admin can order out of their own pool on
  *     an agent's behalf (the existing `?member_id=` flow)
+ *   - the brokerage pool either of them is linked to (Ryan, 2026-09-08)
  *
- * Linked brokerage support adds the broker here — one place, and every
- * consuming path inherits it.
+ * This is the ONLY place the allow-list is built, so every consuming path
+ * (create, cart, edit and the hold endpoint) inherits the brokerage pool from
+ * one change.
+ *
+ * The pool widens what an order may consume, so it is resolved from the
+ * SERVER's own view of the link -- never from anything the client sent.
  */
 export async function allowedInventoryOwnerIds(opts: {
   orderUserId: string
   actorId: string
 }): Promise<Set<string>> {
-  return new Set([opts.orderUserId, opts.actorId])
+  const ids = new Set([opts.orderUserId, opts.actorId])
+
+  // Distinct ids only: ordering for yourself makes these the same person.
+  const principals = Array.from(new Set([opts.orderUserId, opts.actorId])).filter(Boolean)
+  const pools = await Promise.all(principals.map((id) => resolveBrokeragePool(id)))
+  for (const pool of pools) {
+    if (pool) ids.add(pool.ownerUserId)
+  }
+
+  return ids
 }
 
 export interface InventoryCheckFailure {
@@ -152,8 +167,21 @@ export async function checkInventoryOwnership(
         continue
       }
 
-      // Ownership is enforced even for already-attached rows -- being on the
-      // order is never a licence to keep using someone else's inventory.
+      // Ownership is enforced for EVERY id, attached or not.
+      //
+      // This was briefly waived for already-attached ids on the theory that
+      // ownership can legitimately move after attachment. It cannot, in any way
+      // that matters: bulk-reassign only writes assignedToMemberId within one
+      // account, so the ONLY case the waiver covered was a revoked brokerage
+      // link -- which is precisely the case where enforcement is the point.
+      // Waiving it meant a brokerage could remove an agent from their roster and
+      // that agent could still edit orders holding the brokerage's signs,
+      // re-flipping them out of storage and changing the property address they
+      // were sent to. Roster removal IS the revocation mechanism; this is what
+      // makes it bite.
+      //
+      // The not_found and not_in_storage waivers above stay: those are about an
+      // order's own history, and removing them stranded 240 of 296 live orders.
       if (!allowedOwnerIds.has(row.userId)) {
         // Same message as not_found so the response can't be used to probe
         // which ids exist on other accounts.

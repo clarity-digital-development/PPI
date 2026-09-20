@@ -63,10 +63,15 @@ export interface OrderLike {
 }
 
 export interface WizardInventory {
-  signs: Array<{ id: string; description: string; size: string | null }>
-  riders: Array<{ id: string; rider_type: string; quantity: number }>
-  lockboxes: Array<{ id: string; lockbox_type: string; lockbox_type_name?: string; lockbox_code: string | null }>
-  brochureBoxes: { quantity: number } | null
+  // `source` distinguishes the agent's own inventory from a linked brokerage's
+  // pool (Ryan, 2026-09-08). Optional: absent for the great majority of users,
+  // who have no pool. Carried on the type so augmentInventoryWithOrder does not
+  // silently strip it on the edit path.
+  signs: Array<{ id: string; description: string; size: string | null; source?: 'own' | 'brokerage'; source_label?: string | null }>
+  riders: Array<{ id: string; rider_type: string; quantity: number; source?: 'own' | 'brokerage'; source_label?: string | null }>
+  lockboxes: Array<{ id: string; lockbox_type: string; lockbox_type_name?: string; lockbox_code: string | null; source?: 'own' | 'brokerage'; source_label?: string | null }>
+  brochureBoxes: { quantity: number; own_quantity?: number; brokerage_quantity?: number } | null
+  brokeragePool?: { name: string } | null
 }
 
 // Line items belonging to the SECOND post are prefixed "Second Post ..." by the
@@ -395,6 +400,11 @@ export function augmentInventoryWithOrder(
       if (!base.signs.some(s => s.id === item.customerSignId)) {
         const m = item.description.match(/Sign Install:\s*(.+?)\s*\(from storage\)/i)
         const desc = (m ? m[1] : '').trim() || 'Stored sign'
+        // No `source`: the order item does not record which pool the sign came
+        // from, so it keys as 'own' and, being unshifted, wins its group. The
+        // id is exact, so the correct physical sign is always selected. KNOWN
+        // cosmetic limit: a brokerage sign on an existing order shows without
+        // its brokerage label when editing.
         base.signs.unshift({ id: item.customerSignId, description: desc, size: null })
       }
     }
@@ -417,7 +427,22 @@ export function augmentInventoryWithOrder(
       // edit, and resurrected — still charged — when the customer deliberately
       // REMOVED it. Both were the same missing id (Ryan, 2026-07-28).
       if (!base.riders.some(r => r.id === item.customerRiderId)) {
-        const sameType = base.riders.findIndex(r => r.rider_type === slug)
+        // Merge into an existing group ONLY when that type is unambiguous.
+        //
+        // Riders are grouped per (type, source) since linked brokerage
+        // inventory, so an agent with a pool can legitimately have TWO groups
+        // of the same type -- their own and the brokerage's. We cannot tell
+        // which one this order's row belongs to (the order item records no
+        // source), and merging into the first match re-points the agent's OWN
+        // group at a brokerage rider id: picking "your own" would then consume
+        // the brokerage's physical rider. When ambiguous, give this order's row
+        // its own group instead, which is always exactly right because the id
+        // is exact. Users with no pool have one group per type, so this is
+        // unchanged for them.
+        const matches = base.riders.filter(r => r.rider_type === slug)
+        const sameType = matches.length === 1
+          ? base.riders.findIndex(r => r.rider_type === slug)
+          : -1
         if (sameType >= 0) {
           // Point the existing group at this order's actual row instead of
           // adding a second chip for the same type. Replaced with a NEW object:

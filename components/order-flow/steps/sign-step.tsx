@@ -52,7 +52,11 @@ export function SignStep({ formData, updateFormData, inventory }: StepProps) {
             <h3 className="font-semibold text-gray-900">Sign in inventory</h3>
             {hasStoredSigns ? (
               <>
-                <p className="text-sm text-gray-600">We have {inventory!.signs.length} sign(s) in storage for you</p>
+                <p className="text-sm text-gray-600">
+                  {inventory!.brokeragePool
+                    ? `${inventory!.signs.length} sign(s) available — yours plus ${inventory!.brokeragePool.name}`
+                    : `We have ${inventory!.signs.length} sign(s) in storage for you`}
+                </p>
                 <p className="text-sm font-medium text-pink-600 mt-1">Install fee: ${PRICING.sign_install.toFixed(2)}</p>
               </>
             ) : (
@@ -76,12 +80,23 @@ export function SignStep({ formData, updateFormData, inventory }: StepProps) {
               value={formData.stored_sign_id || ''}
               onChange={(e) => updateFormData({ stored_sign_id: e.target.value })}
               options={(() => {
-                // Group signs by description so duplicates only appear once
+                // Group signs by description so duplicates only appear once --
+                // but key on description AND source. A brokerage pool (Ryan,
+                // 2026-09-08) can hold a sign described identically to the
+                // agent's own; grouping on description alone collapsed the two
+                // into a single option carrying whichever id sorted first, so
+                // the agent could never actually choose the brokerage sign and
+                // might consume the wrong physical one.
                 const grouped: Record<string, { id: string; label: string }> = {}
                 for (const sign of inventory!.signs) {
-                  const label = `${sign.description}${sign.size ? ` (${sign.size})` : ''}`
-                  if (!grouped[label]) {
-                    grouped[label] = { id: sign.id, label }
+                  const base = `${sign.description}${sign.size ? ` (${sign.size})` : ''}`
+                  const isPool = sign.source === 'brokerage'
+                  const label = isPool
+                    ? `${base} — ${sign.source_label || 'Brokerage'}`
+                    : base
+                  const key = `${base}::${sign.source ?? 'own'}`
+                  if (!grouped[key]) {
+                    grouped[key] = { id: sign.id, label }
                   }
                 }
                 return Object.values(grouped).map(g => ({ value: g.id, label: g.label }))
