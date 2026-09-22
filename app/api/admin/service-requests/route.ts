@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
+import { INSTALLABLE_ITEM_TYPES } from '@/lib/dispatch/types'
 
 export async function GET(request: NextRequest) {
   try {
@@ -80,7 +81,12 @@ export async function GET(request: NextRequest) {
                   // order was placed for — Ryan 2026-09-01, removals showed
                   // only the broker account name.
                   placedForAgentName: true,
+                  // Physical items only — money lines ('surcharge',
+                  // 'pickup_fee') would otherwise show up under "Items
+                  // Installed Here" as things to bring back. Same allow-list
+                  // the crew dispatch email uses.
                   orderItems: {
+                    where: { itemType: { in: [...INSTALLABLE_ITEM_TYPES] } },
                     select: { description: true, quantity: true, itemType: true },
                   },
                 },

@@ -42,6 +42,17 @@ export function postRentalApplies(postType: string | null | undefined): boolean 
 }
 export const FALLBACK_TAX_RATE = 0.06 // KY 6% fallback when Stripe Tax unavailable / returns 0
 export const EXPEDITE_FEE = 50
+// Sign picked up from the agent's home/office instead of waiting at the
+// listing (Ryan, 2026-09-15). Added per ORDER, not per sign — one trip covers
+// both posts. Server-authoritative: see lib/orders/pickup-fee.ts.
+export const PICKUP_FEE = 10
+
+// Item lines that are pure service charges with no tangible good, so they stay
+// OUT of the sales-tax base (KY rule Ryan confirmed 2026-06-29 for service
+// trips). Every place that builds a tax base — computeOrderPricing below, the
+// Stripe Tax line items in app/api/orders/route.ts, and the review step's tax
+// preview — must read this one set, or the quote and the charge drift apart.
+export const UNTAXED_ITEM_TYPES: ReadonlySet<string> = new Set(['surcharge', 'pickup_fee'])
 
 // CR4 (Round 22): flat-fee accounts pay a fixed amount per order regardless of
 // items selected: base (taxable) + $3.49 fuel (untaxed) + 6% tax on the base.
@@ -116,14 +127,15 @@ export function computeDiscountableSubtotal(items: OrderItemForPricing[]): numbe
  * Pure function — no DB or API calls. Given an order body's items + flags,
  * return the full pricing breakdown.
  *
- * Tax base EXCLUDES any `item_type === 'surcharge'` line (the out-of-area
- * service fee). KY non-taxable rule: pure service charge with no physical
- * post — same rule we shipped for standalone service trips in commit a047770
- * and explicitly confirmed by Ryan 2026-06-29.
+ * Tax base EXCLUDES every UNTAXED_ITEM_TYPES line: the out-of-area service
+ * fee ('surcharge') and the sign-pickup fee ('pickup_fee'). KY non-taxable
+ * rule: pure service charge with no physical post — same rule we shipped for
+ * standalone service trips in commit a047770 and explicitly confirmed by Ryan
+ * 2026-06-29.
  *
  * Tax computation:
- *   - Default: 6% on the taxable base (items minus surcharge, plus expedite,
- *     plus no-post — discounted by `discount`)
+ *   - Default: 6% on the taxable base (items minus untaxed lines, plus
+ *     expedite, plus no-post — discounted by `discount`)
  *   - With `taxOverride`: skips the fallback math and uses the override
  *     directly. Create route uses this to swap in Stripe Tax's result when
  *     it returns > 0.
@@ -147,7 +159,7 @@ export function computeOrderPricing(params: {
 }): ComputedOrderPricing {
   const subtotal = params.items.reduce((sum, i) => sum + i.total_price, 0)
   const surchargeSum = params.items
-    .filter(i => i.item_type === 'surcharge')
+    .filter(i => UNTAXED_ITEM_TYPES.has(i.item_type))
     .reduce((sum, i) => sum + i.total_price, 0)
 
   const discount = params.discount ?? 0

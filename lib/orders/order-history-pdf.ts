@@ -35,6 +35,7 @@ function summarizeItems(items: OrderItemData[]): string {
   if (riders.length) parts.push(`${riders.length} Rider${riders.length > 1 ? 's' : ''}`)
   if (lockbox) parts.push('Lockbox')
   if (brochure) parts.push('Brochure Box')
+  if (items.some(i => i.itemType === 'pickup_fee')) parts.push('Sign Pickup')
   return parts.join(', ') || `${items.length} item${items.length !== 1 ? 's' : ''}`
 }
 

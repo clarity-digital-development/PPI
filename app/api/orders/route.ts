@@ -9,7 +9,9 @@ import { createPaymentIntent, createCustomer, calculateTax, getStripeErrorMessag
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 import { resolveServiceArea } from '@/lib/service-area'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
-import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, postRentalApplies } from '@/lib/orders/pricing'
+import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, postRentalApplies, UNTAXED_ITEM_TYPES } from '@/lib/orders/pricing'
+import { applyPickupFeePolicy } from '@/lib/orders/pickup-fee'
+import { isPickupFeeWaivedForPayer } from '@/lib/orders/pickup-fee-waiver'
 import { allowedInventoryOwnerIds, checkInventoryOwnership, describeInventoryFailures } from '@/lib/orders/inventory-ownership'
 
 export async function GET(request: NextRequest) {
@@ -151,6 +153,16 @@ export async function POST(request: NextRequest) {
     }
 
     const orderData = validationResult.data
+
+    // Sign-pickup fee: re-derived here from the sign lines, never taken from
+    // the client. Waiver follows the wallet (payer), same as the OOA exemption.
+    const pickupPolicy = applyPickupFeePolicy(orderData.items, {
+      waived: await isPickupFeeWaivedForPayer(payer.id),
+    })
+    if (pickupPolicy.error) {
+      return NextResponse.json({ error: pickupPolicy.error, code: 'pickup_address_required' }, { status: 400 })
+    }
+    orderData.items = pickupPolicy.items
 
     // Server-side schedule gate. The wizard's date picker min= is purely
     // client-side; without this, a stale tab or dev-tools edit can submit
@@ -327,11 +339,11 @@ export async function POST(request: NextRequest) {
     let taxOverride: number | undefined
     let taxCalculationMethod = 'fallback'
     try {
-      // Build line items for Stripe Tax calculation — EXCLUDE itemType
-      // 'surcharge' (OOA service fee) so Stripe doesn't tax it. KY non-
-      // taxable rule, mirrors the helper's tax-base logic.
+      // Build line items for Stripe Tax calculation — EXCLUDE the untaxed
+      // service charges (OOA 'surcharge', 'pickup_fee') so Stripe doesn't tax
+      // them. KY non-taxable rule, the same set the helper's tax base uses.
       const taxLineItems = orderData.items
-        .filter(item => (item.item_type as string) !== 'surcharge')
+        .filter(item => !UNTAXED_ITEM_TYPES.has(item.item_type as string))
         .map((item, index) => ({
           amount: Math.round(item.total_price * 100), // Convert to cents
           reference: `item_${index}_${item.item_type}`,

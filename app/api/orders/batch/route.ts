@@ -4,6 +4,8 @@ import { compressImageDataUri } from '@/lib/images/compress'
 import { getCurrentUser, generateOrderNumber } from '@/lib/auth-utils'
 import { createPaymentIntent, createCustomer, getStripeErrorMessage, stripe } from '@/lib/stripe/server'
 import { computeOrderPricing, computeFlatFeePricing, postRentalApplies } from '@/lib/orders/pricing'
+import { applyPickupFeePolicy } from '@/lib/orders/pickup-fee'
+import { isPickupFeeWaivedForPayer } from '@/lib/orders/pickup-fee-waiver'
 import { claimHoldsInTx, HoldConflictError, releaseHolds, describeHoldItems, type HoldClaim } from '@/lib/inventory-holds'
 import { validateScheduling } from '@/lib/scheduling'
 import crypto from 'node:crypto'
@@ -205,12 +207,24 @@ export async function POST(request: NextRequest) {
       orderUserId: actor.id,
       actorId: actor.id,
     })
+    // The actor is the wallet for every row, so the pickup-fee waiver is too.
+    const pickupFeeWaived = await isPickupFeeWaivedForPayer(actor.id)
 
     for (let i = 0; i < orders.length; i++) {
       const o = orders[i]
       if (!o.items || o.items.length === 0) {
         return NextResponse.json({ error: `Order ${i + 1} has no items` }, { status: 400 })
       }
+      // Sign-pickup fee, re-derived from the sign lines (the cart row's own
+      // fee line was priced in the browser and is never trusted).
+      const pickupPolicy = applyPickupFeePolicy(o.items, { waived: pickupFeeWaived })
+      if (pickupPolicy.error) {
+        return NextResponse.json(
+          { error: `Order ${i + 1}: ${pickupPolicy.error}`, code: 'pickup_address_required', order_index: i },
+          { status: 400 }
+        )
+      }
+      o.items = pickupPolicy.items
       if (!o.property_address || !o.property_city || !o.property_zip || !o.property_type) {
         return NextResponse.json({ error: `Order ${i + 1} is missing a required property field` }, { status: 400 })
       }

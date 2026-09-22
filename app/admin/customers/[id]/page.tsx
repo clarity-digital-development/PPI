@@ -32,6 +32,8 @@ interface CustomerData {
   team: {
     id: string
     name: string
+    pickup_fee_waived?: boolean
+    free_lockbox_install?: boolean
     members: Array<{ id: string; name: string; email: string | null; phone: string | null; hasLogin: boolean }>
     // Includes soft-removed members so historical assignments can still resolve
     // to a human name on the Currently Deployed pill.
@@ -131,6 +133,9 @@ export default function CustomerDetailPage() {
     invoice_billing: boolean
     flat_fee_billing: boolean
     billing_email: string
+    // Team perks — only sent when the account has a team.
+    team_pickup_fee_waived: boolean
+    team_free_lockbox_install: boolean
   }>({
     full_name: '',
     email: '',
@@ -141,6 +146,8 @@ export default function CustomerDetailPage() {
     invoice_billing: false,
     flat_fee_billing: false,
     billing_email: '',
+    team_pickup_fee_waived: false,
+    team_free_lockbox_install: false,
   })
   const [saving, setSaving] = useState(false)
   // Linked brokerage inventory (Ryan, 2026-09-08). Kept OUTSIDE editData
@@ -202,6 +209,8 @@ export default function CustomerDetailPage() {
           invoice_billing: data.customer.invoice_billing ?? false,
           flat_fee_billing: data.customer.flat_fee_billing ?? false,
           billing_email: data.customer.billing_email || '',
+          team_pickup_fee_waived: data.team?.pickup_fee_waived ?? false,
+          team_free_lockbox_install: data.team?.free_lockbox_install ?? false,
         })
         setBrokerageTeamId(data.customer.brokerage_team_id || '')
       }
@@ -228,6 +237,13 @@ export default function CustomerDetailPage() {
           invoice_billing: editData.invoice_billing,
           flat_fee_billing: editData.flat_fee_billing,
           billing_email: editData.billing_email,
+          // Team perks exist only on a team; the API refuses them otherwise.
+          ...(data?.team
+            ? {
+                team_pickup_fee_waived: editData.team_pickup_fee_waived,
+                team_free_lockbox_install: editData.team_free_lockbox_install,
+              }
+            : {}),
         }),
       })
       if (!res.ok) {
@@ -1915,6 +1931,49 @@ export default function CustomerDetailPage() {
               </span>
             </label>
           </div>
+          {/* Team perks — stored on the Team, so they only exist once this
+              account has one (every brokerage login does). Orders PAID by
+              this account get them; agents paying with their own card don't. */}
+          {data?.team ? (
+            <>
+              <div>
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editData.team_pickup_fee_waived}
+                    onChange={(e) => setEditData({ ...editData, team_pickup_fee_waived: e.target.checked })}
+                    className="mt-0.5 w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
+                  />
+                  <span className="text-sm">
+                    <span className="font-medium text-gray-700">No sign-pickup fee</span>
+                    <span className="block text-xs text-gray-500">
+                      Orders paid by this account never get the $10 fee for picking a sign up from another location. Agents who pay with their own card still do.
+                    </span>
+                  </span>
+                </label>
+              </div>
+              <div>
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editData.team_free_lockbox_install}
+                    onChange={(e) => setEditData({ ...editData, team_free_lockbox_install: e.target.checked })}
+                    className="mt-0.5 w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
+                  />
+                  <span className="text-sm">
+                    <span className="font-medium text-gray-700">Free lockbox install</span>
+                    <span className="block text-xs text-gray-500">
+                      Installing a lockbox this account already owns is $0 instead of $5. Renting one is still charged.
+                    </span>
+                  </span>
+                </label>
+              </div>
+            </>
+          ) : (
+            <p className="text-xs text-gray-500">
+              Team perks (no sign-pickup fee, free lockbox install) appear here once this account has a team.
+            </p>
+          )}
           {/* Billing-contact email — when set, bundled-invoice emails go here
               instead of the broker's account email. Lets a broker route bills
               to their accountant without forwarding. Only relevant when the

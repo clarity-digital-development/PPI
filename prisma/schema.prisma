@@ -168,6 +168,10 @@ model Team {
   // mechanical-owned, or at-property) is free for this team. Renting one is
   // still charged normally.
   freeLockboxInstall Boolean  @default(false) @map("free_lockbox_install")
+  // Per-broker perk (Ryan, 2026-09-15 — "Semonin mainly"): when true, orders
+  // PAID by this team's account never carry the $10 sign-pickup fee.
+  // Enforced server-side in lib/orders/pickup-fee.ts, not just hidden in the UI.
+  pickupFeeWaived    Boolean  @default(false) @map("pickup_fee_waived")
   createdAt          DateTime @default(now()) @map("created_at")
   updatedAt          DateTime @updatedAt @map("updated_at")
 

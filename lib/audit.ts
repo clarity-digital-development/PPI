@@ -99,6 +99,9 @@ export const AuditAction = {
   UserExemptToggle:            'user.service_area_exempt_toggle',
   UserInvoiceBillingToggle:    'user.invoice_billing_toggle',
   UserFlatFeeBillingToggle:    'user.flat_fee_billing_toggle',
+  // Per-team pricing perks, toggled from /admin/customers/[id].
+  TeamPickupFeeWaiverToggle:   'team.pickup_fee_waiver_toggle',
+  TeamFreeLockboxToggle:       'team.free_lockbox_install_toggle',
   InvoiceCreated:              'invoice.created',
   InvoicePaid:                 'invoice.paid',
   InvoiceVoided:               'invoice.voided',

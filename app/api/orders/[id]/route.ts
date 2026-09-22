@@ -47,8 +47,21 @@ export async function GET(
       return NextResponse.json({ error: 'Order not found' }, { status: 404 })
     }
 
+    // The WALLET's team perks, for the edit screens. They used to read
+    // /api/teams, which answers for whoever is logged in — so an admin editing
+    // a broker's order saw the admin's (empty) perks and previewed prices the
+    // server wouldn't charge. The edit route resolves the same payer.
+    const payer = await prisma.user.findUnique({
+      where: { id: order.placedByUserId ?? order.userId },
+      select: { team: { select: { freeLockboxInstall: true, pickupFeeWaived: true } } },
+    })
+
     const orderResponse = {
       ...order,
+      payerPerks: {
+        freeLockboxInstall: !!payer?.team?.freeLockboxInstall,
+        pickupFeeWaived: !!payer?.team?.pickupFeeWaived,
+      },
       paid_at: order.paidAt ? order.paidAt.toISOString() : null,
       scheduled_date: order.scheduledDate ? order.scheduledDate.toISOString() : null,
       refund_id: order.refundId ?? null,

@@ -14,6 +14,7 @@ import { BrochureBoxStep } from './steps/brochure-box-step'
 import { SchedulingStep } from './steps/scheduling-step'
 import { ReviewStep } from './steps/review-step'
 import type { OrderFormData } from './types'
+import { signChoiceProblem } from './sign-choice'
 
 const steps = [
   { id: 'property', title: 'Property Info', component: PropertyStep },
@@ -47,10 +48,13 @@ const defaultFormData: OrderFormData = {
   post_type: 'Signature Pink Post',
   wood_panel_sign_build: false,
   wood_panel_materials: false,
-  // Sign
-  sign_option: 'at_property',
+  // Sign — nothing pre-selected (Ryan, 2026-09-15): agents were blowing
+  // through the old 'at_property' default without saying where the sign was.
+  sign_option: undefined,
   stored_sign_id: undefined,
   sign_description: '',
+  sign_location: undefined,
+  sign_pickup_address: '',
   // Riders
   riders: [],
   // Wire Frame Signs
@@ -63,6 +67,8 @@ const defaultFormData: OrderFormData = {
   second_post_install_location: '',
   second_post_sign_option: 'none',
   second_post_stored_sign_id: undefined,
+  second_post_sign_location: undefined,
+  second_post_pickup_address: '',
   second_post_riders: [],
   second_post_wire_frame_quantity: 0,
   second_post_solar_lighting_quantity: 0,
@@ -120,6 +126,8 @@ interface OrderWizardProps {
   editMeta?: { orderNumber: string; originalTotal: number; flatFeeBase?: number; flatFeeFuel?: number }
   // Per-broker owned-lockbox install fee override ($0 for free-install teams).
   lockboxInstallFee?: number
+  // Sign-pickup fee for the payer: 0 when their team has the waiver.
+  pickupFee?: number
   // CR4: flat-fee account — review step shows the flat $66.07 breakdown.
   flatFee?: boolean
   // Payer is invoice-billing — review step keeps the full (unsplit)
@@ -138,7 +146,7 @@ interface OrderWizardProps {
   editingCartItemId?: string
 }
 
-export function OrderWizard({ inventory, paymentMethods, onBehalfOf, placedForMemberId, currentUserRole, mode = 'create', orderId, initialFormData, editMeta, lockboxInstallFee, flatFee, invoiceBilling, adminView, editingCartItemId }: OrderWizardProps) {
+export function OrderWizard({ inventory, paymentMethods, onBehalfOf, placedForMemberId, currentUserRole, mode = 'create', orderId, initialFormData, editMeta, lockboxInstallFee, pickupFee, flatFee, invoiceBilling, adminView, editingCartItemId }: OrderWizardProps) {
   const isEdit = mode === 'edit'
   const [currentStep, setCurrentStep] = useState(0)
   // In edit mode (or cart-edit re-entry) every step has effectively been
@@ -219,9 +227,16 @@ export function OrderWizard({ inventory, paymentMethods, onBehalfOf, placedForMe
       case 'sign':
         // If "from inventory" is selected, customer must pick which specific sign
         if (formData.sign_option === 'stored' && !formData.stored_sign_id) return false
-        return true
-      case 'rider':
+        // Nothing pre-selected, and the at-property tile needs its dropdown
+        // (and, for a pickup, the address) answered too.
+        return signChoiceProblem({ ...formData, second_post_enabled: false }) === null
       case 'second-post':
+        if (!formData.second_post_enabled) return true
+        // 'stored' with no sign picked used to pass and emit a storage sign
+        // line with no customer_sign_id.
+        if (formData.second_post_sign_option === 'stored' && !formData.second_post_stored_sign_id) return false
+        return signChoiceProblem(formData) === null
+      case 'rider':
       case 'brochure':
         return true // Optional steps
       case 'lockbox':
@@ -373,6 +388,7 @@ export function OrderWizard({ inventory, paymentMethods, onBehalfOf, placedForMe
               placedAsOpenHouse={placedAsOpenHouse}
               editMeta={editMeta}
               lockboxInstallFee={lockboxInstallFee}
+              pickupFee={pickupFee}
               flatFee={flatFee}
               invoiceBilling={invoiceBilling}
               adminView={adminView}

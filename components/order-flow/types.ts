@@ -1,4 +1,6 @@
 import type { PropertyType } from '@/types/database'
+import type { SignLocation } from '@/lib/orders/sign-descriptions'
+import { PICKUP_FEE } from '@/lib/orders/pricing'
 
 export interface RiderSelection {
   rider_type: string
@@ -36,10 +38,16 @@ export interface OrderFormData {
   wood_panel_sign_build: boolean // +$55 if Pink Posts builds the sign
   wood_panel_materials: boolean  // +$55 if Pink Posts supplies materials (4x4 posts, screws, washers)
 
-  // Sign Selection
-  sign_option: 'stored' | 'at_property' | 'none'
+  // Sign Selection. undefined = nothing chosen yet: Ryan (2026-09-15) wants
+  // no tile pre-selected, so the agent has to pick one of the three.
+  sign_option?: 'stored' | 'at_property' | 'none'
   stored_sign_id?: string
   sign_description?: string
+  // Sub-choice under 'at_property' — listing / Pink Posts storage / pickup
+  // from another location ($10). undefined = not chosen yet.
+  sign_location?: SignLocation
+  // Required when sign_location === 'pickup'.
+  sign_pickup_address?: string
 
   // Rider Selection
   riders: RiderSelection[]
@@ -62,6 +70,9 @@ export interface OrderFormData {
   second_post_install_location?: string
   second_post_sign_option: 'stored' | 'at_property' | 'none'
   second_post_stored_sign_id?: string
+  // Same sub-choice as the main sign. One pickup fee covers both posts.
+  second_post_sign_location?: SignLocation
+  second_post_pickup_address?: string
   second_post_riders: RiderSelection[]
   second_post_wire_frame_quantity: number
   second_post_solar_lighting_quantity: number
@@ -164,6 +175,10 @@ export interface StepProps {
   // mechanical-owned, at-property). Defaults to PRICING.lockbox_install ($5).
   // Some brokers (e.g. Semonin) get it free ($0). Rental is unaffected.
   lockboxInstallFee?: number
+  // Sign-pickup fee the PAYER would be charged: 0 when their team has
+  // pickupFeeWaived, undefined = PRICING.pickup_fee. Display only — the
+  // server re-derives the fee (lib/orders/pickup-fee.ts).
+  pickupFee?: number
   // CR4: flat-fee account — review step shows the flat $66.07 breakdown instead
   // of itemized pricing (server clamps the charge regardless).
   flatFee?: boolean
@@ -200,6 +215,8 @@ export const PRICING = {
   wood_panel_materials: 55,
   no_post_surcharge: 40,
   sign_install: 3,
+  // The server's own constant, so the quote can't drift from the charge.
+  pickup_fee: PICKUP_FEE,
   rider_rental: 5,
   rider_install: 2,
   lockbox_install: 5,

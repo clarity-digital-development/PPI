@@ -38,7 +38,9 @@ export const INSTALLABLE_ITEM_TYPES = [
 ] as const
 // 'surcharge' is deliberately absent — that is the server-injected
 // "Out of Area Service Fee" line (app/api/orders/route.ts) and must never
-// reach the crew.
+// reach the crew. 'pickup_fee' is absent for the same reason: it is money
+// only. The pickup ADDRESS rides on the 'sign' line's description, which the
+// crew does see (lib/orders/sign-descriptions.ts).
 
 export interface DispatchLine {
   description: string

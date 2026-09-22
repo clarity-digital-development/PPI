@@ -13,6 +13,8 @@
  * (handleSubmit item builder) — they are the two halves of the same mapping.
  */
 import type { OrderFormData, RiderSelection } from '@/components/order-flow/types'
+import { categoryToSignLocation, pickupAddressFromDescription, type SignLocation } from './sign-descriptions'
+import { lockedPickupFeeDecision } from './pickup-fee'
 
 export interface OrderItemLike {
   itemType: string
@@ -180,6 +182,28 @@ function num(v: number | string): number {
   return typeof v === 'string' ? parseFloat(v) || 0 : v
 }
 
+// Is this sign line an inventory ("from storage") sign? The new at-property
+// categories are decided FIRST: a pickup line's description carries the
+// agent's typed address, and "Grab it from storage unit 12, ..." must not trip
+// the legacy description check — that would read the pickup back as an
+// inventory sign, and saving the edit would silently drop the $10 fee and the
+// address. The description check stays for older rows that predate categories.
+function isInventorySign(item: OrderItemLike): boolean {
+  if (item.itemCategory === 'pickup' || item.itemCategory === 'delivered') return false
+  return item.itemCategory === 'storage' || !!item.customerSignId || /from storage/i.test(item.description)
+}
+
+// Where a non-inventory sign comes from, read off its category. Orders placed
+// before the sub-choice existed carry 'owned' / 'install' and read back as
+// 'listing' — exactly what the old single tile meant.
+function readSignLocation(item: OrderItemLike): { location: SignLocation; address: string } {
+  const location = categoryToSignLocation(item.itemCategory)
+  const address = location === 'pickup'
+    ? (item.customValue || pickupAddressFromDescription(item.description))
+    : ''
+  return { location, address }
+}
+
 export function orderToFormData(order: OrderLike): OrderFormData {
   const items = order.orderItems
 
@@ -199,10 +223,17 @@ export function orderToFormData(order: OrderLike): OrderFormData {
   const signItem = items.find(i => i.itemType === 'sign' && !isSecondPost(i.description))
   let sign_option: OrderFormData['sign_option'] = 'none'
   let stored_sign_id: string | undefined
+  let sign_location: OrderFormData['sign_location']
+  let sign_pickup_address = ''
   if (signItem) {
-    const fromStorage = signItem.itemCategory === 'storage' || !!signItem.customerSignId || /from storage/i.test(signItem.description)
+    const fromStorage = isInventorySign(signItem)
     sign_option = fromStorage ? 'stored' : 'at_property'
     stored_sign_id = signItem.customerSignId || undefined
+    if (!fromStorage) {
+      const loc = readSignLocation(signItem)
+      sign_location = loc.location
+      sign_pickup_address = loc.address
+    }
   }
 
   // ---- Main riders ----
@@ -273,10 +304,17 @@ export function orderToFormData(order: OrderLike): OrderFormData {
   const spSignItem = items.find(i => i.itemType === 'sign' && isSecondPost(i.description))
   let second_post_sign_option: OrderFormData['second_post_sign_option'] = 'none'
   let second_post_stored_sign_id: string | undefined
+  let second_post_sign_location: OrderFormData['second_post_sign_location']
+  let second_post_pickup_address = ''
   if (spSignItem) {
-    const fromStorage = spSignItem.itemCategory === 'storage' || !!spSignItem.customerSignId || /from storage/i.test(spSignItem.description)
+    const fromStorage = isInventorySign(spSignItem)
     second_post_sign_option = fromStorage ? 'stored' : 'at_property'
     second_post_stored_sign_id = spSignItem.customerSignId || undefined
+    if (!fromStorage) {
+      const loc = readSignLocation(spSignItem)
+      second_post_sign_location = loc.location
+      second_post_pickup_address = loc.address
+    }
   }
   const second_post_riders: RiderSelection[] = items
     .filter(i => i.itemType === 'rider' && isSecondPost(i.description))
@@ -329,6 +367,8 @@ export function orderToFormData(order: OrderLike): OrderFormData {
     sign_option,
     stored_sign_id,
     sign_description: '',
+    sign_location,
+    sign_pickup_address,
     // Riders
     riders,
     // Wire frame + solar
@@ -340,6 +380,8 @@ export function orderToFormData(order: OrderLike): OrderFormData {
     second_post_install_location,
     second_post_sign_option,
     second_post_stored_sign_id,
+    second_post_sign_location,
+    second_post_pickup_address,
     second_post_riders,
     second_post_wire_frame_quantity,
     second_post_solar_lighting_quantity,
@@ -374,6 +416,32 @@ export function orderToFormData(order: OrderLike): OrderFormData {
     fuel_surcharge_waived: num(order.fuelSurcharge) === 0,
     placed_for_agent_name: '',
   }
+}
+
+/**
+ * The per-account fees an EDIT of this order should preview, for both edit
+ * shells. What the order was placed at wins over the account's CURRENT perks,
+ * so toggling a perk in admin never reprices an open order on an unrelated
+ * edit (a date change must not charge or credit anything):
+ *   - pickupFee: exactly the edit route's rule (lockedPickupFeeDecision); only
+ *     an order with no pickup sign yet falls back to the payer's waiver.
+ *   - lockboxInstallFee: the owned-lockbox install price already on the order;
+ *     only an order with no owned lockbox falls back to the payer's perk.
+ * undefined = the standard price.
+ */
+export function editFeeOverrides(
+  order: Pick<OrderLike, 'orderItems'>,
+  payerPerks?: { freeLockboxInstall?: boolean; pickupFeeWaived?: boolean } | null,
+): { pickupFee?: number; lockboxInstallFee?: number } {
+  const locked = lockedPickupFeeDecision(order.orderItems)
+  const pickupFee = locked
+    ? (locked.waived ? 0 : locked.amount)
+    : (payerPerks?.pickupFeeWaived ? 0 : undefined)
+  const ownedLockbox = order.orderItems.find(i => i.itemType === 'lockbox' && i.itemCategory === 'owned')
+  const lockboxInstallFee = ownedLockbox
+    ? num(ownedLockbox.unitPrice)
+    : (payerPerks?.freeLockboxInstall ? 0 : undefined)
+  return { pickupFee, lockboxInstallFee }
 }
 
 /**

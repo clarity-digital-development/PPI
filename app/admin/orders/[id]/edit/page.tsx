@@ -10,6 +10,7 @@ import type { OrderFormData } from '@/components/order-flow'
 import {
   orderToFormData,
   augmentInventoryWithOrder,
+  editFeeOverrides,
   type OrderLike,
   type WizardInventory,
 } from '@/lib/orders/order-to-formdata'
@@ -39,7 +40,12 @@ export default function AdminEditOrderPage() {
   const [formData, setFormData] = useState<OrderFormData | null>(null)
   const [inventory, setInventory] = useState<WizardInventory | undefined>()
   const [editMeta, setEditMeta] = useState<{ orderNumber: string; originalTotal: number; flatFeeBase?: number; flatFeeFuel?: number } | null>(null)
-  const [freeLockboxInstall, setFreeLockboxInstall] = useState(false)
+  // Owned-lockbox install and sign-pickup fees for this edit: what the order
+  // was placed at, else the order PAYER's perks (see editFeeOverrides). This
+  // page used to ask /api/teams, which answers for the logged-in admin (no
+  // team) — so admin edits of a Semonin order previewed a $5 lockbox install
+  // the broker doesn't pay.
+  const [fees, setFees] = useState<{ pickupFee?: number; lockboxInstallFee?: number }>({})
   // Pass into <OrderWizard> so ReviewStep clamps display to FLAT_FEE_BASE
   // instead of recomputing per-item totals — without this, admin edits of a
   // flat-fee broker order show a scary "astronomical" total + a phantom $50
@@ -49,13 +55,9 @@ export default function AdminEditOrderPage() {
   useEffect(() => {
     async function fetchData() {
       try {
-        // Also fetch /api/teams for the order owner's freeLockboxInstall perk
-        // (mirrors the customer-facing edit shell at dashboard/orders/[id]/edit).
-        // 403 for non-team-admin admins acting on solo orders — handled below.
-        const [orderRes, inventoryRes, teamsRes] = await Promise.all([
+        const [orderRes, inventoryRes] = await Promise.all([
           fetch(`/api/orders/${orderId}`),
           fetch('/api/inventory'),
-          fetch('/api/teams'),
         ])
 
         if (!orderRes.ok) {
@@ -70,6 +72,7 @@ export default function AdminEditOrderPage() {
           total: number | string
           subtotal: number | string
           flatFeeApplied?: boolean
+          payerPerks?: { freeLockboxInstall?: boolean; pickupFeeWaived?: boolean }
         }
 
         if (order.status === 'completed' || order.status === 'cancelled') {
@@ -80,10 +83,7 @@ export default function AdminEditOrderPage() {
           ? await inventoryRes.json()
           : undefined
 
-        if (teamsRes.ok) {
-          const teamsData = (await teamsRes.json()) as { team?: { freeLockboxInstall?: boolean } } | null
-          setFreeLockboxInstall(!!teamsData?.team?.freeLockboxInstall)
-        }
+        setFees(editFeeOverrides(order, order.payerPerks))
 
         // Set flatFee BEFORE setFormData so the wizard renders with the flat-fee
         // branch on first paint — avoids a one-render flash of the per-item total.
@@ -198,7 +198,8 @@ export default function AdminEditOrderPage() {
         initialFormData={formData}
         inventory={inventory}
         editMeta={editMeta ?? undefined}
-        lockboxInstallFee={freeLockboxInstall ? 0 : undefined}
+        lockboxInstallFee={fees.lockboxInstallFee}
+        pickupFee={fees.pickupFee}
         flatFee={flatFee}
         adminView
       />

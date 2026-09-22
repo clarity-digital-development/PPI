@@ -38,6 +38,11 @@ export async function GET() {
         teamId: true,
         invoiceBilling: true,
         flatFeeBilling: true,
+        // Team perks follow the payer, and on the place-order page the
+        // logged-in user always pays. Read here (not /api/teams, which 403s
+        // for ordinary customers and was only consulted on some paths) so
+        // every role and every path gets an answer.
+        team: { select: { pickupFeeWaived: true, freeLockboxInstall: true } },
         // Notification preference flags (default-true for transactional, default-false for marketing)
         emailOrderConfirmations: true,
         emailServiceRequests: true,
@@ -52,6 +57,8 @@ export async function GET() {
       ...profile,
       invoice_billing: profile.invoiceBilling,
       flat_fee_billing: profile.flatFeeBilling,
+      pickup_fee_waived: !!profile.team?.pickupFeeWaived,
+      free_lockbox_install: !!profile.team?.freeLockboxInstall,
     }
 
     // `user` mirrors `profile` for callers that want either shape

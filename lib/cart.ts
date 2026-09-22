@@ -74,7 +74,7 @@ function readCart(): CartItem[] {
     if (!raw) return []
     const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
-    return parsed.map(restoreNoPost)
+    return parsed.map(restoreNoPost).map(restoreSignLocation)
   } catch {
     return []
   }
@@ -103,6 +103,27 @@ function restoreNoPost(row: CartItem): CartItem {
   const fd = row.formData as Partial<OrderFormData> | undefined
   if (!fd || typeof fd !== 'object' || 'post_type' in fd) return row
   return { ...row, formData: { ...(fd as OrderFormData), post_type: undefined } }
+}
+
+/**
+ * Rows saved before the sign sub-choice existed (Ryan, 2026-09-15) have
+ * sign_option 'at_property' and no sign_location. The old tile meant "the sign
+ * will be at the listing", so restore exactly that — otherwise re-opening the
+ * row lands on an empty "Where is the sign?" dropdown with Continue disabled.
+ * The row's pre-built `items` are untouched: an old row checks out exactly as
+ * it was priced.
+ */
+function restoreSignLocation(row: CartItem): CartItem {
+  if (!row || typeof row !== 'object') return row
+  const fd = row.formData as Partial<OrderFormData> | undefined
+  if (!fd || typeof fd !== 'object') return row
+  const patch: Partial<OrderFormData> = {}
+  if (fd.sign_option === 'at_property' && !fd.sign_location) patch.sign_location = 'listing'
+  if (fd.second_post_sign_option === 'at_property' && !fd.second_post_sign_location) {
+    patch.second_post_sign_location = 'listing'
+  }
+  if (Object.keys(patch).length === 0) return row
+  return { ...row, formData: { ...(fd as OrderFormData), ...patch } }
 }
 
 function writeCart(items: CartItem[]) {

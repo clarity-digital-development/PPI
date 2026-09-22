@@ -10,6 +10,8 @@ import { audit, AuditAction } from '@/lib/audit'
 import { chargePaymentMethod, isDetachedPaymentMethodError } from '@/lib/stripe'
 import { resolveEffectivePayer } from '@/lib/orders/effective-payer'
 import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, NO_POST_SURCHARGE, postRentalApplies, type OrderItemForPricing } from '@/lib/orders/pricing'
+import { applyPickupFeePolicy, lockedPickupFeeDecision } from '@/lib/orders/pickup-fee'
+import { isPickupFeeWaivedForPayer } from '@/lib/orders/pickup-fee-waiver'
 import { allowedInventoryOwnerIds, checkInventoryOwnership, describeInventoryFailures } from '@/lib/orders/inventory-ownership'
 import { resolveServiceArea } from '@/lib/service-area'
 import { z } from 'zod'
@@ -145,6 +147,31 @@ export async function PATCH(
     }
 
     const editData = validationResult.data
+
+    // ---- Sign-pickup fee ----
+    // Re-derived from the sign lines the form re-sent, never taken from the
+    // client, and never preserved from the old row (preserveItems below only
+    // keeps 'surcharge' and inventory-linked lines). The form always re-sends
+    // the pickup sign line — orderToFormData reads it back — so a date-only
+    // edit re-adds the identical fee and moves no money.
+    //
+    // Which fee: if the order ALREADY had a pickup sign, whatever was decided
+    // at placement stands (lockedPickupFeeDecision) — so ticking or unticking
+    // a team's waiver later never moves $10 on an unrelated edit, the same
+    // rule as the OOA exempt-promotion guard below. Only an edit that adds the
+    // order's first pickup consults the waiver, and then it is the WALLET's
+    // (like the OOA exemption), so an admin editing a waived broker's order
+    // still gets the broker's waiver.
+    const pickupPolicy = applyPickupFeePolicy(
+      editData.items,
+      lockedPickupFeeDecision(existingOrder.orderItems) ?? {
+        waived: await isPickupFeeWaivedForPayer(existingOrder.placedByUserId ?? existingOrder.userId),
+      },
+    )
+    if (pickupPolicy.error) {
+      return NextResponse.json({ error: pickupPolicy.error, code: 'pickup_address_required' }, { status: 400 })
+    }
+    editData.items = pickupPolicy.items
 
     // ---- Self-edit price-manipulation guard ----
     // The PATCH body's items[].total_price is currently trusted (same pattern

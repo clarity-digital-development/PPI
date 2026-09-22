@@ -8,6 +8,8 @@ import { RiderSelector, RIDERS, generateRiderInstanceId, type SelectedRider } fr
 import { ExpandableImage } from '../ExpandableImage'
 import type { StepProps, RiderSelection } from '../types'
 import { PRICING } from '../types'
+import { SignLocationPicker, type PickupFeeState } from './SignLocationPicker'
+import { mainSignIsPickup } from '../sign-choice'
 
 function toRiderSelection(
   selected: SelectedRider,
@@ -98,8 +100,18 @@ function Collapsible({ title, defaultOpen = false, children, badge }: Collapsibl
   )
 }
 
-export function SecondPostStep({ formData, updateFormData, inventory }: StepProps) {
+export function SecondPostStep({ formData, updateFormData, inventory, pickupFee, flatFee }: StepProps) {
   const enabled = formData.second_post_enabled
+  const fee = pickupFee ?? PRICING.pickup_fee
+  // One pickup fee per order: if the main sign is already a pickup, this one
+  // rides along free. Flat-fee accounts never pay it separately.
+  const secondPickupFee: PickupFeeState = fee <= 0
+    ? { kind: 'waived' }
+    : mainSignIsPickup(formData)
+      ? { kind: 'already_on_order' }
+      : flatFee
+        ? { kind: 'included' }
+        : { kind: 'charged', amount: fee }
 
   const customerInventory = useMemo(() => {
     return inventory?.riders?.map(rider => ({
@@ -208,12 +220,22 @@ export function SecondPostStep({ formData, updateFormData, inventory }: StepProp
           <Collapsible
             title="Sign"
             defaultOpen={hasSign}
-            badge={hasSign ? formData.second_post_sign_option === 'stored' ? 'From inventory' : 'At property' : undefined}
+            badge={
+              !hasSign
+                ? undefined
+                : formData.second_post_sign_option === 'stored'
+                  ? 'From inventory'
+                  : formData.second_post_sign_location === 'pickup'
+                    ? 'Pickup'
+                    : formData.second_post_sign_location === 'ppi_storage'
+                      ? 'Delivered to storage'
+                      : 'At property'
+            }
           >
             <div className="space-y-3">
               <button
                 type="button"
-                onClick={() => updateFormData({ second_post_sign_option: 'none', second_post_stored_sign_id: undefined })}
+                onClick={() => updateFormData({ second_post_sign_option: 'none', second_post_stored_sign_id: undefined, second_post_sign_location: undefined, second_post_pickup_address: '' })}
                 className={cn(
                   'w-full p-3 rounded-lg border-2 text-left transition-all',
                   formData.second_post_sign_option === 'none'
@@ -238,10 +260,22 @@ export function SecondPostStep({ formData, updateFormData, inventory }: StepProp
                 <p className="text-sm text-pink-600 mt-1">Install fee: ${PRICING.sign_install.toFixed(2)}</p>
               </button>
 
+              {formData.second_post_sign_option === 'at_property' && (
+                <SignLocationPicker
+                  id="second-post-sign"
+                  location={formData.second_post_sign_location}
+                  address={formData.second_post_pickup_address}
+                  onLocationChange={(second_post_sign_location) => updateFormData({ second_post_sign_location })}
+                  onAddressChange={(second_post_pickup_address) => updateFormData({ second_post_pickup_address })}
+                  fee={secondPickupFee}
+                  indent={false}
+                />
+              )}
+
               {hasStoredSigns && (
                 <button
                   type="button"
-                  onClick={() => updateFormData({ second_post_sign_option: 'stored' })}
+                  onClick={() => updateFormData({ second_post_sign_option: 'stored', second_post_sign_location: undefined, second_post_pickup_address: '' })}
                   className={cn(
                     'w-full p-3 rounded-lg border-2 text-left transition-all',
                     formData.second_post_sign_option === 'stored'

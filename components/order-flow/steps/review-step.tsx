@@ -12,6 +12,8 @@ import { lockboxDescriptionSuffix } from '@/lib/orders/lockbox-description'
 import type { StepProps } from '../types'
 import { PRICING } from '../types'
 import { FLAT_FEE_BASE, computeOrderPricing, computeDiscountableSubtotal, type OrderItemForPricing } from '@/lib/orders/pricing'
+import { PICKUP_FEE_DESCRIPTION, sanitizePickupAddress, signInstallDescription, signLocationToCategory } from '@/lib/orders/sign-descriptions'
+import { mainSignIsPickup, secondSignIsPickup, signChoiceProblem } from '../sign-choice'
 
 // Post type values are now the display names themselves
 
@@ -29,6 +31,7 @@ export function ReviewStep({
   orderId,
   editMeta,
   lockboxInstallFee,
+  pickupFee,
   flatFee,
   invoiceBilling,
   adminView,
@@ -40,6 +43,12 @@ export function ReviewStep({
   // Owned-lockbox install fee (sentri/supra, mechanical-owned, at-property).
   // Normally $5; $0 for free-install brokers (e.g. Semonin). Rental unaffected.
   const lockboxInstall = lockboxInstallFee ?? PRICING.lockbox_install
+  // $10 sign-pickup fee (Ryan, 2026-09-15): once per ORDER when either post's
+  // sign is picked up from another location; $0 for waived teams. A preview —
+  // the server re-derives it (lib/orders/pickup-fee.ts) with the same rule.
+  const pickupFeeAmount = pickupFee ?? PRICING.pickup_fee
+  const pickupFeeCharged =
+    (mainSignIsPickup(formData) || secondSignIsPickup(formData)) && pickupFeeAmount > 0 ? pickupFeeAmount : 0
   // Cart + agent-name input are enabled for team-admin accounts AND for
   // Pink Posts internal admins (so admin@pinkposts.com can test/use the
   // same flow). Also enabled when an admin is placing on behalf of a
@@ -94,8 +103,9 @@ export function ReviewStep({
     })
   }
 
-  // Calculate order items and totals
-  const orderItems: Array<{ description: string; price: number; excludeFromDiscount?: boolean }> = []
+  // Calculate order items and totals. `untaxedType` tags a line the server keeps
+  // out of the sales-tax base (UNTAXED_ITEM_TYPES in lib/orders/pricing.ts).
+  const orderItems: Array<{ description: string; price: number; excludeFromDiscount?: boolean; untaxedType?: 'pickup_fee' }> = []
 
   // Post
   if (formData.post_type && formData.post_type !== 'open_house') {
@@ -131,7 +141,7 @@ export function ReviewStep({
     })
   } else if (formData.sign_option === 'at_property') {
     orderItems.push({
-      description: 'Sign Install',
+      description: signInstallDescription(formData.sign_location ?? 'listing', formData.sign_pickup_address, false),
       price: PRICING.sign_install,
     })
   }
@@ -208,7 +218,9 @@ export function ReviewStep({
       orderItems.push({
         description: storedSign2
           ? `Second Post Sign Install: ${storedSign2.description} (from storage)`
-          : 'Second Post Sign Install',
+          : formData.second_post_sign_option === 'at_property'
+            ? signInstallDescription(formData.second_post_sign_location ?? 'listing', formData.second_post_pickup_address, true)
+            : 'Second Post Sign Install',
         price: PRICING.sign_install,
       })
     }
@@ -231,6 +243,11 @@ export function ReviewStep({
         price: formData.second_post_solar_lighting_quantity * PRICING.solar_lighting,
       })
     }
+  }
+
+  // One sign-pickup fee covers both posts.
+  if (pickupFeeCharged > 0) {
+    orderItems.push({ description: PICKUP_FEE_DESCRIPTION, price: pickupFeeCharged, untaxedType: 'pickup_fee' })
   }
 
   // Brochure box (purchases excluded from promo discounts)
@@ -297,7 +314,8 @@ export function ReviewStep({
 
   // Build the items array for the shared pricing helper. Mirror the server's
   // items[] shape — only item_type + item_category matter to the helper:
-  //   - itemType='surcharge' → excluded from tax base (OOA non-taxable rule)
+  //   - itemType='surcharge' / 'pickup_fee' → excluded from tax base (the
+  //     service-charge non-taxable rule, UNTAXED_ITEM_TYPES)
   //   - itemType='brochure_box' AND itemCategory='purchase' → excluded from
   //     discountable subtotal (Ryan's policy)
   // Other items pass through as 'item' / undefined — the helper sums them
@@ -305,7 +323,7 @@ export function ReviewStep({
   const pricingItemsTagged: OrderItemForPricing[] = [
     ...orderItems.map(item => item.excludeFromDiscount
       ? { item_type: 'brochure_box', item_category: 'purchase', total_price: item.price }
-      : { item_type: 'item', total_price: item.price }
+      : { item_type: item.untaxedType ?? 'item', total_price: item.price }
     ),
     ...(serviceAreaSurcharge > 0
       ? [{ item_type: 'surcharge', total_price: serviceAreaSurcharge }]
@@ -664,6 +682,11 @@ export function ReviewStep({
       setError('Please answer "Are the street numbers visible?" on the Property Info step.')
       return
     }
+    const signProblem = signChoiceProblem(formData)
+    if (signProblem) {
+      setError(signProblem)
+      return
+    }
     // The cart splits the out-of-area fee too now, so the agreement is captured
     // per row here rather than once at checkout — the batch endpoint rejects a
     // row without it.
@@ -932,13 +955,19 @@ export function ReviewStep({
           customer_sign_id: formData.stored_sign_id,
         })
       } else if (formData.sign_option === 'at_property') {
+        // Listing keeps the exact legacy line ('owned' / 'Sign Install'); the
+        // other two record where the sign is coming from, and a pickup carries
+        // its address so the crew's dispatch email shows it.
+        const location = formData.sign_location ?? 'listing'
+        const address = sanitizePickupAddress(formData.sign_pickup_address)
         items.push({
           item_type: 'sign',
-          item_category: 'owned',
-          description: 'Sign Install',
+          item_category: signLocationToCategory(location, false),
+          description: signInstallDescription(location, address, false),
           quantity: 1,
           unit_price: PRICING.sign_install,
           total_price: PRICING.sign_install,
+          ...(location === 'pickup' ? { custom_value: address } : {}),
         })
       }
 
@@ -1076,13 +1105,16 @@ export function ReviewStep({
             customer_sign_id: formData.second_post_stored_sign_id,
           })
         } else if (formData.second_post_sign_option === 'at_property') {
+          const location = formData.second_post_sign_location ?? 'listing'
+          const address = sanitizePickupAddress(formData.second_post_pickup_address)
           items.push({
             item_type: 'sign',
-            item_category: 'install',
-            description: 'Second Post Sign Install (at property)',
+            item_category: signLocationToCategory(location, true),
+            description: signInstallDescription(location, address, true),
             quantity: 1,
             unit_price: PRICING.sign_install,
             total_price: PRICING.sign_install,
+            ...(location === 'pickup' ? { custom_value: address } : {}),
           })
         }
 
@@ -1130,6 +1162,19 @@ export function ReviewStep({
         }
       }
 
+      // Sign-pickup fee: a preview of what the server will charge. The server
+      // drops this line and re-derives the fee from the sign lines above, so
+      // a stale or edited value here can never change what's charged.
+      if (pickupFeeCharged > 0) {
+        items.push({
+          item_type: 'pickup_fee',
+          description: PICKUP_FEE_DESCRIPTION,
+          quantity: 1,
+          unit_price: pickupFeeCharged,
+          total_price: pickupFeeCharged,
+        })
+      }
+
       // Brochure box
       if (formData.brochure_option === 'purchase') {
         items.push({
@@ -1166,6 +1211,12 @@ export function ReviewStep({
     // step gate never runs — enforce the required question here too.
     if (formData.street_numbers_visible === undefined) {
       setError('Please answer "Are the street numbers visible?" on the Property Info step.')
+      return
+    }
+    // Same for the Sign step's dropdown and pickup address.
+    const signProblem = signChoiceProblem(formData)
+    if (signProblem) {
+      setError(signProblem)
       return
     }
     setIsSubmitting?.(true)
@@ -1254,6 +1305,11 @@ export function ReviewStep({
     // Ensure at least one item is in the order
     if (orderItems.length === 0) {
       setError('Please select at least one item for your order')
+      return
+    }
+    const signProblem = signChoiceProblem(formData)
+    if (signProblem) {
+      setError(signProblem)
       return
     }
 

@@ -6,14 +6,17 @@ import { Select } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import type { StepProps } from '../types'
 import { PRICING } from '../types'
+import { SignLocationPicker } from './SignLocationPicker'
 
-export function SignStep({ formData, updateFormData, inventory }: StepProps) {
+export function SignStep({ formData, updateFormData, inventory, pickupFee, flatFee }: StepProps) {
   const hasStoredSigns = inventory?.signs && inventory.signs.length > 0
   const [showNoSignsError, setShowNoSignsError] = useState(false)
+  const fee = pickupFee ?? PRICING.pickup_fee
 
   const handleStoredSignClick = () => {
     if (hasStoredSigns) {
-      updateFormData({ sign_option: 'stored', sign_description: '' })
+      // Clear the at-property sub-choice so a stale pickup can't ride along.
+      updateFormData({ sign_option: 'stored', sign_description: '', sign_location: undefined, sign_pickup_address: '' })
       setShowNoSignsError(false)
     } else {
       setShowNoSignsError(true)
@@ -119,6 +122,8 @@ export function SignStep({ formData, updateFormData, inventory }: StepProps) {
         <button
           type="button"
           onClick={() => {
+            // sign_location is deliberately kept: re-tapping the tile (or
+            // re-opening a cart row) must not wipe an answer already given.
             updateFormData({ sign_option: 'at_property', stored_sign_id: undefined })
             setShowNoSignsError(false)
           }}
@@ -144,11 +149,30 @@ export function SignStep({ formData, updateFormData, inventory }: StepProps) {
           </div>
         </button>
 
+        {formData.sign_option === 'at_property' && (
+          <SignLocationPicker
+            id="sign"
+            location={formData.sign_location}
+            address={formData.sign_pickup_address}
+            onLocationChange={(sign_location) => updateFormData({ sign_location })}
+            onAddressChange={(sign_pickup_address) => updateFormData({ sign_pickup_address })}
+            fee={
+              fee <= 0
+                ? { kind: 'waived' }
+                : flatFee
+                  // The server still records the line, but the flat total
+                  // ignores items — nothing extra is charged.
+                  ? { kind: 'included' }
+                  : { kind: 'charged', amount: fee }
+            }
+          />
+        )}
+
         {/* No sign */}
         <button
           type="button"
           onClick={() => {
-            updateFormData({ sign_option: 'none', stored_sign_id: undefined, sign_description: '' })
+            updateFormData({ sign_option: 'none', stored_sign_id: undefined, sign_description: '', sign_location: undefined, sign_pickup_address: '' })
             setShowNoSignsError(false)
           }}
           className={cn(

@@ -4,6 +4,7 @@ import { getCurrentUser } from '@/lib/auth-utils'
 import { createNotification } from '@/lib/notifications'
 import { sendAdminServiceRequestNotification, sendServiceRequestConfirmationEmail } from '@/lib/email'
 import { closedDayReason } from '@/lib/scheduling'
+import { INSTALLABLE_ITEM_TYPES } from '@/lib/dispatch/types'
 
 // POST - Create a service request for an unlisted address
 // This is used when the system doesn't show an existing installation
@@ -155,7 +156,15 @@ export async function POST(request: NextRequest) {
       if (type === 'removal' && installation) {
         const originalOrder = await prisma.order.findFirst({
           where: { id: installation.orderId },
-          include: { orderItems: { select: { description: true, quantity: true } } },
+          // Narrowed: nothing else on the order is read here, and physical
+          // items only — money lines ('surcharge', 'pickup_fee') are not
+          // things to bring back.
+          select: {
+            orderItems: {
+              where: { itemType: { in: [...INSTALLABLE_ITEM_TYPES] } },
+              select: { description: true, quantity: true },
+            },
+          },
         })
         if (originalOrder?.orderItems?.length) {
           installedItems = originalOrder.orderItems

@@ -755,7 +755,7 @@ export default function AdminOrderDetailPage() {
                     <div>
                       <p className="font-medium text-gray-900">{item.description}</p>
                       <p className="text-sm text-gray-500 capitalize">
-                        {item.itemType} - {item.itemCategory?.replace('_', ' ')}
+                        {item.itemType.replace(/_/g, ' ')} - {item.itemCategory?.replace('_', ' ')}
                       </p>
                     </div>
                     <p className="font-medium text-gray-900">

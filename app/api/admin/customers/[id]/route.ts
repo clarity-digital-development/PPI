@@ -173,6 +173,9 @@ export async function GET(
     let team: {
       id: string
       name: string
+      // Per-team pricing perks, editable from the customer page.
+      pickup_fee_waived: boolean
+      free_lockbox_install: boolean
       members: Array<{ id: string; name: string; email: string | null; phone: string | null; hasLogin: boolean }>
       memberNames: Array<{ id: string; name: string }>
     } | null = null
@@ -186,6 +189,8 @@ export async function GET(
         team = {
           id: t.id,
           name: t.name,
+          pickup_fee_waived: t.pickupFeeWaived,
+          free_lockbox_install: t.freeLockboxInstall,
           members: activeMembers.map((m) => ({ id: m.id, name: m.name, email: m.email, phone: m.phone, hasLogin: !!m.userId })),
           memberNames: t.teamMembers.map((m) => ({ id: m.id, name: m.name })),
         }
@@ -374,6 +379,48 @@ export async function PUT(
       }
     }
 
+    // Team perks — the $10 sign-pickup waiver (Ryan, 2026-09-15) and the free
+    // owned-lockbox install, which until now could only be set by a script.
+    // They live on the Team, so they only exist once this account has one.
+    // Same audited-delta pattern as the per-user toggles above.
+    const teamPerkAudits: Array<{ action: string; from: boolean; to: boolean; teamId: string }> = []
+    // Validated here with the other 400s; WRITTEN after the user update below
+    // succeeds, so a failed save never leaves a perk changed without its audit.
+    let pendingTeamUpdate: { teamId: string; data: { pickupFeeWaived?: boolean; freeLockboxInstall?: boolean } } | null = null
+    if (body.team_pickup_fee_waived !== undefined || body.team_free_lockbox_install !== undefined) {
+      const cur = await prisma.user.findUnique({
+        where: { id },
+        select: { teamId: true, team: { select: { pickupFeeWaived: true, freeLockboxInstall: true } } },
+      })
+      if (!cur) {
+        return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
+      }
+      if (!cur.teamId || !cur.team) {
+        return NextResponse.json(
+          { error: 'This account has no team yet, so team perks cannot be set. Add a team member first.' },
+          { status: 400 }
+        )
+      }
+      const teamData: { pickupFeeWaived?: boolean; freeLockboxInstall?: boolean } = {}
+      if (body.team_pickup_fee_waived !== undefined) {
+        const next = Boolean(body.team_pickup_fee_waived)
+        if (cur.team.pickupFeeWaived !== next) {
+          teamData.pickupFeeWaived = next
+          teamPerkAudits.push({ action: AuditAction.TeamPickupFeeWaiverToggle, from: cur.team.pickupFeeWaived, to: next, teamId: cur.teamId })
+        }
+      }
+      if (body.team_free_lockbox_install !== undefined) {
+        const next = Boolean(body.team_free_lockbox_install)
+        if (cur.team.freeLockboxInstall !== next) {
+          teamData.freeLockboxInstall = next
+          teamPerkAudits.push({ action: AuditAction.TeamFreeLockboxToggle, from: cur.team.freeLockboxInstall, to: next, teamId: cur.teamId })
+        }
+      }
+      if (Object.keys(teamData).length > 0) {
+        pendingTeamUpdate = { teamId: cur.teamId, data: teamData }
+      }
+    }
+
     let roleChangeAudit: { from: string; to: AllowedRole } | null = null
     if (body.role !== undefined) {
       // Defense in depth: even though the route is already gated to admins
@@ -436,6 +483,14 @@ export async function PUT(
       where: { id },
       data: updateData,
     })
+
+    if (pendingTeamUpdate) {
+      await prisma.team.update({
+        where: { id: pendingTeamUpdate.teamId },
+        data: pendingTeamUpdate.data,
+        select: { id: true },
+      })
+    }
 
     // Invariant: only ordinary customer accounts may draw from a brokerage
     // pool. Promoting someone out of 'customer' releases any brokerage link
@@ -507,6 +562,17 @@ export async function PUT(
         targetType: 'user',
         targetId: customer.id,
         metadata: { email: customer.email, ...flatFeeBillingAudit },
+        request,
+      })
+    }
+
+    for (const perk of teamPerkAudits) {
+      await audit({
+        actor: { id: user.id, email: user.email, role: user.role },
+        action: perk.action,
+        targetType: 'team',
+        targetId: perk.teamId,
+        metadata: { email: customer.email, from: perk.from, to: perk.to },
         request,
       })
     }

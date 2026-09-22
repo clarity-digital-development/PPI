@@ -73,6 +73,7 @@ const OrderHistoryTable = ({ orders }: OrderHistoryTableProps) => {
     if (riderItems.length > 0) types.push(`${riderItems.length} Rider${riderItems.length > 1 ? 's' : ''}`)
     if (lockboxItem) types.push('Lockbox')
     if (brochureItem) types.push('Brochure Box')
+    if (items.some(i => i.itemType === 'pickup_fee')) types.push('Sign Pickup')
 
     return types.join(', ') || `${items.length} item${items.length !== 1 ? 's' : ''}`
   }

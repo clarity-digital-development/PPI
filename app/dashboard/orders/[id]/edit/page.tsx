@@ -11,6 +11,7 @@ import type { OrderFormData } from '@/components/order-flow'
 import {
   orderToFormData,
   augmentInventoryWithOrder,
+  editFeeOverrides,
   type OrderLike,
   type WizardInventory,
 } from '@/lib/orders/order-to-formdata'
@@ -24,8 +25,9 @@ export default function EditOrderPage() {
   const [formData, setFormData] = useState<OrderFormData | null>(null)
   const [inventory, setInventory] = useState<WizardInventory | undefined>()
   const [editMeta, setEditMeta] = useState<{ orderNumber: string; originalTotal: number; flatFeeBase?: number; flatFeeFuel?: number } | null>(null)
-  // Per-broker perk: owned-lockbox install free for this team (e.g. Semonin).
-  const [freeLockboxInstall, setFreeLockboxInstall] = useState(false)
+  // Owned-lockbox install and sign-pickup fees for this edit: what the order
+  // was placed at, else the PAYER's perks (e.g. Semonin). See editFeeOverrides.
+  const [fees, setFees] = useState<{ pickupFee?: number; lockboxInstallFee?: number }>({})
   // Pass into <OrderWizard> so ReviewStep clamps display to FLAT_FEE_BASE —
   // without this, flat-fee broker self-edits show a per-item recomputed total
   // and a phantom $50 OOA line. Server still clamps correctly on save either way.
@@ -58,11 +60,13 @@ export default function EditOrderPage() {
           subtotal: number | string
           placedForAgentName?: string | null
           flatFeeApplied?: boolean
+          payerPerks?: { freeLockboxInstall?: boolean; pickupFeeWaived?: boolean }
         }
 
         // Set flatFee BEFORE setFormData so first paint already has the flat-fee
         // branch — avoids a flash of the per-item total.
         setFlatFee(!!order.flatFeeApplied)
+        setFees(editFeeOverrides(order, order.payerPerks))
 
         if (order.status === 'completed' || order.status === 'cancelled') {
           throw new Error('This order can no longer be edited')
@@ -74,10 +78,9 @@ export default function EditOrderPage() {
         // Falls back to unscoped if no match — including renames, removed
         // members, or solo customers without a team.
         let memberIdScope: string | null = null
-        let teamsData: { team?: { freeLockboxInstall?: boolean }; members?: Array<{ id: string; name: string }> } | null = null
+        let teamsData: { members?: Array<{ id: string; name: string }> } | null = null
         if (teamsRes.ok) {
           teamsData = await teamsRes.json()
-          setFreeLockboxInstall(!!teamsData?.team?.freeLockboxInstall)
           const targetName = (order.placedForAgentName || '').trim().toLowerCase()
           if (targetName && Array.isArray(teamsData?.members)) {
             const match = teamsData.members.find((m) => m.name.trim().toLowerCase() === targetName)
@@ -181,7 +184,8 @@ export default function EditOrderPage() {
           initialFormData={formData}
           inventory={inventory}
           editMeta={editMeta ?? undefined}
-          lockboxInstallFee={freeLockboxInstall ? 0 : undefined}
+          lockboxInstallFee={fees.lockboxInstallFee}
+          pickupFee={fees.pickupFee}
           flatFee={flatFee}
         />
       </div>

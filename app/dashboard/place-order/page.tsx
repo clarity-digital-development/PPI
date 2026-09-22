@@ -87,8 +87,13 @@ function PlaceOrderPageInner() {
   // the "Who is this order for?" gate instead of the wizard.
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([])
   const [hasTeam, setHasTeam] = useState(false)
-  // Per-broker perk: owned-lockbox install is free for this team.
+  // Per-broker perks: owned-lockbox install free, no $10 sign-pickup fee.
+  // Both read from /api/profile because the logged-in user is the payer on
+  // every path through this page. The lockbox perk used to come from
+  // /api/teams on the team_admin roster path only, so a broker ordering via
+  // ?on_behalf_of was charged the $5 their team doesn't pay.
   const [freeLockboxInstall, setFreeLockboxInstall] = useState(false)
+  const [pickupFeeWaived, setPickupFeeWaived] = useState(false)
   // CR4: flat-fee account — the review screen shows the flat $66.07 instead of
   // itemized pricing (the server clamps the charge regardless).
   const [flatFee, setFlatFee] = useState(false)
@@ -159,6 +164,8 @@ function PlaceOrderPageInner() {
           setCurrentUserRole(role)
           setFlatFee(!!data.user?.flat_fee_billing)
           setInvoiceBilling(!!data.user?.invoice_billing)
+          setPickupFeeWaived(!!data.user?.pickup_fee_waived)
+          setFreeLockboxInstall(!!data.user?.free_lockbox_install)
         }
 
         if (agentRes && agentRes.ok) {
@@ -178,7 +185,6 @@ function PlaceOrderPageInner() {
           if (teamsRes.ok) {
             const teamsData = await teamsRes.json()
             setHasTeam(!!teamsData.team)
-            setFreeLockboxInstall(!!teamsData.team?.freeLockboxInstall)
             const members: TeamMember[] = Array.isArray(teamsData.members) ? teamsData.members : []
             setTeamMembers(members)
             // ?team_member_id= in the URL (set by cart's "Next order" link)
@@ -294,6 +300,7 @@ function PlaceOrderPageInner() {
                   // was the source of Ryan's "every rider showed up" bug).
                   placedForMemberId={selectedMember.id}
                   lockboxInstallFee={freeLockboxInstall ? 0 : undefined}
+                  pickupFee={pickupFeeWaived ? 0 : undefined}
                   flatFee={flatFee}
                   invoiceBilling={invoiceBilling}
                 />
@@ -447,7 +454,8 @@ function PlaceOrderPageInner() {
               currentUserRole={currentUserRole}
               initialFormData={editingItem?.formData}
               editingCartItemId={editingItem?.id}
-              lockboxInstallFee={editingItem && freeLockboxInstall ? 0 : undefined}
+              lockboxInstallFee={freeLockboxInstall ? 0 : undefined}
+              pickupFee={pickupFeeWaived ? 0 : undefined}
               flatFee={flatFee}
               invoiceBilling={invoiceBilling}
             />

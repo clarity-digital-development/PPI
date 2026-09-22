@@ -4,6 +4,7 @@ import { getCurrentUser } from '@/lib/auth-utils'
 import { sendAdminServiceRequestNotification, sendServiceRequestConfirmationEmail } from '@/lib/email'
 import { chargeSecondOutOfAreaFee } from '@/lib/orders/out-of-area-charge'
 import { closedDayReason } from '@/lib/scheduling'
+import { INSTALLABLE_ITEM_TYPES } from '@/lib/dispatch/types'
 
 export async function POST(
   request: NextRequest,
@@ -126,7 +127,15 @@ export async function POST(
       if (type === 'removal') {
         const originalOrder = await prisma.order.findFirst({
           where: { id: installation.orderId },
-          include: { orderItems: { select: { description: true, quantity: true } } },
+          // Narrowed: nothing else on the order is read here, and physical
+          // items only — money lines ('surcharge', 'pickup_fee') are not
+          // things to bring back.
+          select: {
+            orderItems: {
+              where: { itemType: { in: [...INSTALLABLE_ITEM_TYPES] } },
+              select: { description: true, quantity: true },
+            },
+          },
         })
         if (originalOrder?.orderItems?.length) {
           installedItems = originalOrder.orderItems

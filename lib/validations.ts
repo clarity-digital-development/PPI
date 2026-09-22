@@ -19,8 +19,13 @@ export const propertySchema = z.object({
 })
 
 export const orderItemSchema = z.object({
-  item_type: z.enum(['post', 'sign', 'rider', 'lockbox', 'brochure_box', 'wire_frame_sign', 'solar_lighting', 'second_post', 'trip']),
-  item_category: z.enum(['rental', 'owned', 'new', 'storage', 'purchase', 'install', 'second']).optional(),
+  // 'pickup_fee' is accepted so the wizard's preview line validates, but the
+  // server never trusts it: lib/orders/pickup-fee.ts drops every client fee
+  // line and re-derives the fee from the sign lines.
+  item_type: z.enum(['post', 'sign', 'rider', 'lockbox', 'brochure_box', 'wire_frame_sign', 'solar_lighting', 'second_post', 'trip', 'pickup_fee']),
+  // 'pickup' / 'delivered': where a customer-supplied sign comes from — see
+  // lib/orders/sign-descriptions.ts.
+  item_category: z.enum(['rental', 'owned', 'new', 'storage', 'purchase', 'install', 'second', 'pickup', 'delivered']).optional(),
   description: z.string(),
   quantity: z.number().min(1).default(1),
   unit_price: z.number().min(0),
@@ -29,7 +34,7 @@ export const orderItemSchema = z.object({
   customer_rider_id: z.string().optional(),
   customer_lockbox_id: z.string().optional(),
   customer_brochure_box_id: z.string().optional(),
-  custom_value: z.string().optional(),
+  custom_value: z.string().max(500).optional(),
 })
 
 export const createOrderSchema = z.object({
@@ -60,14 +65,6 @@ export const createOrderSchema = z.object({
 export const schedulingSchema = z.object({
   schedule_type: z.enum(['next_available', 'specific_date', 'expedited']),
   requested_date: z.string().optional(),
-})
-
-export const signSelectionSchema = z.object({
-  use_stored_sign: z.boolean().default(false),
-  stored_sign_id: z.string().optional(),
-  sign_at_property: z.boolean().default(false),
-  sign_description: z.string().optional(),
-  no_sign: z.boolean().default(false),
 })
 
 export const riderSelectionSchema = z.object({
@@ -121,7 +118,6 @@ export type PropertyFormData = z.infer<typeof propertySchema>
 export type CreateOrderFormData = z.infer<typeof createOrderSchema>
 export type OrderItemFormData = z.infer<typeof orderItemSchema>
 export type SchedulingFormData = z.infer<typeof schedulingSchema>
-export type SignSelectionFormData = z.infer<typeof signSelectionSchema>
 export type RiderSelectionFormData = z.infer<typeof riderSelectionSchema>
 export type LockboxSelectionFormData = z.infer<typeof lockboxSelectionSchema>
 export type BrochureBoxFormData = z.infer<typeof brochureBoxSchema>
