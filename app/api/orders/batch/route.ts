@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { compressImageDataUri } from '@/lib/images/compress'
 import { getCurrentUser, generateOrderNumber } from '@/lib/auth-utils'
-import { createPaymentIntent, createCustomer, getStripeErrorMessage, stripe } from '@/lib/stripe/server'
+import { createPaymentIntent, createCustomer, getStripeErrorMessage, isDefinitelyNotCharged, stripe } from '@/lib/stripe/server'
 import { computeOrderPricing, computeFlatFeePricing, postRentalApplies } from '@/lib/orders/pricing'
 import { claimHoldsInTx, consumeInventoryInTx, releaseOrderHoldsAndRestoreInventory, flushAudits, holdsKilled, HoldConflictError, releaseHolds, describeHoldItems, type HoldClaim, type ConsumeRef, type PendingAudit } from '@/lib/inventory-holds'
 import { validateScheduling } from '@/lib/scheduling'
@@ -840,9 +840,7 @@ export async function POST(request: NextRequest) {
       try {
         paymentIntent = await createPaymentIntent(grandTotal, stripeCustomerId ?? undefined, paymentMethodId, batchPiOpts)
       } catch (firstErr) {
-        const errType = String((firstErr as { type?: string } | null)?.type ?? '')
-        const definitelyNotCharged = errType === 'StripeCardError' || errType === 'StripeInvalidRequestError'
-        if (definitelyNotCharged) throw firstErr
+        if (isDefinitelyNotCharged(firstErr)) throw firstErr
         // The request may have executed; the key is stable per cart session,
         // so one re-issue replays Stripe's cached result if it did.
         try {
@@ -855,7 +853,7 @@ export async function POST(request: NextRequest) {
               action: AuditAction.CartCheckoutFail,
               targetType: 'cart',
               targetId: cartSessionId,
-              metadata: { stage: 'batch_pi_uncertain', orderIds: createdOrders.map((o) => o.id), grandTotal, idempotencyKey: idemKey, stripeType: String((secondErr as { type?: string } | null)?.type ?? '') },
+              metadata: { stage: 'batch_pi_uncertain', orderIds: createdOrders.map((o) => o.id), grandTotal, idempotencyKey: idemKey, stripeType: secondErr instanceof Error ? secondErr.constructor.name : typeof secondErr },
               request,
             })
           } catch {}

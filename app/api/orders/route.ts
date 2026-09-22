@@ -5,7 +5,7 @@ import { getCurrentUser, generateOrderNumber, canActOnBehalfOf } from '@/lib/aut
 import { createOrderSchema } from '@/lib/validations'
 import { validateScheduling } from '@/lib/scheduling'
 import { audit, AuditAction } from '@/lib/audit'
-import { createPaymentIntent, createCustomer, calculateTax, getStripeErrorMessage } from '@/lib/stripe/server'
+import { createPaymentIntent, createCustomer, calculateTax, getStripeErrorMessage, isDefinitelyNotCharged } from '@/lib/stripe/server'
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 import { resolveServiceArea } from '@/lib/service-area'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
@@ -715,9 +715,8 @@ export async function POST(request: NextRequest) {
       try {
         paymentIntent = await createPI()
       } catch (firstError) {
-        const errType = String((firstError as { type?: string } | null)?.type ?? '')
         // Stripe told us the payment itself failed: no charge exists.
-        const definitelyNotCharged = errType === 'StripeCardError' || errType === 'StripeInvalidRequestError'
+        const definitelyNotCharged = isDefinitelyNotCharged(firstError)
 
         if (!definitelyNotCharged) {
           // Connection reset, API error, rate limit, idempotency clash: the
@@ -738,7 +737,7 @@ export async function POST(request: NextRequest) {
                   total,
                   idempotencyKey,
                   payment_method_id: orderData.payment_method_id ?? null,
-                  stripe_type: String((secondError as { type?: string } | null)?.type ?? ''),
+                  stripe_type: secondError instanceof Error ? secondError.constructor.name : typeof secondError,
                   stripe_message: getStripeErrorMessage(secondError) ?? (secondError instanceof Error ? secondError.message : String(secondError)),
                 },
                 request,
