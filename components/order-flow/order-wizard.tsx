@@ -13,7 +13,7 @@ import { LockboxStep } from './steps/lockbox-step'
 import { BrochureBoxStep } from './steps/brochure-box-step'
 import { SchedulingStep } from './steps/scheduling-step'
 import { ReviewStep } from './steps/review-step'
-import type { OrderFormData, StepProps } from './types'
+import type { OrderFormData } from './types'
 
 const steps = [
   { id: 'property', title: 'Property Info', component: PropertyStep },
@@ -83,11 +83,12 @@ const defaultFormData: OrderFormData = {
 }
 
 interface OrderWizardProps {
-  // Same shape the steps receive, so the source labelling that
-  // /api/inventory adds (own / brokerage / on-order) is typed at this
-  // boundary instead of being silently widened away.
-  inventory?: StepProps['inventory']
-  onInventoryStale?: StepProps['onInventoryStale']
+  inventory?: {
+    signs: Array<{ id: string; description: string; size: string | null }>
+    riders: Array<{ id: string; rider_type: string; quantity: number }>
+    lockboxes: Array<{ id: string; lockbox_type: string; lockbox_type_name?: string; lockbox_code: string | null }>
+    brochureBoxes: { quantity: number } | null
+  }
   paymentMethods?: Array<{
     id: string
     card_brand: string | null
@@ -137,7 +138,7 @@ interface OrderWizardProps {
   editingCartItemId?: string
 }
 
-export function OrderWizard({ inventory, onInventoryStale, paymentMethods, onBehalfOf, placedForMemberId, currentUserRole, mode = 'create', orderId, initialFormData, editMeta, lockboxInstallFee, flatFee, invoiceBilling, adminView, editingCartItemId }: OrderWizardProps) {
+export function OrderWizard({ inventory, paymentMethods, onBehalfOf, placedForMemberId, currentUserRole, mode = 'create', orderId, initialFormData, editMeta, lockboxInstallFee, flatFee, invoiceBilling, adminView, editingCartItemId }: OrderWizardProps) {
   const isEdit = mode === 'edit'
   const [currentStep, setCurrentStep] = useState(0)
   // In edit mode (or cart-edit re-entry) every step has effectively been
@@ -219,12 +220,8 @@ export function OrderWizard({ inventory, onInventoryStale, paymentMethods, onBeh
         // If "from inventory" is selected, customer must pick which specific sign
         if (formData.sign_option === 'stored' && !formData.stored_sign_id) return false
         return true
-      case 'second-post':
-        // A second-post storage sign with no id would emit a "(from storage)"
-        // line the server cannot attach to a physical sign.
-        if (formData.second_post_enabled && formData.second_post_sign_option === 'stored' && !formData.second_post_stored_sign_id) return false
-        return true
       case 'rider':
+      case 'second-post':
       case 'brochure':
         return true // Optional steps
       case 'lockbox':
@@ -364,7 +361,6 @@ export function OrderWizard({ inventory, onInventoryStale, paymentMethods, onBeh
               formData={formData}
               updateFormData={updateFormData}
               inventory={inventory}
-              onInventoryStale={onInventoryStale}
               paymentMethods={paymentMethods}
               isSubmitting={isSubmitting}
               setIsSubmitting={setIsSubmitting}

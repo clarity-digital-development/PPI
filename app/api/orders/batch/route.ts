@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { compressImageDataUri } from '@/lib/images/compress'
 import { getCurrentUser, generateOrderNumber } from '@/lib/auth-utils'
-import { createPaymentIntent, createCustomer, getStripeErrorMessage, isDefinitelyNotCharged, stripe } from '@/lib/stripe/server'
+import { createPaymentIntent, createCustomer, getStripeErrorMessage, stripe } from '@/lib/stripe/server'
 import { computeOrderPricing, computeFlatFeePricing, postRentalApplies } from '@/lib/orders/pricing'
-import { claimHoldsInTx, consumeInventoryInTx, releaseOrderHoldsAndRestoreInventory, flushAudits, holdsKilled, HoldConflictError, releaseHolds, describeHoldItems, type HoldClaim, type ConsumeRef, type PendingAudit } from '@/lib/inventory-holds'
+import { claimHoldsInTx, HoldConflictError, releaseHolds, describeHoldItems, type HoldClaim } from '@/lib/inventory-holds'
 import { validateScheduling } from '@/lib/scheduling'
 import crypto from 'node:crypto'
 import { audit, AuditAction } from '@/lib/audit'
@@ -479,10 +479,9 @@ export async function POST(request: NextRequest) {
     // Orders are created with paymentIntentId: null and paymentStatus: 'pending',
     // then updated with the real PI id once Stripe accepts it (Step 5).
 
-    // (Held-item bookkeeping is per order, inside the loop below. It used to
-    // be one batch-wide set, so order #2 in a cart referencing the sign order
-    // #1 had claimed via hold silently skipped its own flip and both orders
-    // ended up on one physical sign.)
+    // Track which item ids were claimed-via-hold so the blind path skips them.
+    const heldItemIds = new Set<string>()
+    for (const claim of allClaims) heldItemIds.add(`${claim.itemType}:${claim.itemId}`)
 
     // Shrink the install-location photos BEFORE the tx opens — re-encoding a
     // 5 MB phone photo takes long enough that doing it inside would hold the
@@ -493,7 +492,6 @@ export async function POST(request: NextRequest) {
     }
 
     let createdOrders: Array<{ id: string; orderNumber: string; total: number }>
-    const consumeAudits: PendingAudit[] = []
     try {
       createdOrders = await prisma.$transaction(async (tx) => {
         const out: Array<{ id: string; orderNumber: string; total: number }> = []
@@ -578,57 +576,34 @@ export async function POST(request: NextRequest) {
           // on any race — the surrounding tx rolls back and the catch below
           // cancels the PaymentIntent.
           if (c.claims.length > 0) {
-            consumeAudits.push(
-              ...(await claimHoldsInTx(
-                tx,
-                c.claims,
-                order.id,
-                { id: actor.id, email: actor.email, role: actor.role },
-                request
-              ))
+            await claimHoldsInTx(
+              tx,
+              c.claims,
+              order.id,
+              { id: actor.id, email: actor.email, role: actor.role },
+              request
             )
           }
 
-          // Everything this order consumes that was NOT claimed through a
-          // hold above goes through the same guarded flip the single-order
-          // route uses. This replaces a blind update-by-id that would take
-          // any row regardless of storage state, owner or another cart's
-          // hold. Hold-gating stops being client opt-in: a cart row that
-          // arrived without hold_ids still consumes ITS OWN live hold here
-          // (the helper finds it by owner) instead of dangling it.
-          // With the kill switch on, claimHoldsInTx is a no-op, so nothing may
-          // be excluded from the guarded flip or those rows never leave storage.
-          const heldItemIds = holdsKilled()
-            ? new Set<string>()
-            : new Set(c.claims.map((cl) => `${cl.itemType}:${cl.itemId}`))
-          const unheldRefs: ConsumeRef[] = []
+          // Blind path: only items WITHOUT a live hold (brochure boxes always;
+          // signs/riders/lockboxes only for pre-rollout carts that didn't send
+          // a hold_id). Skip any item that was already claimed above.
+          const invUpdates: Promise<unknown>[] = []
           for (const item of o.items) {
             if (item.customer_sign_id && !heldItemIds.has(`sign:${item.customer_sign_id}`))
-              unheldRefs.push({ type: 'sign', id: item.customer_sign_id })
+              invUpdates.push(tx.customerSign.update({ where: { id: item.customer_sign_id }, data: { inStorage: false } }))
             if (item.customer_rider_id && !heldItemIds.has(`rider:${item.customer_rider_id}`))
-              unheldRefs.push({ type: 'rider', id: item.customer_rider_id })
+              invUpdates.push(tx.customerRider.update({ where: { id: item.customer_rider_id }, data: { inStorage: false } }))
             if (item.customer_lockbox_id && !heldItemIds.has(`lockbox:${item.customer_lockbox_id}`))
-              unheldRefs.push({ type: 'lockbox', id: item.customer_lockbox_id })
+              invUpdates.push(tx.customerLockbox.update({ where: { id: item.customer_lockbox_id }, data: { inStorage: false } }))
             if (item.customer_brochure_box_id)
-              unheldRefs.push({ type: 'brochure_box', id: item.customer_brochure_box_id })
+              invUpdates.push(tx.customerBrochureBox.update({ where: { id: item.customer_brochure_box_id }, data: { inStorage: false } }))
           }
-          if (unheldRefs.length) {
-            const consumed = await consumeInventoryInTx(tx, {
-              refs: unheldRefs,
-              allowedOwnerIds: batchAllowedOwners,
-              holderUserIds: [actor.id],
-              orderId: order.id,
-              actor: { id: actor.id, email: actor.email, role: actor.role },
-              request,
-            })
-            consumeAudits.push(...consumed.audits)
-          }
+          if (invUpdates.length) await Promise.all(invUpdates)
         }
         return out
       })
-      await flushAudits(consumeAudits)
     } catch (txError) {
-      if (txError instanceof HoldConflictError) await flushAudits(txError.pendingAudit ? [txError.pendingAudit] : [])
       // Tx failed → no orders, no PI, no charge. Release any holds the user
       // managed to acquire so they aren't locked out for 15 min on a retry.
       // (releaseHolds.{actor} expects the AuditActor shape.)
@@ -827,82 +802,17 @@ export async function POST(request: NextRequest) {
     // already prevents double-orders at the DB level; this is belt-and-
     // suspenders for the rarer "client retried, server already responded"
     // case.)
-    // Keyed on the orders this attempt just created, NOT on cartSessionId.
-    // That id lives in localStorage and is never rotated, so two unrelated
-    // carts with the same grand total reused one key -- and because
-    // metadata.orderIds differs per attempt, Stripe refused the second as an
-    // idempotency error. Deriving the key from the same ids the payload
-    // carries makes the two agree by construction.
     const idemKey = crypto
       .createHash('sha256')
-      .update(`${actor.id}|${createdOrders.map((o) => o.id).sort().join(',')}|${grandTotal.toFixed(2)}`)
+      .update(`${actor.id}|${cartSessionId ?? createdOrders.map((o) => o.id).sort().join(',')}|${grandTotal.toFixed(2)}`)
       .digest('hex')
       .slice(0, 64)
 
     let paymentIntent
-    const batchPiOpts = {
-      idempotencyKey: idemKey,
-      metadata: { orderIds: createdOrders.map((o) => o.id).join(','), kind: 'batch' },
-    }
     try {
-      try {
-        paymentIntent = await createPaymentIntent(grandTotal, stripeCustomerId ?? undefined, paymentMethodId, batchPiOpts)
-      } catch (firstErr) {
-        if (isDefinitelyNotCharged(firstErr)) throw firstErr
-        // The request may have executed; the key is stable per cart session,
-        // so one re-issue replays Stripe's cached result if it did.
-        try {
-          paymentIntent = await createPaymentIntent(grandTotal, stripeCustomerId ?? undefined, paymentMethodId, batchPiOpts)
-        } catch (secondErr) {
-          console.error('Batch: PI creation UNCERTAIN after retry. Orders left pending, inventory held:', createdOrders.map((o) => o.id), secondErr)
-          try {
-            await audit({
-              actor: { id: actor.id, email: actor.email, role: actor.role },
-              action: AuditAction.CartCheckoutFail,
-              targetType: 'cart',
-              targetId: cartSessionId,
-              metadata: { stage: 'batch_pi_uncertain', orderIds: createdOrders.map((o) => o.id), grandTotal, idempotencyKey: idemKey, stripeType: secondErr instanceof Error ? secondErr.constructor.name : typeof secondErr },
-              request,
-            })
-          } catch {}
-          return NextResponse.json(
-            {
-              error:
-                'We could not confirm your payment with our card processor. Please do NOT submit again -- your orders have been saved and we will confirm the charge and follow up with you shortly.',
-              code: 'payment_uncertain',
-              orders_pending_payment: createdOrders.map((o) => ({ id: o.id, orderNumber: o.orderNumber })),
-            },
-            { status: 502 }
-          )
-        }
-      }
+      paymentIntent = await createPaymentIntent(grandTotal, stripeCustomerId ?? undefined, paymentMethodId, { idempotencyKey: idemKey })
     } catch (err) {
-      console.error('Batch: card declined AFTER tx commit. Cancelling the orders and restoring inventory:', createdOrders.map((o) => o.id), err)
-      // Nothing was charged, so nothing should stay reserved.
-      for (const co of createdOrders) {
-        try {
-          await prisma.order.update({
-            where: { id: co.id },
-            data: {
-              status: 'cancelled',
-              paymentStatus: 'failed',
-              cancelledAt: new Date(),
-              cancelledByUserId: actor.id,
-              cancelReason: 'payment_declined',
-            },
-            select: { id: true },
-          })
-          await releaseOrderHoldsAndRestoreInventory(
-            co.id,
-            'pi_declined',
-            { id: actor.id, email: actor.email, role: actor.role },
-            request,
-            { direct: true }
-          )
-        } catch (compErr) {
-          console.error(`Batch: could not roll back order ${co.orderNumber} after decline`, compErr)
-        }
-      }
+      console.error('Batch: PI creation failed AFTER tx commit. Orders exist unpaid:', createdOrders.map((o) => o.id), err)
       try {
         await audit({
           actor: { id: actor.id, email: actor.email, role: actor.role },
@@ -922,7 +832,7 @@ export async function POST(request: NextRequest) {
       }
       return NextResponse.json(
         {
-          error: getStripeErrorMessage(err) || 'Payment failed. Nothing was charged and your items are still available - please try again.',
+          error: getStripeErrorMessage(err) || 'Payment failed. Your orders were saved but not charged. Please contact support.',
           orders_pending_payment: createdOrders.map((o) => ({ id: o.id, orderNumber: o.orderNumber })),
         },
         { status: 502 }

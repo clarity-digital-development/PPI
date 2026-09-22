@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { CreditCard, Lock, AlertCircle, Tag, CheckCircle, Loader2, Plus } from 'lucide-react'
 import { Button, Input } from '@/components/ui'
@@ -15,20 +15,10 @@ import { FLAT_FEE_BASE, computeOrderPricing, computeDiscountableSubtotal, type O
 
 // Post type values are now the display names themselves
 
-// A pooled sign says which brokerage's storage it sits in; an on-order row
-// carries whatever suffix its original line had, so a plain edit that does not
-// re-pick the sign round-trips the marker instead of stripping it.
-function signLineSuffix(sign: { source?: string; source_label?: string | null; line_suffix?: string }): string {
-  if (sign.source === 'brokerage') return ` — ${sign.source_label || 'brokerage'} inventory`
-  if (sign.source === 'on-order' && sign.line_suffix) return ` ${sign.line_suffix}`
-  return ''
-}
-
 export function ReviewStep({
   formData,
   updateFormData,
   inventory,
-  onInventoryStale,
   paymentMethods,
   isSubmitting,
   setIsSubmitting,
@@ -59,9 +49,6 @@ export function ReviewStep({
   const cartEnabled = (isTeamAdmin || !!onBehalfOf) && !isEdit
   const router = useRouter()
   const [error, setError] = useState<string | null>(null)
-  // Latched when the server could not tell us whether the card was charged.
-  // Keeps the submit button disabled for the life of this page.
-  const [paymentUncertain, setPaymentUncertain] = useState(false)
   const [promoCodeInput, setPromoCodeInput] = useState(formData.promo_code || '')
   const [promoCodeError, setPromoCodeError] = useState<string | null>(null)
   const [promoCodeSuccess, setPromoCodeSuccess] = useState<string | null>(
@@ -677,18 +664,6 @@ export function ReviewStep({
       setError('Please answer "Are the street numbers visible?" on the Property Info step.')
       return
     }
-    // Same no-id guards as the other two submit paths. Without them a sign id
-    // cleared by the stale-id effect becomes a priced "(from storage)" line
-    // with nothing behind it: no hold is taken and no physical sign is
-    // reserved, but the cart row still charges for the install.
-    if (formData.sign_option === 'stored' && !formData.stored_sign_id) {
-      setError('Please go back to the Sign step and pick which sign you want installed.')
-      return
-    }
-    if (formData.second_post_enabled && formData.second_post_sign_option === 'stored' && !formData.second_post_stored_sign_id) {
-      setError('Please go back to the Second Post step and pick which sign you want installed.')
-      return
-    }
     // The cart splits the out-of-area fee too now, so the agreement is captured
     // per row here rather than once at checkout — the batch endpoint rejects a
     // row without it.
@@ -789,11 +764,9 @@ export function ReviewStep({
           if (!res.ok) {
             const errBody = await res.json().catch(() => ({}))
             if (res.status === 409) {
-              // Refresh the picker so a re-pick can land on a different row.
-              onInventoryStale?.()
               throw new Error(
                 errBody.code === 'item_already_held'
-                  ? `One of these items is already in another cart.${onInventoryStale ? ' The inventory list has been refreshed — please re-pick.' : ' Please reload and re-pick.'}`
+                  ? 'One of these items is already in another cart. Please refresh the inventory list and re-pick.'
                   : `Could not reserve item: ${errBody.error || errBody.code || 'conflict'}`
               )
             }
@@ -952,13 +925,7 @@ export function ReviewStep({
         items.push({
           item_type: 'sign',
           item_category: 'storage',
-          // A pooled sign says so on its line, so dispatch, the admin order
-          // page and the installer email all know it sits in the BROKERAGE's
-          // storage, not the agent's. Appended after "(from storage)" so the
-          // edit-page parser (which reads up to that token) is unaffected.
-          description: storedSign
-            ? `Sign Install: ${storedSign.description} (from storage)${signLineSuffix(storedSign)}`
-            : 'Sign Install (from storage)',
+          description: storedSign ? `Sign Install: ${storedSign.description} (from storage)` : 'Sign Install (from storage)',
           quantity: 1,
           unit_price: PRICING.sign_install,
           total_price: PRICING.sign_install,
@@ -1102,9 +1069,7 @@ export function ReviewStep({
           items.push({
             item_type: 'sign',
             item_category: 'storage',
-            description: storedSign2
-              ? `Second Post Sign Install: ${storedSign2.description} (from storage)${signLineSuffix(storedSign2)}`
-              : 'Second Post Sign Install (from storage)',
+            description: storedSign2 ? `Second Post Sign Install: ${storedSign2.description} (from storage)` : 'Second Post Sign Install (from storage)',
             quantity: 1,
             unit_price: PRICING.sign_install,
             total_price: PRICING.sign_install,
@@ -1197,14 +1162,6 @@ export function ReviewStep({
       setError('Please keep at least one item on the order')
       return
     }
-    if (formData.sign_option === 'stored' && !formData.stored_sign_id) {
-      setError('Please go back to the Sign step and pick which sign you want installed.')
-      return
-    }
-    if (formData.second_post_enabled && formData.second_post_sign_option === 'stored' && !formData.second_post_stored_sign_id) {
-      setError('Please go back to the Second Post step and pick which sign you want installed.')
-      return
-    }
     // Edit mode allows jumping straight to Review, so canProceed's property-
     // step gate never runs — enforce the required question here too.
     if (formData.street_numbers_visible === undefined) {
@@ -1270,17 +1227,6 @@ export function ReviewStep({
           setTimeout(() => window.location.reload(), 2500)
           return
         }
-        if (data.code === 'inventory_unavailable') {
-          // The row was taken by another order (or is no longer ours). The
-          // picker is stale, so refresh it before asking for a re-pick --
-          // otherwise the dropdown offers the very id that was just refused.
-          onInventoryStale?.()
-          throw new Error(
-            onInventoryStale
-              ? `${data.error} Your inventory list has been refreshed — go back and choose a different item.`
-              : `${data.error} Reload this page and choose a different item.`
-          )
-        }
         throw new Error(data.error || 'Failed to save changes')
       }
       // Pass the edit-charge outcome through to the order detail page via
@@ -1308,17 +1254,6 @@ export function ReviewStep({
     // Ensure at least one item is in the order
     if (orderItems.length === 0) {
       setError('Please select at least one item for your order')
-      return
-    }
-    // The step indicator bypasses canProceed, so re-check here: a storage
-    // sign with no id would be a "(from storage)" line the server cannot
-    // attach to a physical sign.
-    if (formData.sign_option === 'stored' && !formData.stored_sign_id) {
-      setError('Please go back to the Sign step and pick which sign you want installed.')
-      return
-    }
-    if (formData.second_post_enabled && formData.second_post_sign_option === 'stored' && !formData.second_post_stored_sign_id) {
-      setError('Please go back to the Second Post step and pick which sign you want installed.')
       return
     }
 
@@ -1388,24 +1323,6 @@ export function ReviewStep({
       const data = await response.json()
 
       if (!response.ok) {
-        if (data.code === 'inventory_unavailable') {
-          onInventoryStale?.()
-          throw new Error(
-            onInventoryStale
-              ? `${data.error} Your inventory list has been refreshed — go back and choose a different item.`
-              : `${data.error} Reload this page and choose a different item.`
-          )
-        }
-        if (data.code === 'payment_uncertain') {
-          // A charge may exist. Show the message and leave the button DISABLED
-          // (setIsSubmitting stays true, and the finally below skips the
-          // reset) so the next click cannot mint a second PaymentIntent for a
-          // second order row. Recovering means reloading the page, by which
-          // time the webhook has usually settled the first one.
-          setError(data.error)
-          setPaymentUncertain(true)
-          return
-        }
         throw new Error(data.error || 'Failed to create order')
       }
 
@@ -1912,11 +1829,6 @@ export function ReviewStep({
           onClick={handleSubmit}
           disabled={
             isSubmitting ||
-            // Latched: the server could not tell us whether the card was
-            // charged. A second click would mint a second PaymentIntent for a
-            // second order row, so the only way forward is a reload -- by
-            // which time the webhook has usually settled the first attempt.
-            paymentUncertain ||
             loadingServiceAreaQuote ||
             (!activePaymentMethods?.length && !formData.payment_method_id) ||
             serviceAreaQuote?.tier === 'out_of_area' ||
@@ -1924,9 +1836,7 @@ export function ReviewStep({
             blockedOnQuoteFailure
           }
         >
-          {paymentUncertain
-            ? 'Checking your payment…'
-            : isSubmitting ? 'Processing...' : loadingServiceAreaQuote ? 'Checking address…' : `Place Order — $${displayTotal.toFixed(2)}`}
+          {isSubmitting ? 'Processing...' : loadingServiceAreaQuote ? 'Checking address…' : `Place Order — $${displayTotal.toFixed(2)}`}
         </Button>
       )}
 

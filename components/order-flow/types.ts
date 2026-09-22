@@ -109,19 +109,11 @@ export interface OrderFormData {
 export interface StepProps {
   formData: OrderFormData
   updateFormData: (updates: Partial<OrderFormData>) => void
-  /**
-   * Ask the host page to re-fetch inventory. Called when the server refuses
-   * an order because an inventory row is no longer available: with a shared
-   * brokerage pool every linked agent's picker resolves the same
-   * representative sign id, so once one of them consumes it the others'
-   * pickers are stale and "please re-pick" would re-select the identical id.
-   */
-  onInventoryStale?: () => void
   inventory?: {
     // `source` marks whether a row is the agent's own or drawn from the
     // brokerage pool they're linked to (Ryan, 2026-09-08). Optional because
     // the vast majority of users have no pool and the API omits labelling.
-    signs: Array<{ id: string; description: string; size: string | null; source?: 'own' | 'brokerage' | 'on-order'; source_label?: string | null; /** on-order rows only: which post the sign sits on */ on_order_post?: 'main' | 'second'; /** on-order rows only: text after "(from storage)" in the original line, e.g. " — Semonin inventory" */ line_suffix?: string }>
+    signs: Array<{ id: string; description: string; size: string | null; source?: 'own' | 'brokerage' | 'on-order'; source_label?: string | null }>
     riders: Array<{ id: string; rider_type: string; quantity: number; source?: 'own' | 'brokerage' | 'on-order'; source_label?: string | null }>
     lockboxes: Array<{ id: string; lockbox_type: string; lockbox_type_name?: string; lockbox_code: string | null; serial_number?: string | null; source?: 'own' | 'brokerage'; source_label?: string | null }>
     brochureBoxes: { quantity: number; own_quantity?: number; brokerage_quantity?: number } | null

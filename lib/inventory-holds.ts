@@ -34,7 +34,6 @@
 import { Prisma, HoldItemType } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { audit, AuditAction, type AuditActor } from '@/lib/audit'
-import { foreignHolds, foreignConsumption, FOREIGN_HOLD_CAP } from '@/lib/inventory/hold-scope'
 import type { NextRequest } from 'next/server'
 
 export type HoldTx = Prisma.TransactionClient | typeof prisma
@@ -44,25 +43,11 @@ const TTL_MINUTES = 15
 function killed(): boolean {
   return process.env.INVENTORY_HOLDS_ENABLED === 'false'
 }
-/** True when INVENTORY_HOLDS_ENABLED=false -- routes use it to treat hold columns as inert. */
-export function holdsKilled(): boolean {
-  return killed()
-}
-
-/** An audit row to write AFTER the enclosing transaction commits or rolls back. */
-export type PendingAudit = Parameters<typeof audit>[0]
 
 export class HoldConflictError extends Error {
   status = 409 as const
   code: string
   details: Record<string, unknown>
-  /**
-   * Set by consumeInventoryInTx. The conflict is audited by the CALLER after
-   * the transaction has rolled back -- audit() opens a second pool connection,
-   * and holding one connection while waiting for another is how a burst of
-   * concurrent checkouts wedged the whole pool.
-   */
-  pendingAudit?: PendingAudit
   constructor(code: string, message: string, details: Record<string, unknown> = {}) {
     super(message)
     this.code = code
@@ -87,8 +72,6 @@ export interface AcquireHoldResult {
   acquired: true
   holdId: string
   expiresAt: Date
-  /** Present only when the caller supplied opts.tx: write it after commit. */
-  pendingAudit?: PendingAudit
 }
 
 /**
@@ -210,7 +193,7 @@ export async function acquireHold(
     ? await run(opts.tx)
     : await prisma.$transaction(run, { timeout: 8_000 })
 
-  const created: PendingAudit = {
+  await audit({
     actor: { id: args.actorUserId, email: null, role: null },
     action: AuditAction.InventoryHoldCreated,
     targetType: 'inventory_hold',
@@ -225,13 +208,8 @@ export async function acquireHold(
       assignedToMemberIdSnapshot: args.assignedToMemberIdSnapshot ?? null,
     },
     request: opts.request,
-  }
-  // Inside a caller's transaction, never open a second connection to audit --
-  // the caller writes it once the transaction has committed.
-  if (opts.tx) {
-    return { acquired: true, holdId: result.holdId, expiresAt: result.expiresAt, pendingAudit: created }
-  }
-  await audit(created)
+  })
+
   return { acquired: true, holdId: result.holdId, expiresAt: result.expiresAt }
 }
 
@@ -422,12 +400,8 @@ export async function claimHoldsInTx(
   orderId: string,
   actor: AuditActor,
   request?: NextRequest | Request | null
-): Promise<PendingAudit[]> {
-  if (killed() || holds.length === 0) return []
-  // Audits are RETURNED, not written here: audit() opens a second pool
-  // connection, and holding one connection while waiting for another inside a
-  // checkout transaction is how a burst of concurrent carts wedged the pool.
-  const pending: PendingAudit[] = []
+): Promise<void> {
+  if (killed() || holds.length === 0) return
 
   for (const h of holds) {
     const count = await claimOne(tx, h)
@@ -446,21 +420,21 @@ export async function claimHoldsInTx(
         code = 'already_assigned'
         message = 'This item is no longer in storage.'
       }
-      const err = new HoldConflictError(code, message, {
-        itemType: h.itemType,
-        itemId: h.itemId,
-        holdId: h.holdId,
-      })
-      // Carried on the error and written by the caller after rollback.
-      err.pendingAudit = {
+      // Audit the conflict BEFORE throwing so the row is captured even if
+      // the parent tx rolls back. (audit() opens its own connection.)
+      await audit({
         actor,
         action: AuditAction.InventoryHoldConflict,
         targetType: 'inventory_hold',
         targetId: h.holdId,
         metadata: { itemType: h.itemType, itemId: h.itemId, orderId, code },
         request,
-      }
-      throw err
+      })
+      throw new HoldConflictError(code, message, {
+        itemType: h.itemType,
+        itemId: h.itemId,
+        holdId: h.holdId,
+      })
     }
     // Mark the hold consumed.
     await tx.inventoryHold.update({
@@ -469,9 +443,9 @@ export async function claimHoldsInTx(
     })
   }
 
-  // One row per order rather than one per item, so a multi-item order does not
-  // quadruple the log volume.
-  pending.push({
+  // Audit consumed-success in a single row per order so we don't quadruple
+  // the log volume on multi-item orders.
+  await audit({
     actor,
     action: AuditAction.InventoryHoldConsumed,
     targetType: 'order',
@@ -479,7 +453,6 @@ export async function claimHoldsInTx(
     metadata: { holdIds: holds.map((h) => h.holdId), count: holds.length },
     request,
   })
-  return pending
 }
 
 export interface SweepResult {
@@ -586,26 +559,9 @@ export async function releaseOrderHoldsAndRestoreInventory(
   orderId: string,
   reason: string,
   actor: AuditActor,
-  request?: NextRequest | Request | null,
-  opts: {
-    /**
-     * `direct`: put back exactly the rows this order took, guarded only by
-     * inStorage=false. For the SYNCHRONOUS compensation right after this
-     * request's own flip (Stripe declined, edit removed the item): while a
-     * row is inStorage=false nothing else can consume or hold it, so undoing
-     * our own flip is always safe. The default "safe" mode refuses to restore
-     * a row that another live order references -- correct for the
-     * asynchronous refund/webhook path, but it also refuses for every sign
-     * that was ever on a COMPLETED order and later returned to storage, which
-     * stranded reused signs on a declined card.
-     */
-    direct?: boolean
-  } = {}
+  request?: NextRequest | Request | null
 ): Promise<void> {
-  // NOT gated on the kill switch as a whole. Restoring inStorage after a
-  // refund/cancel is an inventory truth, not a hold mutation -- with holds
-  // switched off the sign still has to come back into the pool. Only the
-  // hold-row deletion below is skipped when killed().
+  if (killed()) return
 
   await prisma.$transaction(async (tx) => {
     const order = await tx.order.findUnique({
@@ -614,21 +570,31 @@ export async function releaseOrderHoldsAndRestoreInventory(
     })
     if (!order) return
 
-    const refs: ConsumeRef[] = []
+    // Restore inStorage = true on each item, but ONLY if no other live order
+    // points at it and no live hold owns it.
     for (const item of order.orderItems) {
-      if (item.customerSignId) refs.push({ type: 'sign', id: item.customerSignId })
-      if (item.customerRiderId) refs.push({ type: 'rider', id: item.customerRiderId })
-      if (item.customerLockboxId) refs.push({ type: 'lockbox', id: item.customerLockboxId })
-      if (item.customerBrochureBoxId) refs.push({ type: 'brochure_box', id: item.customerBrochureBoxId })
+      if (item.customerSignId) {
+        await restoreIfSafe(tx, 'sign', item.customerSignId, orderId)
+      }
+      if (item.customerRiderId) {
+        await restoreIfSafe(tx, 'rider', item.customerRiderId, orderId)
+      }
+      if (item.customerLockboxId) {
+        await restoreIfSafe(tx, 'lockbox', item.customerLockboxId, orderId)
+      }
+      // Brochure boxes: still in the old blind-flip path, no hold infra.
+      if (item.customerBrochureBoxId) {
+        await tx.customerBrochureBox.update({
+          where: { id: item.customerBrochureBoxId },
+          data: { inStorage: true },
+        })
+      }
     }
-    await restoreInventoryInTx(tx, refs, orderId, { direct: !!opts.direct })
 
     // Delete any consumed holds tied to this order.
-    if (!killed()) {
-      await tx.inventoryHold.deleteMany({
-        where: { consumedByOrderId: orderId },
-      })
-    }
+    await tx.inventoryHold.deleteMany({
+      where: { consumedByOrderId: orderId },
+    })
   }, { timeout: 15_000 })
 
   await audit({
@@ -639,323 +605,6 @@ export async function releaseOrderHoldsAndRestoreInventory(
     metadata: { reason, source: 'release_order_holds' },
     request,
   })
-}
-
-export type ConsumeItemType = HoldItemType | 'brochure_box'
-export interface ConsumeRef {
-  type: ConsumeItemType
-  id: string
-}
-
-export interface ConsumeInventoryArgs {
-  /** Every inventory row this order consumes. Deduped here as well. */
-  refs: ConsumeRef[]
-  /** Accounts whose inventory may be consumed. `null` = internal-admin bypass. */
-  allowedOwnerIds: Set<string> | null
-  /** Whose live holds count as "mine" (the order owner AND the actor). */
-  holderUserIds: string[]
-  orderId: string
-  actor: AuditActor
-  request?: NextRequest | Request | null
-}
-
-/**
- * THE guarded flip. One conditional UPDATE per inventory row, inside the
- * caller's transaction, that both takes the row out of storage and proves it
- * was available to take:
- *
- *     WHERE id = ? AND inStorage = true [AND userId IN allowed]
- *       AND (heldByHoldId IS NULL          -- free
- *            OR heldUntil < now()          -- expired hold = free (acquireHold's rule)
- *            OR heldByHoldId = <my hold>)  -- reserved by this very checkout
- *
- * A live hold owned by anyone else matches none of the OR arms, so it is
- * refused. count !== 1 throws HoldConflictError and the enclosing transaction
- * rolls back -- so on every path that calls this before money moves, a lost
- * race costs nothing.
- *
- * Why this is atomic with no schema change: under READ COMMITTED Postgres
- * row-locks the target and re-evaluates the WHERE on the committed version
- * before applying. Two transactions on one row cannot both see
- * inStorage = true; whichever commits first wins and the other gets 0 rows.
- * acquireHold's "fresh" update locks the same row, so a hold acquired
- * concurrently either lands before this flip (refused as foreign) or after
- * (acquire sees inStorage=false and throws item_unavailable).
- *
- * Before 2026-09-22 the three order paths each did this differently:
- * single-order flipped OUTSIDE any transaction AFTER Stripe had captured and
- * merely logged a 0-row result; cart fell back to a blind update-by-id for any
- * row the client did not send a hold for; edit flipped with no inStorage
- * precondition and never looked at the count. 37 rows were on more than one
- * live order as a result. A shared brokerage pool makes that a daily event.
- *
- * Brochure boxes have no hold columns, so their predicate is just
- * { id, inStorage, owner } -- nothing can hold one, so inStorage is the whole
- * truth.
- *
- * Kill switch: INVENTORY_HOLDS_ENABLED=false skips only the own-hold lookup
- * and consume. The guarded flip itself always runs -- it is the invariant,
- * not the feature.
- */
-export async function consumeInventoryInTx(
-  tx: HoldTx,
-  args: ConsumeInventoryArgs
-): Promise<{ consumed: number; consumedHoldIds: string[]; audits: PendingAudit[] }> {
-  const seen = new Set<string>()
-  const refs = args.refs
-    .filter((r) => {
-      if (!r.id) return false
-      const key = `${r.type}:${r.id}`
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
-    // Deterministic lock order. Two orders touching the same two rows in
-    // opposite request order would otherwise deadlock (40P01 -> 500) instead of
-    // one cleanly losing with a 409.
-    .sort((a, b) => `${a.type}:${a.id}`.localeCompare(`${b.type}:${b.id}`))
-  const ownerArm = args.allowedOwnerIds ? { userId: { in: Array.from(args.allowedOwnerIds) } } : {}
-  const consumedHoldIds: string[] = []
-  const audits: PendingAudit[] = []
-  const primaryHolder = args.holderUserIds[0]
-
-  // Aggregate bound on SHARED inventory, mirroring the cart's hold cap -- the
-  // hold cap only guards the cart endpoint, which a linked agent placing single
-  // orders never calls, so without this one account could take the whole
-  // brokerage pool one order at a time.
-  //
-  // Resolved BEFORE any row is touched: the advisory lock must be taken ahead
-  // of every row lock, because the holds route takes the same lock first. The
-  // opposite order between the two paths is a deadlock.
-  if (args.allowedOwnerIds && primaryHolder && refs.length > 0) {
-    const owners = await Promise.all(refs.map((r) => rowOwner(tx, r)))
-    const foreignRef = refs.find((r, i) => owners[i] && !args.holderUserIds.includes(owners[i] as string))
-    if (foreignRef) {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'foreign-holds:' + primaryHolder}))`
-      const [consumed, { count: held }] = await Promise.all([
-        foreignConsumption(primaryHolder, tx),
-        foreignHolds(primaryHolder, tx),
-      ])
-      if (consumed + held >= FOREIGN_HOLD_CAP) {
-        const err = new HoldConflictError(
-          'pool_limit',
-          'You have too many shared items out at once. Finish or cancel an order before taking more from the brokerage inventory.',
-          { itemType: foreignRef.type, itemId: foreignRef.id, holdId: null }
-        )
-        err.pendingAudit = conflictAudit(args, foreignRef, 'pool_limit', null)
-        throw err
-      }
-    }
-  }
-
-  for (const ref of refs) {
-    const now = new Date()
-
-    if (ref.type === 'brochure_box') {
-      const r = await tx.customerBrochureBox.updateMany({
-        where: { id: ref.id, inStorage: true, ...ownerArm },
-        data: { inStorage: false },
-      })
-      if (r.count !== 1) {
-        const current = await tx.customerBrochureBox.findUnique({
-          where: { id: ref.id },
-          select: { inStorage: true, userId: true },
-        })
-        const code = !current
-          ? 'item_gone'
-          : args.allowedOwnerIds && !args.allowedOwnerIds.has(current.userId)
-            ? 'not_owned'
-            : 'already_assigned'
-        const err = new HoldConflictError(code, consumeMessage(code), { itemType: ref.type, itemId: ref.id, holdId: null })
-        err.pendingAudit = conflictAudit(args, ref, code, null)
-        throw err
-      }
-      continue
-    }
-
-    // Sign / rider / lockbox: honour this checkout's own live hold, refuse
-    // anyone else's. With the kill switch on, hold columns are INERT: no
-    // lookup, no hold arms -- just the storage + owner guard.
-    const ownHold = killed()
-      ? null
-      : await tx.inventoryHold.findFirst({
-          where: {
-            itemType: ref.type,
-            itemId: ref.id,
-            ownerUserId: { in: args.holderUserIds },
-            consumedByOrderId: null,
-            releasedAt: null,
-            expiresAt: { gt: now },
-          },
-          select: { id: true },
-        })
-
-    const where = {
-      id: ref.id,
-      inStorage: true,
-      ...ownerArm,
-      ...(killed()
-        ? {}
-        : {
-            OR: [
-              { heldByHoldId: null },
-              { heldUntil: { lt: now } },
-              ...(ownHold ? [{ heldByHoldId: ownHold.id }] : []),
-            ],
-          }),
-    }
-    const data = { inStorage: false, heldByHoldId: null, heldUntil: null }
-
-    let count: number
-    switch (ref.type) {
-      case 'sign':
-        count = (await tx.customerSign.updateMany({ where: where as Prisma.CustomerSignWhereInput, data })).count
-        break
-      case 'rider':
-        count = (await tx.customerRider.updateMany({ where: where as Prisma.CustomerRiderWhereInput, data })).count
-        break
-      case 'lockbox':
-        count = (await tx.customerLockbox.updateMany({ where: where as Prisma.CustomerLockboxWhereInput, data })).count
-        break
-    }
-
-    if (count !== 1) {
-      const current = await readConsumeCols(tx, ref.type, ref.id)
-      let code = 'hold_lost'
-      if (!current) code = 'item_gone'
-      else if (args.allowedOwnerIds && !args.allowedOwnerIds.has(current.userId)) code = 'not_owned'
-      else if (!current.inStorage) code = 'already_assigned'
-      else if (current.heldByHoldId && current.heldUntil && current.heldUntil > now) code = 'item_already_held'
-      const err = new HoldConflictError(code, consumeMessage(code), {
-        itemType: ref.type,
-        itemId: ref.id,
-        holdId: ownHold?.id ?? null,
-      })
-      err.pendingAudit = conflictAudit(args, ref, code, ownHold?.id ?? null)
-      throw err
-    }
-
-    if (ownHold) {
-      // A hold swept between the lookup and here matches 0 rows, which is
-      // harmless: the heldByHoldId IS NULL arm already carried the flip.
-      await tx.inventoryHold.updateMany({
-        where: { id: ownHold.id, consumedByOrderId: null },
-        data: { consumedByOrderId: args.orderId },
-      })
-      consumedHoldIds.push(ownHold.id)
-    }
-  }
-
-  if (consumedHoldIds.length > 0) {
-    audits.push({
-      actor: args.actor,
-      action: AuditAction.InventoryHoldConsumed,
-      targetType: 'order',
-      targetId: args.orderId,
-      metadata: { holdIds: consumedHoldIds, count: consumedHoldIds.length },
-      request: args.request,
-    })
-  }
-
-  return { consumed: refs.length, consumedHoldIds, audits }
-}
-
-/** Write the audits a consume returned, once the enclosing tx has committed. */
-export async function flushAudits(audits: PendingAudit[] | undefined): Promise<void> {
-  for (const a of audits ?? []) {
-    try {
-      await audit(a)
-    } catch (err) {
-      console.error('[inventory] deferred audit failed', err)
-    }
-  }
-}
-
-async function rowOwner(tx: HoldTx, ref: ConsumeRef): Promise<string | null> {
-  const select = { userId: true }
-  switch (ref.type) {
-    case 'sign':
-      return (await tx.customerSign.findUnique({ where: { id: ref.id }, select }))?.userId ?? null
-    case 'rider':
-      return (await tx.customerRider.findUnique({ where: { id: ref.id }, select }))?.userId ?? null
-    case 'lockbox':
-      return (await tx.customerLockbox.findUnique({ where: { id: ref.id }, select }))?.userId ?? null
-    case 'brochure_box':
-      return (await tx.customerBrochureBox.findUnique({ where: { id: ref.id }, select }))?.userId ?? null
-  }
-}
-
-/**
- * Put rows back into storage when an order stops referencing them, but only
- * when nothing else live does -- the same rule the refund/cancel path uses.
- * The edit route used to do an unconditional inStorage=true here, which put a
- * sign that was ALSO on another live order back into the pool a third time.
- */
-export async function restoreInventoryInTx(
-  tx: HoldTx,
-  refs: ConsumeRef[],
-  excludeOrderId: string,
-  opts: { direct?: boolean } = {}
-): Promise<void> {
-  for (const ref of refs) {
-    if (!ref.id) continue
-    if (opts.direct) {
-      // Undo exactly this order's own flip. Guarded by inStorage=false: while
-      // a row is out, nothing else can consume or hold it, so there is no
-      // re-allocation to clobber.
-      const data = { inStorage: true, heldByHoldId: null, heldUntil: null }
-      switch (ref.type) {
-        case 'sign':
-          await tx.customerSign.updateMany({ where: { id: ref.id, inStorage: false }, data })
-          break
-        case 'rider':
-          await tx.customerRider.updateMany({ where: { id: ref.id, inStorage: false }, data })
-          break
-        case 'lockbox':
-          await tx.customerLockbox.updateMany({ where: { id: ref.id, inStorage: false }, data })
-          break
-        case 'brochure_box':
-          await tx.customerBrochureBox.updateMany({ where: { id: ref.id, inStorage: false }, data: { inStorage: true } })
-          break
-      }
-      continue
-    }
-    await restoreIfSafe(tx, ref.type, ref.id, excludeOrderId)
-  }
-}
-
-function consumeMessage(code: string): string {
-  switch (code) {
-    case 'item_already_held':
-      return 'This item is already in another cart.'
-    case 'already_assigned':
-      return 'This item is no longer in storage.'
-    case 'item_gone':
-    case 'not_owned':
-      // Same wording so the response cannot be used to probe which ids exist
-      // on other accounts.
-      return 'This item is no longer available.'
-    default:
-      return 'Your reservation was lost - please re-add to cart.'
-  }
-}
-
-function conflictAudit(
-  args: ConsumeInventoryArgs,
-  ref: ConsumeRef,
-  code: string,
-  holdId: string | null
-): PendingAudit {
-  // Returned on the error, written by the caller AFTER rollback. Writing it
-  // here would open a second pool connection while this one is held.
-  return {
-    actor: args.actor,
-    action: AuditAction.InventoryHoldConflict,
-    targetType: 'order',
-    targetId: args.orderId,
-    metadata: { itemType: ref.type, itemId: ref.id, holdId, orderId: args.orderId, code, source: 'consume' },
-    request: args.request,
-  }
 }
 
 /**
@@ -1134,22 +783,6 @@ async function readHoldCols(
   }
 }
 
-async function readConsumeCols(
-  tx: HoldTx,
-  itemType: HoldItemType,
-  itemId: string
-): Promise<{ userId: string; inStorage: boolean; heldByHoldId: string | null; heldUntil: Date | null } | null> {
-  const select = { userId: true, inStorage: true, heldByHoldId: true, heldUntil: true }
-  switch (itemType) {
-    case 'sign':
-      return tx.customerSign.findUnique({ where: { id: itemId }, select })
-    case 'rider':
-      return tx.customerRider.findUnique({ where: { id: itemId }, select })
-    case 'lockbox':
-      return tx.customerLockbox.findUnique({ where: { id: itemId }, select })
-  }
-}
-
 interface UpdateHoldColsArgs {
   heldByHoldId: string | null
   heldUntil: Date | null
@@ -1246,7 +879,7 @@ async function updateHoldUntilForIds(
 
 async function restoreIfSafe(
   tx: HoldTx,
-  itemType: ConsumeItemType,
+  itemType: HoldItemType,
   itemId: string,
   excludeOrderId: string
 ): Promise<void> {
@@ -1256,50 +889,31 @@ async function restoreIfSafe(
     sign: 'customerSignId',
     rider: 'customerRiderId',
     lockbox: 'customerLockboxId',
-    brochure_box: 'customerBrochureBoxId',
   } as const
   const col = colMap[itemType]
   const otherLive = await tx.orderItem.findFirst({
     where: {
       [col]: itemId,
       orderId: { not: excludeOrderId },
-      order: {
-        // pending_invoice is a LIVE order (invoice-billed, not yet collected)
-        // and must block a restore just like a paid one. A cancelled sibling
-        // never blocks (refundOrder leaves paymentStatus 'succeeded' until the
-        // charge.refunded webhook lands).
-        //
-        // A COMPLETED order blocks only while its installation is still in the
-        // ground. 75 of the signs in storage today were once on a completed
-        // order and later returned by an admin; treating those as live
-        // stranded every one of them on a refund. But a completed order whose
-        // sign is STILL installed must keep it -- otherwise a refund of some
-        // other order sharing that id would put a planted sign back in the
-        // pool for someone else to take.
-        paymentStatus: { in: ['succeeded', 'processing', 'pending', 'pending_invoice'] },
-        status: { not: 'cancelled' },
-        OR: [
-          { status: { not: 'completed' } },
-          { installation: { is: { status: { in: ['active', 'removal_scheduled'] } } } },
-        ],
-      },
+      order: { paymentStatus: { in: ['succeeded', 'processing', 'pending'] } },
     },
-    select: { id: true, orderId: true },
+    select: { id: true },
   })
-  if (otherLive) {
-    console.warn('[inventory] restore skipped: another live order references this row', {
+  if (otherLive) return // do not clobber
+
+  // Any live hold on this item? Don't restore inStorage if a live hold
+  // owns the row.
+  const liveHold = await tx.inventoryHold.findFirst({
+    where: {
       itemType,
       itemId,
-      excludeOrderId,
-      otherOrderId: otherLive.orderId,
-    })
-    return // do not clobber
-  }
-
-  // No live-hold guard here: the writes below only touch rows that are
-  // inStorage=false, and a row cannot be acquired while out of storage, so
-  // any hold row still pointing at it is stale. Refusing on it left rows out
-  // of storage for good.
+      consumedByOrderId: null,
+      releasedAt: null,
+      expiresAt: { gt: new Date() },
+    },
+    select: { id: true },
+  })
+  if (liveHold) return
 
   // Safe to restore.
   switch (itemType) {
@@ -1319,12 +933,6 @@ async function restoreIfSafe(
       await tx.customerLockbox.updateMany({
         where: { id: itemId, inStorage: false },
         data: { inStorage: true, heldByHoldId: null, heldUntil: null },
-      })
-      return
-    case 'brochure_box':
-      await tx.customerBrochureBox.updateMany({
-        where: { id: itemId, inStorage: false },
-        data: { inStorage: true },
       })
       return
   }

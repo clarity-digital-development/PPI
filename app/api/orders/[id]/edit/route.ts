@@ -11,7 +11,6 @@ import { chargePaymentMethod, isDetachedPaymentMethodError } from '@/lib/stripe'
 import { resolveEffectivePayer } from '@/lib/orders/effective-payer'
 import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, NO_POST_SURCHARGE, postRentalApplies, type OrderItemForPricing } from '@/lib/orders/pricing'
 import { allowedInventoryOwnerIds, checkInventoryOwnership, describeInventoryFailures } from '@/lib/orders/inventory-ownership'
-import { consumeInventoryInTx, restoreInventoryInTx, flushAudits, HoldConflictError, type ConsumeRef, type PendingAudit } from '@/lib/inventory-holds'
 import { resolveServiceArea } from '@/lib/service-area'
 import { z } from 'zod'
 
@@ -672,21 +671,8 @@ export async function PATCH(
       customer_lockbox_id: new Set(existingOrder.orderItems.map((i) => i.customerLockboxId).filter((x): x is string => !!x)),
       customer_brochure_box_id: new Set(existingOrder.orderItems.map((i) => i.customerBrochureBoxId).filter((x): x is string => !!x)),
     }
-    // Preserved items are checked too. Preservation re-attaches inventory the
-    // form "could not see" -- which is exactly what happens to a brokerage
-    // sign after the agent's link is revoked (their picker no longer lists
-    // it). Left unchecked, that was the one path by which a de-linked agent
-    // kept directing the brokerage's sign: change the address, and the sign
-    // rides along untouched. They are already-attached ids, so only ownership
-    // is enforced; the not_found / not_in_storage waivers still apply.
-    const preservedInventoryItems = preserveItems.map((it) => ({
-      customer_sign_id: it.customerSignId ?? undefined,
-      customer_rider_id: it.customerRiderId ?? undefined,
-      customer_lockbox_id: it.customerLockboxId ?? undefined,
-      customer_brochure_box_id: it.customerBrochureBoxId ?? undefined,
-    }))
     const editInventoryFailures = await checkInventoryOwnership(
-      [...editData.items, ...preservedInventoryItems],
+      editData.items,
       editAllowedOwners,
       {
         alreadyAttached: attachedIds,
@@ -719,8 +705,6 @@ export async function PATCH(
         : await compressImageDataUri(editData.installation_location_image)
 
     let raceLost = false
-    let holdConflict: HoldConflictError | null = null
-    let consumeAudits: PendingAudit[] = []
     const updatedOrder = await prisma.$transaction(async (tx) => {
       // Replace ALL line items (the post is included in items[] as item_type
       // 'post', mirroring order creation)
@@ -802,83 +786,43 @@ export async function PATCH(
         })
       }
 
-      // Restore inventory referenced only by the OLD order -- but only where
-      // no OTHER live order still references it. The unconditional
-      // inStorage:true this used to do put a sign that was also on another
-      // live order (a pre-existing double-book) back into the pool a third
-      // time.
-      await restoreInventoryInTx(
-        tx,
-        [
-          ...idsToRestore.signs.map((id) => ({ type: 'sign' as const, id })),
-          ...idsToRestore.riders.map((id) => ({ type: 'rider' as const, id })),
-          ...idsToRestore.lockboxes.map((id) => ({ type: 'lockbox' as const, id })),
-          ...idsToRestore.brochureBoxes.map((id) => ({ type: 'brochure_box' as const, id })),
-        ],
-        id
-        // SAFE restore, not direct. These rows were flipped by whichever order
-        // originally consumed them, not by this request, so "is anything else
-        // live still using it?" is the right question -- 37 rows sit on more
-        // than one live order today and a direct restore would hand one of
-        // them back to the pool while another order still had it. (Direct is
-        // only for undoing a flip made in this same request.) The stranding
-        // this used to cause is fixed in restoreIfSafe instead: a completed
-        // order no longer counts as live unless its install is still up.
-      )
+      // Restore inventory referenced only by the OLD order
+      if (idsToRestore.signs.length)
+        await tx.customerSign.updateMany({ where: { id: { in: idsToRestore.signs } }, data: { inStorage: true } })
+      if (idsToRestore.riders.length)
+        await tx.customerRider.updateMany({ where: { id: { in: idsToRestore.riders } }, data: { inStorage: true } })
+      if (idsToRestore.lockboxes.length)
+        await tx.customerLockbox.updateMany({ where: { id: { in: idsToRestore.lockboxes } }, data: { inStorage: true } })
+      if (idsToRestore.brochureBoxes.length)
+        await tx.customerBrochureBox.updateMany({ where: { id: { in: idsToRestore.brochureBoxes } }, data: { inStorage: true } })
 
-      // Lock inventory referenced by the NEW order, in two classes.
+      // Lock inventory referenced by the NEW order (idempotent).
       //
-      // ADDED ids (not on the order before this edit) go through the same
-      // guarded flip as a placement: inStorage:true, owner (unless internal
-      // admin), not held by another cart -- or the whole edit rolls back with
-      // a 409. This makes the pre-transaction not_in_storage check atomic;
-      // the photo compression above sat in its TOCTOU window.
-      //
-      // KEPT ids (already on this order) are inStorage:false BY DESIGN and may
-      // even have been deleted (40 of 296 live orders). They must never fail
-      // a count, so they keep the lenient owner-guarded write -- that is what
-      // preserves the not_found / not_in_storage waivers. Stale hold pointers
-      // are cleared on them so a row this order owns never keeps pointing at
-      // a dead cart hold.
-      const addedRefs: ConsumeRef[] = []
-      const keptSigns: string[] = [], keptRiders: string[] = [], keptLockboxes: string[] = [], keptBoxes: string[] = []
-      for (const sid of Array.from(newSignIds)) (attachedIds.customer_sign_id.has(sid) ? keptSigns : addedRefs).push(
-        attachedIds.customer_sign_id.has(sid) ? (sid as never) : ({ type: 'sign', id: sid } as never)
-      )
-      for (const rid of Array.from(newRiderIds)) (attachedIds.customer_rider_id.has(rid) ? keptRiders : addedRefs).push(
-        attachedIds.customer_rider_id.has(rid) ? (rid as never) : ({ type: 'rider', id: rid } as never)
-      )
-      for (const lid of Array.from(newLockboxIds)) (attachedIds.customer_lockbox_id.has(lid) ? keptLockboxes : addedRefs).push(
-        attachedIds.customer_lockbox_id.has(lid) ? (lid as never) : ({ type: 'lockbox', id: lid } as never)
-      )
-      for (const bid of Array.from(newBrochureIds)) (attachedIds.customer_brochure_box_id.has(bid) ? keptBoxes : addedRefs).push(
-        attachedIds.customer_brochure_box_id.has(bid) ? (bid as never) : ({ type: 'brochure_box', id: bid } as never)
-      )
-
-      if (addedRefs.length > 0) {
-        const consumed = await consumeInventoryInTx(tx, {
-          refs: addedRefs,
-          // Mirrors the ownership check's internal-admin bypass exactly; a
-          // guard stricter than the check would let a staff rescue save while
-          // silently locking nothing.
-          allowedOwnerIds: user.role === 'admin' ? null : editAllowedOwners,
-          holderUserIds: Array.from(new Set([existingOrder.userId, user.id])),
-          orderId: id,
-          actor: { id: user.id, email: user.email, role: user.role },
-          request,
-        })
-        consumeAudits = consumed.audits
-      }
-
-      const keptGuard = (ids: string[]) =>
+      // Owner-guarded, matching the create path (orders/route.ts). Without the
+      // guard these four flips took any id the transaction reached this far
+      // with and forced it out of storage regardless of who owns it now -- so a
+      // waived id (one already on this order) could be re-flipped on an account
+      // the actor no longer has access to, e.g. after a brokerage revoked their
+      // roster link. The ownership check above already rejects ids the actor
+      // may not use; this makes the write itself say the same thing, so the two
+      // can never drift.
+      // Mirrors the ownership check above, INCLUDING its internal-admin
+      // bypass. If the guard were stricter than the check, a staff rescue of an
+      // order whose inventory ownership moved would pass validation and then
+      // silently match zero rows here -- the order saved, the item never
+      // locked.
+      const lockGuard = (ids: Set<string>) =>
         user.role === 'admin'
-          ? { id: { in: ids } }
-          : { id: { in: ids }, userId: { in: Array.from(editAllowedOwners) } }
-      const clearHold = { inStorage: false, heldByHoldId: null, heldUntil: null }
-      if (keptSigns.length) await tx.customerSign.updateMany({ where: keptGuard(keptSigns), data: clearHold })
-      if (keptRiders.length) await tx.customerRider.updateMany({ where: keptGuard(keptRiders), data: clearHold })
-      if (keptLockboxes.length) await tx.customerLockbox.updateMany({ where: keptGuard(keptLockboxes), data: clearHold })
-      if (keptBoxes.length) await tx.customerBrochureBox.updateMany({ where: keptGuard(keptBoxes), data: { inStorage: false } })
+          ? { id: { in: Array.from(ids) } }
+          : { id: { in: Array.from(ids) }, userId: { in: Array.from(editAllowedOwners) } }
+      if (newSignIds.size)
+        await tx.customerSign.updateMany({ where: lockGuard(newSignIds), data: { inStorage: false } })
+      if (newRiderIds.size)
+        await tx.customerRider.updateMany({ where: lockGuard(newRiderIds), data: { inStorage: false } })
+      if (newLockboxIds.size)
+        await tx.customerLockbox.updateMany({ where: lockGuard(newLockboxIds), data: { inStorage: false } })
+      if (newBrochureIds.size)
+        await tx.customerBrochureBox.updateMany({ where: lockGuard(newBrochureIds), data: { inStorage: false } })
 
       // Race-safe: invoice-bundle job (admin/invoices) can stamp invoiceId on
       // a pending order at any moment via updateMany({ invoiceId: null }).
@@ -988,28 +932,8 @@ export async function PATCH(
       return order
     }).catch((err) => {
       if (raceLost) return null
-      if (err instanceof HoldConflictError) {
-        holdConflict = err
-        return null
-      }
       throw err
     })
-    if (updatedOrder) await flushAudits(consumeAudits)
-
-    if (!updatedOrder && holdConflict) {
-      const conflict: HoldConflictError = holdConflict
-      await flushAudits(conflict.pendingAudit ? [conflict.pendingAudit] : [])
-      console.warn('[orders/edit] inventory consume refused', {
-        actorId: user.id,
-        orderId: id,
-        code: conflict.code,
-        details: conflict.details,
-      })
-      return NextResponse.json(
-        { error: conflict.message, code: 'inventory_unavailable', conflict: conflict.details },
-        { status: 409 }
-      )
-    }
 
     if (!updatedOrder) {
       // Two ways to get here: the bundler stamped invoiceId mid-edit (the

@@ -7,14 +7,7 @@ const globalForPrisma = globalThis as unknown as {
 }
 
 function createPrismaClient() {
-  const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    // A request that cannot get a connection fails in 10 s instead of queueing
-    // forever. Without this, anything that briefly needs a SECOND connection
-    // while holding one (audit() inside a transaction did, until 2026-09-22)
-    // could wedge the whole pool under load and take every request with it.
-    connectionTimeoutMillis: 10_000,
-  })
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL })
   const adapter = new PrismaPg(pool)
   return new PrismaClient({ adapter })
 }

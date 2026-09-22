@@ -52,10 +52,7 @@ export async function GET(request: NextRequest) {
     // Resolved for the TARGET (whose order this is), not the caller. Skipped
     // entirely on the member_id branch: there the team_admin IS the pool, and
     // the rows are theirs already.
-    // Self-service only: an admin or team_admin loading an agent's picker via
-    // on_behalf_of does NOT get that agent's brokerage pool (it may belong to a
-    // different brokerage). Same rule as allowedInventoryOwnerIds.
-    const pool = memberFilter || targetUserId !== user.id ? null : await resolveBrokeragePool(targetUserId)
+    const pool = memberFilter ? null : await resolveBrokeragePool(targetUserId)
 
     // SIGNS ONLY for now, deliberately.
     //

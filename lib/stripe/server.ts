@@ -6,39 +6,6 @@ let stripeClient: Stripe | null = null
 /**
  * Parse Stripe errors into user-friendly messages
  */
-/**
- * True only when Stripe told us the request FAILED, so no charge can exist:
- * the card was declined, or the request itself was rejected.
- *
- * Everything else -- connection reset, API error, rate limit, idempotency
- * clash, or a non-Stripe throw -- means the request MAY have executed and been
- * captured. Callers must treat those as UNCERTAIN: re-issue with the same
- * idempotency key (Stripe replays a cached result) and, if that is still
- * inconclusive, leave the order alone rather than cancelling a paid one or
- * inviting a retry that charges twice.
- *
- * instanceof, not `err.type`: it is the idiom getStripeErrorMessage already
- * uses, it survives bundling, and it cannot drift from a string literal.
- */
-export function isDefinitelyNotCharged(error: unknown): boolean {
-  return (
-    // The card was refused.
-    error instanceof Stripe.errors.StripeCardError ||
-    // Stripe rejected the request body; it never reached processing.
-    error instanceof Stripe.errors.StripeInvalidRequestError ||
-    // Bad/again-rejected credentials -- refused at the door.
-    error instanceof Stripe.errors.StripeAuthenticationError ||
-    error instanceof Stripe.errors.StripePermissionError ||
-    // Throttled before execution.
-    error instanceof Stripe.errors.StripeRateLimitError ||
-    // "Keys for idempotent requests can only be used with the same
-    // parameters": Stripe refused THIS request outright. The cached result
-    // under that key belongs to a different payload, so nothing was charged
-    // for this one. Treating it as uncertain stranded the order.
-    error instanceof Stripe.errors.StripeIdempotencyError
-  )
-}
-
 export function getStripeErrorMessage(error: unknown): string {
   if (error instanceof Stripe.errors.StripeCardError) {
     // Card-specific errors with decline codes

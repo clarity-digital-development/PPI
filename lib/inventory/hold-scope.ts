@@ -15,7 +15,6 @@
  * indefinitely through the bump endpoint.
  */
 import { prisma } from '@/lib/prisma'
-import type { HoldTx } from '@/lib/inventory-holds'
 
 /**
  * Concurrent holds one user may have on inventory they do not personally own.
@@ -54,23 +53,18 @@ export async function itemOwnerId(
  * Counted by resolving each live hold's row owner: `InventoryHold` stores only
  * (itemType, itemId), so there is no join to lean on.
  */
-export async function foreignHolds(
-  ownerUserId: string,
-  // Pass the transaction client when the count must be serialised with the
-  // insert that follows it (see the hold route's advisory lock).
-  client: HoldTx = prisma
-): Promise<{
+export async function foreignHolds(ownerUserId: string): Promise<{
   count: number
-  byItem: Array<{ holdId: string; itemType: HoldableItemType; itemId: string; ownerId: string; cartItemId: string | null }>
+  byItem: Array<{ holdId: string; itemType: HoldableItemType; itemId: string; ownerId: string }>
 }> {
-  const live = await client.inventoryHold.findMany({
+  const live = await prisma.inventoryHold.findMany({
     where: {
       ownerUserId,
       consumedByOrderId: null,
       releasedAt: null,
       expiresAt: { gt: new Date() },
     },
-    select: { id: true, itemType: true, itemId: true, cartItemId: true },
+    select: { id: true, itemType: true, itemId: true },
   })
   if (live.length === 0) return { count: 0, byItem: [] }
 
@@ -83,7 +77,7 @@ export async function foreignHolds(
 
   const owners = new Map<string, string>()
   for (const t of Array.from(byType.keys())) {
-    const model = (client as unknown as Record<string, {
+    const model = (prisma as unknown as Record<string, {
       findMany(args: unknown): Promise<Array<{ id: string; userId: string }>>
     }>)[MODEL_FOR_ITEM[t]]
     const rows = await model.findMany({
@@ -98,52 +92,10 @@ export async function foreignHolds(
       const t = h.itemType as HoldableItemType
       const ownerId = owners.get(`${t}:${h.itemId}`)
       return ownerId && ownerId !== ownerUserId
-        ? { holdId: h.id, itemType: t, itemId: h.itemId, ownerId, cartItemId: h.cartItemId ?? null }
+        ? { holdId: h.id, itemType: t, itemId: h.itemId, ownerId }
         : null
     })
     .filter((x): x is NonNullable<typeof x> => x !== null)
 
   return { count: byItem.length, byItem }
-}
-
-/**
- * How many rows owned by SOMEBODY ELSE this account currently has out of
- * circulation through LIVE ORDERS (not just cart holds). The hold cap alone
- * only guards the cart endpoint, which a linked agent placing single orders
- * never touches -- so without this, one account could consume the whole
- * brokerage pool one order at a time.
- */
-export async function foreignConsumption(holderUserId: string, client: HoldTx = prisma): Promise<number> {
-  const items = await client.orderItem.findMany({
-    where: {
-      order: {
-        OR: [{ userId: holderUserId }, { placedByUserId: holderUserId }],
-        // COMPLETED orders are excluded: the job is done and the sign has come
-        // back. Counting them made the cap a permanent lockout -- after 40
-        // finished pooled orders the agent could never place another one.
-        status: { notIn: ['cancelled', 'completed'] },
-        paymentStatus: { in: ['succeeded', 'processing', 'pending', 'pending_invoice'] as any },
-      },
-      OR: [
-        { customerSignId: { not: null } },
-        { customerRiderId: { not: null } },
-        { customerLockboxId: { not: null } },
-        { customerBrochureBoxId: { not: null } },
-      ],
-    },
-    select: { customerSignId: true, customerRiderId: true, customerLockboxId: true, customerBrochureBoxId: true },
-  })
-  if (items.length === 0) return 0
-  const ids = (k: 'customerSignId' | 'customerRiderId' | 'customerLockboxId' | 'customerBrochureBoxId') =>
-    Array.from(new Set(items.map((i) => i[k]).filter((x): x is string => !!x)))
-  // inStorage:false as well -- a row that is back in storage is not out of
-  // circulation regardless of what an old order row still references.
-  const out = { inStorage: false }
-  const [signs, riders, lockboxes, boxes] = await Promise.all([
-    client.customerSign.count({ where: { id: { in: ids('customerSignId') }, userId: { not: holderUserId }, ...out } }),
-    client.customerRider.count({ where: { id: { in: ids('customerRiderId') }, userId: { not: holderUserId }, ...out } }),
-    client.customerLockbox.count({ where: { id: { in: ids('customerLockboxId') }, userId: { not: holderUserId }, ...out } }),
-    client.customerBrochureBox.count({ where: { id: { in: ids('customerBrochureBoxId') }, userId: { not: holderUserId }, ...out } }),
-  ])
-  return signs + riders + lockboxes + boxes
 }

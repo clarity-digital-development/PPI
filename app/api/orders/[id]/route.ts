@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { releaseOrderHoldsAndRestoreInventory } from '@/lib/inventory-holds'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { sendInstallationCompleteEmail } from '@/lib/email'
 import { createOrderNotification } from '@/lib/notifications'
@@ -131,23 +130,6 @@ export async function PUT(
       }
     }
 
-    // Cancelling from the admin status control must hand the inventory back.
-    // Every other cancel path (refund, admin cancel route, customer cancel,
-    // payment_failed webhook) already does; this one simply flipped the
-    // status and left the signs out of storage forever.
-    if (status === 'cancelled') {
-      try {
-        await releaseOrderHoldsAndRestoreInventory(
-          order.id,
-          'admin_status_cancelled',
-          { id: user.id, email: user.email, role: user.role },
-          request
-        )
-      } catch (restoreErr) {
-        console.error(`Order ${order.orderNumber}: cancelled but inventory restore failed`, restoreErr)
-      }
-    }
-
     // If order is completed, charge customer and create installation record
     if (status === 'completed') {
       // Invoice-billing customers are NEVER auto-charged on completion.
@@ -166,14 +148,6 @@ export async function PUT(
         console.log(
           `Order ${order.orderNumber}: skipping auto-charge — user.invoiceBilling=true. ` +
           `Order will be bundled onto the next invoice (paymentStatus stays as 'pending_invoice').`
-        )
-      } else if (order.paymentStatus === 'processing') {
-        // A PaymentIntent is in flight for this order (the checkout could not
-        // confirm the outcome, or 3DS is pending). Charging here would bill the
-        // customer a second time for the same order; the Stripe webhook settles
-        // it either way.
-        console.log(
-          `Order ${order.orderNumber}: skipping auto-charge -- paymentStatus='processing' (a PaymentIntent is already in flight; the webhook will settle it).`
         )
       } else if (order.paymentStatus !== 'succeeded') {
         try {

@@ -2,14 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { HoldItemType } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser, canActOnBehalfOf, isAdminOrTeamAdmin } from '@/lib/auth-utils'
-import { acquireHold, releaseHolds, flushAudits, HoldConflictError } from '@/lib/inventory-holds'
+import { acquireHold, releaseHolds, HoldConflictError } from '@/lib/inventory-holds'
 import { allowedInventoryOwnerIds } from '@/lib/orders/inventory-ownership'
 import { itemOwnerId, foreignHolds, FOREIGN_HOLD_CAP } from '@/lib/inventory/hold-scope'
 
 const VALID_ITEM_TYPES: readonly HoldItemType[] = ['sign', 'rider', 'lockbox'] as const
-
-/** Thrown inside the hold transaction when the shared-inventory cap is hit. */
-class ForeignHoldCapExceeded extends Error {}
 
 function isValidItemType(v: unknown): v is HoldItemType {
   return typeof v === 'string' && (VALID_ITEM_TYPES as readonly string[]).includes(v)
@@ -97,49 +94,9 @@ export async function POST(request: NextRequest) {
     // 317 times over. Bound how much shared inventory one account can take out
     // of circulation at once. Only evaluated when the row is somebody else's,
     // so ordinary agents holding their own items never pay for this.
-    //
-    // The count and the insert run under ONE per-owner advisory lock inside
-    // one transaction. As a plain read-then-insert the cap was a TOCTOU: a
-    // scripted burst of parallel POSTs all read count < 40 before any
-    // sibling committed, and one account held the whole pool anyway.
-    const isForeign = ownerOfItem !== ownerUserId
-
-    try {
-      const result = await prisma.$transaction(
-        async (tx) => {
-          if (isForeign) {
-            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'foreign-holds:' + ownerUserId}))`
-            const { count } = await foreignHolds(ownerUserId, tx)
-            if (count >= FOREIGN_HOLD_CAP) throw new ForeignHoldCapExceeded()
-          }
-          return acquireHold(
-            {
-              itemType,
-              itemId,
-              ownerUserId,
-              actorUserId: user.id,
-              onBehalfOfUserId,
-              cartSessionId,
-              cartItemId,
-              assignedToMemberIdSnapshot,
-            },
-            { tx, request }
-          )
-        },
-        { timeout: 10_000 }
-      )
-      // Written only now: inside the transaction (and its advisory lock) an
-      // audit needs a SECOND pool connection, and ten concurrent hold requests
-      // each holding one while waiting for another wedged the pool.
-      await flushAudits(result.pendingAudit ? [result.pendingAudit] : [])
-      return NextResponse.json({
-        hold_id: result.holdId,
-        expires_at: result.expiresAt,
-        item_type: itemType,
-        item_id: itemId,
-      })
-    } catch (err) {
-      if (err instanceof ForeignHoldCapExceeded) {
+    if (ownerOfItem !== ownerUserId) {
+      const { count } = await foreignHolds(ownerUserId)
+      if (count >= FOREIGN_HOLD_CAP) {
         return NextResponse.json(
           {
             error:
@@ -149,6 +106,29 @@ export async function POST(request: NextRequest) {
           { status: 429 }
         )
       }
+    }
+
+    try {
+      const result = await acquireHold(
+        {
+          itemType,
+          itemId,
+          ownerUserId,
+          actorUserId: user.id,
+          onBehalfOfUserId,
+          cartSessionId,
+          cartItemId,
+          assignedToMemberIdSnapshot,
+        },
+        { request }
+      )
+      return NextResponse.json({
+        hold_id: result.holdId,
+        expires_at: result.expiresAt,
+        item_type: itemType,
+        item_id: itemId,
+      })
+    } catch (err) {
       if (err instanceof HoldConflictError) {
         // Holder identity must not leak across teams. Only return full
         // details when the requester can see the holder's scope.

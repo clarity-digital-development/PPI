@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useMemo, useState, useEffect } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { Minus, Plus, MapPin, Sun, ChevronDown, ChevronUp, Package } from 'lucide-react'
 import { Select } from '@/components/ui'
 import { cn } from '@/lib/utils'
@@ -138,31 +138,13 @@ export function SecondPostStep({ formData, updateFormData, inventory }: StepProp
         sign.source === 'brokerage'
           ? `${base} — ${sign.source_label || 'Brokerage'}`
           : sign.source === 'on-order'
-            ? `${base} — currently on this order${sign.on_order_post === 'second' ? ' (second post)' : sign.on_order_post === 'main' ? ' (main post)' : ''}`
+            ? `${base} — currently on this order`
             : base
-      // on-order rows keyed by exact id: the main and second post signs can
-      // share a description and must stay two options (see sign-step.tsx).
-      const key = sign.source === 'on-order' ? `${base}::on-order::${sign.id}` : `${base}::${sign.source ?? 'own'}`
+      const key = `${base}::${sign.source ?? 'own'}`
       if (!grouped[key]) grouped[key] = { id: sign.id, label }
     }
     return Object.values(grouped).map(g => ({ value: g.id, label: g.label }))
   }, [hasStoredSigns, inventory])
-
-  // Same guard as sign-step: never let a stored id that no option carries
-  // sit behind a <select> that visually shows something else.
-  useEffect(() => {
-    // Gated on the list having LOADED, not on it being non-empty -- a refetch
-    // that returns zero signs must clear the id too.
-    if (
-      inventory !== undefined &&
-      formData.second_post_sign_option === 'stored' &&
-      formData.second_post_stored_sign_id &&
-      !signOptions.some((o) => o.value === formData.second_post_stored_sign_id)
-    ) {
-      updateFormData({ second_post_stored_sign_id: undefined })
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inventory, formData.second_post_sign_option, formData.second_post_stored_sign_id, signOptions])
 
   const ridersCount = formData.second_post_riders.length
   const wireFrameCount = formData.second_post_wire_frame_quantity
@@ -283,11 +265,6 @@ export function SecondPostStep({ formData, updateFormData, inventory }: StepProp
                     onChange={(e) => updateFormData({ second_post_stored_sign_id: e.target.value })}
                     options={signOptions}
                   />
-                {!formData.second_post_stored_sign_id && (
-                  <p className="mt-2 text-xs text-amber-700">
-                    Please pick which sign you want installed on the second post before continuing.
-                  </p>
-                )}
                 </div>
               )}
             </div>

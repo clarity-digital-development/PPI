@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import { Header } from '@/components/dashboard'
@@ -30,29 +30,6 @@ export default function EditOrderPage() {
   // without this, flat-fee broker self-edits show a per-item recomputed total
   // and a phantom $50 OOA line. Server still clamps correctly on save either way.
   const [flatFee, setFlatFee] = useState(false)
-
-  // Kept so a mid-edit inventory refresh (after the server refuses a row as
-  // no longer available) re-runs exactly the initial load's query and merge.
-  const inventoryUrlRef = useRef<string>('/api/inventory')
-  const orderRef = useRef<OrderLike | null>(null)
-  const refetchInventory = useCallback(async () => {
-    try {
-      const res = await fetch(inventoryUrlRef.current)
-      // Only replace the list on a REAL response. A failed refresh used to
-      // hand `undefined` to augmentInventoryWithOrder, which produced an empty
-      // inventory -- and the wizard's "clear a stored id that no option
-      // carries" guard then wiped the agent's picks and hid their whole
-      // storage list behind a transient network error.
-      if (!res.ok) {
-        console.error('Inventory refresh failed:', res.status)
-        return
-      }
-      const raw = (await res.json()) as WizardInventory
-      if (orderRef.current) setInventory(augmentInventoryWithOrder(raw, orderRef.current))
-    } catch (err) {
-      console.error('Error refreshing inventory:', err)
-    }
-  }, [])
 
   useEffect(() => {
     async function fetchData() {
@@ -111,8 +88,6 @@ export default function EditOrderPage() {
         const inventoryUrl = memberIdScope
           ? `/api/inventory?member_id=${encodeURIComponent(memberIdScope)}`
           : '/api/inventory'
-        inventoryUrlRef.current = inventoryUrl
-        orderRef.current = order
         const inventoryRes = await fetch(inventoryUrl)
         const rawInventory: WizardInventory | undefined = inventoryRes.ok
           ? await inventoryRes.json()
@@ -205,7 +180,6 @@ export default function EditOrderPage() {
           orderId={orderId}
           initialFormData={formData}
           inventory={inventory}
-          onInventoryStale={refetchInventory}
           editMeta={editMeta ?? undefined}
           lockboxInstallFee={freeLockboxInstall ? 0 : undefined}
           flatFee={flatFee}
