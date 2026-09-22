@@ -22,8 +22,20 @@ let stripeClient: Stripe | null = null
  */
 export function isDefinitelyNotCharged(error: unknown): boolean {
   return (
+    // The card was refused.
     error instanceof Stripe.errors.StripeCardError ||
-    error instanceof Stripe.errors.StripeInvalidRequestError
+    // Stripe rejected the request body; it never reached processing.
+    error instanceof Stripe.errors.StripeInvalidRequestError ||
+    // Bad/again-rejected credentials -- refused at the door.
+    error instanceof Stripe.errors.StripeAuthenticationError ||
+    error instanceof Stripe.errors.StripePermissionError ||
+    // Throttled before execution.
+    error instanceof Stripe.errors.StripeRateLimitError ||
+    // "Keys for idempotent requests can only be used with the same
+    // parameters": Stripe refused THIS request outright. The cached result
+    // under that key belongs to a different payload, so nothing was charged
+    // for this one. Treating it as uncertain stranded the order.
+    error instanceof Stripe.errors.StripeIdempotencyError
   )
 }
 

@@ -815,12 +815,15 @@ export async function PATCH(
           ...idsToRestore.lockboxes.map((id) => ({ type: 'lockbox' as const, id })),
           ...idsToRestore.brochureBoxes.map((id) => ({ type: 'brochure_box' as const, id })),
         ],
-        id,
-        // direct: these rows were flipped BY THIS ORDER; put them straight
-        // back. The "another live order references it" rule is for the
-        // asynchronous refund path -- here it wrongly refused every sign that
-        // had ever been on a completed install, stranding it on a plain edit.
-        { direct: true }
+        id
+        // SAFE restore, not direct. These rows were flipped by whichever order
+        // originally consumed them, not by this request, so "is anything else
+        // live still using it?" is the right question -- 37 rows sit on more
+        // than one live order today and a direct restore would hand one of
+        // them back to the pool while another order still had it. (Direct is
+        // only for undoing a flip made in this same request.) The stranding
+        // this used to cause is fixed in restoreIfSafe instead: a completed
+        // order no longer counts as live unless its install is still up.
       )
 
       // Lock inventory referenced by the NEW order, in two classes.

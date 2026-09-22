@@ -118,7 +118,10 @@ export async function foreignConsumption(holderUserId: string, client: HoldTx = 
     where: {
       order: {
         OR: [{ userId: holderUserId }, { placedByUserId: holderUserId }],
-        status: { not: 'cancelled' },
+        // COMPLETED orders are excluded: the job is done and the sign has come
+        // back. Counting them made the cap a permanent lockout -- after 40
+        // finished pooled orders the agent could never place another one.
+        status: { notIn: ['cancelled', 'completed'] },
         paymentStatus: { in: ['succeeded', 'processing', 'pending', 'pending_invoice'] as any },
       },
       OR: [
@@ -133,11 +136,14 @@ export async function foreignConsumption(holderUserId: string, client: HoldTx = 
   if (items.length === 0) return 0
   const ids = (k: 'customerSignId' | 'customerRiderId' | 'customerLockboxId' | 'customerBrochureBoxId') =>
     Array.from(new Set(items.map((i) => i[k]).filter((x): x is string => !!x)))
+  // inStorage:false as well -- a row that is back in storage is not out of
+  // circulation regardless of what an old order row still references.
+  const out = { inStorage: false }
   const [signs, riders, lockboxes, boxes] = await Promise.all([
-    client.customerSign.count({ where: { id: { in: ids('customerSignId') }, userId: { not: holderUserId } } }),
-    client.customerRider.count({ where: { id: { in: ids('customerRiderId') }, userId: { not: holderUserId } } }),
-    client.customerLockbox.count({ where: { id: { in: ids('customerLockboxId') }, userId: { not: holderUserId } } }),
-    client.customerBrochureBox.count({ where: { id: { in: ids('customerBrochureBoxId') }, userId: { not: holderUserId } } }),
+    client.customerSign.count({ where: { id: { in: ids('customerSignId') }, userId: { not: holderUserId }, ...out } }),
+    client.customerRider.count({ where: { id: { in: ids('customerRiderId') }, userId: { not: holderUserId }, ...out } }),
+    client.customerLockbox.count({ where: { id: { in: ids('customerLockboxId') }, userId: { not: holderUserId }, ...out } }),
+    client.customerBrochureBox.count({ where: { id: { in: ids('customerBrochureBoxId') }, userId: { not: holderUserId }, ...out } }),
   ])
   return signs + riders + lockboxes + boxes
 }

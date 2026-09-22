@@ -167,6 +167,14 @@ export async function PUT(
           `Order ${order.orderNumber}: skipping auto-charge — user.invoiceBilling=true. ` +
           `Order will be bundled onto the next invoice (paymentStatus stays as 'pending_invoice').`
         )
+      } else if (order.paymentStatus === 'processing') {
+        // A PaymentIntent is in flight for this order (the checkout could not
+        // confirm the outcome, or 3DS is pending). Charging here would bill the
+        // customer a second time for the same order; the Stripe webhook settles
+        // it either way.
+        console.log(
+          `Order ${order.orderNumber}: skipping auto-charge -- paymentStatus='processing' (a PaymentIntent is already in flight; the webhook will settle it).`
+        )
       } else if (order.paymentStatus !== 'succeeded') {
         try {
           // Get customer's default payment method

@@ -159,9 +159,43 @@ export async function POST(request: NextRequest) {
 
         // Find ALL orders for this payment intent — a single PI may back
         // a batch of orders placed via /api/orders/batch
-        const existingOrders = await prisma.order.findMany({
+        let existingOrders = await prisma.order.findMany({
           where: { paymentIntentId: paymentIntent.id },
         })
+
+        // Fallback: the order route stamps paymentIntentId AFTER Stripe
+        // answers, so a lost response or a crashed pod leaves a real charge
+        // whose order has no PI id. Every checkout PI carries metadata.orderId
+        // for exactly this -- without it such an order never settles and this
+        // endpoint 500s on the same event for 24h.
+        if (existingOrders.length === 0 && paymentIntent.metadata?.orderId) {
+          const byMeta = await prisma.order.findMany({ where: { id: paymentIntent.metadata.orderId } })
+          if (byMeta.length > 0) {
+            console.warn(
+              `Webhook: PI ${paymentIntent.id} had no order by paymentIntentId; recovered order ${byMeta[0].orderNumber} from metadata and stamping it now`
+            )
+            await prisma.order.updateMany({
+              where: { id: byMeta[0].id, paymentIntentId: null },
+              data: { paymentIntentId: paymentIntent.id },
+            })
+            existingOrders = await prisma.order.findMany({ where: { paymentIntentId: paymentIntent.id } })
+          }
+        }
+        // Same for a batch: metadata.orderIds is a comma-separated list.
+        if (existingOrders.length === 0 && paymentIntent.metadata?.orderIds) {
+          const ids = String(paymentIntent.metadata.orderIds).split(',').map((x) => x.trim()).filter(Boolean)
+          if (ids.length > 0) {
+            const found = await prisma.order.findMany({ where: { id: { in: ids } }, select: { id: true, orderNumber: true } })
+            if (found.length > 0) {
+              console.warn(`Webhook: PI ${paymentIntent.id} recovered ${found.length} batch order(s) from metadata`)
+              await prisma.order.updateMany({
+                where: { id: { in: found.map((f) => f.id) }, paymentIntentId: null },
+                data: { paymentIntentId: paymentIntent.id },
+              })
+              existingOrders = await prisma.order.findMany({ where: { paymentIntentId: paymentIntent.id } })
+            }
+          }
+        }
 
         if (existingOrders.length === 0) {
           // Race: the orders/batch route stamps paymentIntentId AFTER creating

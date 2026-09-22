@@ -283,6 +283,11 @@ export function SecondPostStep({ formData, updateFormData, inventory }: StepProp
                     onChange={(e) => updateFormData({ second_post_stored_sign_id: e.target.value })}
                     options={signOptions}
                   />
+                {!formData.second_post_stored_sign_id && (
+                  <p className="mt-2 text-xs text-amber-700">
+                    Please pick which sign you want installed on the second post before continuing.
+                  </p>
+                )}
                 </div>
               )}
             </div>

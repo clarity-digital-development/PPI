@@ -578,12 +578,14 @@ export async function POST(request: NextRequest) {
           // on any race — the surrounding tx rolls back and the catch below
           // cancels the PaymentIntent.
           if (c.claims.length > 0) {
-            await claimHoldsInTx(
-              tx,
-              c.claims,
-              order.id,
-              { id: actor.id, email: actor.email, role: actor.role },
-              request
+            consumeAudits.push(
+              ...(await claimHoldsInTx(
+                tx,
+                c.claims,
+                order.id,
+                { id: actor.id, email: actor.email, role: actor.role },
+                request
+              ))
             )
           }
 
@@ -825,9 +827,15 @@ export async function POST(request: NextRequest) {
     // already prevents double-orders at the DB level; this is belt-and-
     // suspenders for the rarer "client retried, server already responded"
     // case.)
+    // Keyed on the orders this attempt just created, NOT on cartSessionId.
+    // That id lives in localStorage and is never rotated, so two unrelated
+    // carts with the same grand total reused one key -- and because
+    // metadata.orderIds differs per attempt, Stripe refused the second as an
+    // idempotency error. Deriving the key from the same ids the payload
+    // carries makes the two agree by construction.
     const idemKey = crypto
       .createHash('sha256')
-      .update(`${actor.id}|${cartSessionId ?? createdOrders.map((o) => o.id).sort().join(',')}|${grandTotal.toFixed(2)}`)
+      .update(`${actor.id}|${createdOrders.map((o) => o.id).sort().join(',')}|${grandTotal.toFixed(2)}`)
       .digest('hex')
       .slice(0, 64)
 

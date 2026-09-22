@@ -422,8 +422,12 @@ export async function claimHoldsInTx(
   orderId: string,
   actor: AuditActor,
   request?: NextRequest | Request | null
-): Promise<void> {
-  if (killed() || holds.length === 0) return
+): Promise<PendingAudit[]> {
+  if (killed() || holds.length === 0) return []
+  // Audits are RETURNED, not written here: audit() opens a second pool
+  // connection, and holding one connection while waiting for another inside a
+  // checkout transaction is how a burst of concurrent carts wedged the pool.
+  const pending: PendingAudit[] = []
 
   for (const h of holds) {
     const count = await claimOne(tx, h)
@@ -442,21 +446,21 @@ export async function claimHoldsInTx(
         code = 'already_assigned'
         message = 'This item is no longer in storage.'
       }
-      // Audit the conflict BEFORE throwing so the row is captured even if
-      // the parent tx rolls back. (audit() opens its own connection.)
-      await audit({
+      const err = new HoldConflictError(code, message, {
+        itemType: h.itemType,
+        itemId: h.itemId,
+        holdId: h.holdId,
+      })
+      // Carried on the error and written by the caller after rollback.
+      err.pendingAudit = {
         actor,
         action: AuditAction.InventoryHoldConflict,
         targetType: 'inventory_hold',
         targetId: h.holdId,
         metadata: { itemType: h.itemType, itemId: h.itemId, orderId, code },
         request,
-      })
-      throw new HoldConflictError(code, message, {
-        itemType: h.itemType,
-        itemId: h.itemId,
-        holdId: h.holdId,
-      })
+      }
+      throw err
     }
     // Mark the hold consumed.
     await tx.inventoryHold.update({
@@ -465,9 +469,9 @@ export async function claimHoldsInTx(
     })
   }
 
-  // Audit consumed-success in a single row per order so we don't quadruple
-  // the log volume on multi-item orders.
-  await audit({
+  // One row per order rather than one per item, so a multi-item order does not
+  // quadruple the log volume.
+  pending.push({
     actor,
     action: AuditAction.InventoryHoldConsumed,
     targetType: 'order',
@@ -475,6 +479,7 @@ export async function claimHoldsInTx(
     metadata: { holdIds: holds.map((h) => h.holdId), count: holds.length },
     request,
   })
+  return pending
 }
 
 export interface SweepResult {
@@ -713,37 +718,38 @@ export async function consumeInventoryInTx(
   const consumedHoldIds: string[] = []
   const audits: PendingAudit[] = []
   const primaryHolder = args.holderUserIds[0]
-  let poolCapChecked = false
+
+  // Aggregate bound on SHARED inventory, mirroring the cart's hold cap -- the
+  // hold cap only guards the cart endpoint, which a linked agent placing single
+  // orders never calls, so without this one account could take the whole
+  // brokerage pool one order at a time.
+  //
+  // Resolved BEFORE any row is touched: the advisory lock must be taken ahead
+  // of every row lock, because the holds route takes the same lock first. The
+  // opposite order between the two paths is a deadlock.
+  if (args.allowedOwnerIds && primaryHolder && refs.length > 0) {
+    const owners = await Promise.all(refs.map((r) => rowOwner(tx, r)))
+    const foreignRef = refs.find((r, i) => owners[i] && !args.holderUserIds.includes(owners[i] as string))
+    if (foreignRef) {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'foreign-holds:' + primaryHolder}))`
+      const [consumed, { count: held }] = await Promise.all([
+        foreignConsumption(primaryHolder, tx),
+        foreignHolds(primaryHolder, tx),
+      ])
+      if (consumed + held >= FOREIGN_HOLD_CAP) {
+        const err = new HoldConflictError(
+          'pool_limit',
+          'You have too many shared items out at once. Finish or cancel an order before taking more from the brokerage inventory.',
+          { itemType: foreignRef.type, itemId: foreignRef.id, holdId: null }
+        )
+        err.pendingAudit = conflictAudit(args, foreignRef, 'pool_limit', null)
+        throw err
+      }
+    }
+  }
 
   for (const ref of refs) {
     const now = new Date()
-
-    // Aggregate bound on SHARED inventory, mirroring the cart's hold cap.
-    // The hold cap only guards the cart endpoint, which a linked agent placing
-    // single orders never calls -- so without this one account could take
-    // the whole brokerage pool one order at a time. Only evaluated for rows
-    // the holder does not own, once per call, under the same per-owner
-    // advisory lock the hold route uses so parallel checkouts serialise.
-    if (args.allowedOwnerIds && !poolCapChecked && primaryHolder) {
-      const owner = await rowOwner(tx, ref)
-      if (owner && !args.holderUserIds.includes(owner)) {
-        poolCapChecked = true
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'foreign-holds:' + primaryHolder}))`
-        const [consumed, { count: held }] = await Promise.all([
-          foreignConsumption(primaryHolder, tx),
-          foreignHolds(primaryHolder, tx),
-        ])
-        if (consumed + held >= FOREIGN_HOLD_CAP) {
-          const err = new HoldConflictError(
-            'pool_limit',
-            'You have too many shared items out at once. Finish or cancel an order before taking more from the brokerage inventory.',
-            { itemType: ref.type, itemId: ref.id, holdId: null }
-          )
-          err.pendingAudit = conflictAudit(args, ref, 'pool_limit', null)
-          throw err
-        }
-      }
-    }
 
     if (ref.type === 'brochure_box') {
       const r = await tx.customerBrochureBox.updateMany({
@@ -1260,14 +1266,22 @@ async function restoreIfSafe(
       order: {
         // pending_invoice is a LIVE order (invoice-billed, not yet collected)
         // and must block a restore just like a paid one. A cancelled sibling
-        // must never block (refundOrder leaves paymentStatus 'succeeded' until
-        // the charge.refunded webhook lands). Nor must a COMPLETED one: the
-        // sign was physically installed, later returned to storage by an
-        // admin, and re-ordered -- the completed order's item row still
-        // references it forever. 75 of the signs in storage today have that
-        // history; treating them as live stranded every one on a refund.
+        // never blocks (refundOrder leaves paymentStatus 'succeeded' until the
+        // charge.refunded webhook lands).
+        //
+        // A COMPLETED order blocks only while its installation is still in the
+        // ground. 75 of the signs in storage today were once on a completed
+        // order and later returned by an admin; treating those as live
+        // stranded every one of them on a refund. But a completed order whose
+        // sign is STILL installed must keep it -- otherwise a refund of some
+        // other order sharing that id would put a planted sign back in the
+        // pool for someone else to take.
         paymentStatus: { in: ['succeeded', 'processing', 'pending', 'pending_invoice'] },
-        status: { notIn: ['cancelled', 'completed'] },
+        status: { not: 'cancelled' },
+        OR: [
+          { status: { not: 'completed' } },
+          { installation: { is: { status: { in: ['active', 'removal_scheduled'] } } } },
+        ],
       },
     },
     select: { id: true, orderId: true },

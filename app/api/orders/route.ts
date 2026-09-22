@@ -691,20 +691,23 @@ export async function POST(request: NextRequest) {
     // ---- PaymentIntent: only now that the order and its inventory are
     // committed. Mirrors the cart route's tx-first ordering.
     if (!isInvoiceBilling && total > 0) {
-      // Keyed on the wizard's per-attempt token when it sends one, so a
-      // resubmit after a lost response replays Stripe's existing PI instead of
-      // capturing twice. Falls back to the order id (no retry protection --
-      // the row is fresh per request) for callers that do not send it.
-      const attemptToken = orderData.client_submission_id || order.id
+      // Keyed on THIS order. Stripe's contract is key <-> payload: reuse a key
+      // with a different body and it refuses the request outright. An earlier
+      // cut tried to span attempts with one key while metadata.orderId changed
+      // every attempt, so "card declined -> try another card" came back as an
+      // idempotency error and stranded the order. The key is derived from the
+      // same inputs as the payload, so it can never collide, and it protects
+      // the case that matters here: this route retrying ITSELF below.
       const idempotencyKey = crypto
         .createHash('sha256')
-        .update(`${actor.id}|${attemptToken}|${total.toFixed(2)}`)
+        .update(`${actor.id}|${order.id}|${total.toFixed(2)}|${orderData.payment_method_id ?? ''}`)
         .digest('hex')
         .slice(0, 64)
       const piOpts = {
         idempotencyKey,
-        // So a charge can always be traced back to its order from the Stripe
-        // dashboard or a webhook payload, even if the stamp below fails.
+        // The reconciliation breadcrumb. If the stamp below never happens --
+        // lost response, crashed pod -- the webhook still finds this order
+        // from the PI itself (see app/api/webhooks/stripe/route.ts).
         metadata: { orderId: order.id, orderNumber: order.orderNumber, kind: 'order' },
       }
       const actorAudit = { id: actor.id, email: actor.email, role: actor.role }
@@ -712,6 +715,9 @@ export async function POST(request: NextRequest) {
       const createPI = () =>
         createPaymentIntent(total, stripeCustomerId ?? undefined, orderData.payment_method_id, piOpts)
 
+      // Set when a retry comes back with a definitive refusal, so the decline
+      // path below reports THAT error rather than the inconclusive first one.
+      let definiteError: unknown = null
       try {
         paymentIntent = await createPI()
       } catch (firstError) {
@@ -719,12 +725,18 @@ export async function POST(request: NextRequest) {
         const definitelyNotCharged = isDefinitelyNotCharged(firstError)
 
         if (!definitelyNotCharged) {
-          // Connection reset, API error, rate limit, idempotency clash: the
-          // request MAY have executed. Re-issue once with the same key -- Stripe
-          // replays the cached result if it did.
+          // Connection reset or API error: the request MAY have executed.
+          // Re-issue once with the same key -- Stripe replays the cached
+          // result if it did.
           try {
             paymentIntent = await createPI()
           } catch (secondError) {
+            // Classify the SECOND error too. A definite refusal here (the card
+            // declined on the replay) means no charge exists, so fall through
+            // to the decline path rather than stranding the order.
+            if (isDefinitelyNotCharged(secondError)) {
+              definiteError = secondError
+            } else {
             console.error('Payment intent creation uncertain after retry:', secondError)
             try {
               await audit({
@@ -738,14 +750,22 @@ export async function POST(request: NextRequest) {
                   idempotencyKey,
                   payment_method_id: orderData.payment_method_id ?? null,
                   stripe_type: secondError instanceof Error ? secondError.constructor.name : typeof secondError,
-                  stripe_message: getStripeErrorMessage(secondError) ?? (secondError instanceof Error ? secondError.message : String(secondError)),
+                  // `||`, not `??`: getStripeErrorMessage returns '' for a
+                  // non-Stripe throw, which `??` would keep.
+                  stripe_message: getStripeErrorMessage(secondError) || (secondError instanceof Error ? secondError.message : String(secondError)),
                 },
                 request,
               })
             } catch {}
             // Deliberately NOT cancelled and NOT restored: a charge may exist.
-            // The order stays pending (visible in admin as unpaid) with its
-            // inventory held, and the customer is told not to resubmit.
+            // Marked 'processing' rather than left 'pending' -- that is the
+            // "a PaymentIntent is in flight" state the webhook settles and the
+            // admin Complete button refuses to charge over, so nobody bills
+            // this customer a second time by hand. If the charge did happen,
+            // the PI carries metadata.orderId and the webhook finds this row.
+            await prisma.order
+              .update({ where: { id: order.id }, data: { paymentStatus: 'processing' }, select: { id: true } })
+              .catch((markErr) => console.error(`[orders] could not mark ${order.orderNumber} processing`, markErr))
             return NextResponse.json(
               {
                 error:
@@ -755,13 +775,15 @@ export async function POST(request: NextRequest) {
               },
               { status: 502 }
             )
+            }
           }
         }
 
         if (!paymentIntent) {
           // Declined / rejected: nothing was charged, so nothing stays reserved.
-          console.error('Payment intent creation failed:', firstError)
-          const friendlyMessage = getStripeErrorMessage(firstError)
+          const declineError = definiteError ?? firstError
+          console.error('Payment intent creation failed:', declineError)
+          const friendlyMessage = getStripeErrorMessage(declineError)
           try {
             await audit({
               actor: actorAudit,
@@ -772,7 +794,7 @@ export async function POST(request: NextRequest) {
                 stage: 'single_pi_declined',
                 total,
                 payment_method_id: orderData.payment_method_id ?? null,
-                stripe_message: friendlyMessage ?? (firstError instanceof Error ? firstError.message : String(firstError)),
+                stripe_message: friendlyMessage || (declineError instanceof Error ? declineError.message : String(declineError)),
               },
               request,
             })

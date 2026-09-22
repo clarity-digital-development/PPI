@@ -53,7 +53,16 @@ export default function AdminEditOrderPage() {
   const refetchInventory = useCallback(async () => {
     try {
       const res = await fetch(inventoryUrlRef.current)
-      const raw: WizardInventory | undefined = res.ok ? await res.json() : undefined
+      // Only replace the list on a REAL response. A failed refresh used to
+      // hand `undefined` to augmentInventoryWithOrder, which produced an empty
+      // inventory -- and the wizard's "clear a stored id that no option
+      // carries" guard then wiped the agent's picks and hid their whole
+      // storage list behind a transient network error.
+      if (!res.ok) {
+        console.error('Inventory refresh failed:', res.status)
+        return
+      }
+      const raw = (await res.json()) as WizardInventory
       if (orderRef.current) setInventory(augmentInventoryWithOrder(raw, orderRef.current))
     } catch (err) {
       console.error('Error refreshing inventory:', err)

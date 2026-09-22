@@ -59,11 +59,9 @@ export function ReviewStep({
   const cartEnabled = (isTeamAdmin || !!onBehalfOf) && !isEdit
   const router = useRouter()
   const [error, setError] = useState<string | null>(null)
-  // One id per checkout attempt. Regenerated only after a payment-uncertain
-  // response, so an immediate retry after a lost response reuses it.
-  const submissionIdRef = useRef<string>(
-    typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`
-  )
+  // Latched when the server could not tell us whether the card was charged.
+  // Keeps the submit button disabled for the life of this page.
+  const [paymentUncertain, setPaymentUncertain] = useState(false)
   const [promoCodeInput, setPromoCodeInput] = useState(formData.promo_code || '')
   const [promoCodeError, setPromoCodeError] = useState<string | null>(null)
   const [promoCodeSuccess, setPromoCodeSuccess] = useState<string | null>(
@@ -677,6 +675,18 @@ export function ReviewStep({
     // Cart re-edit also allows free step jumps — same guard as handleSaveEdit.
     if (formData.street_numbers_visible === undefined) {
       setError('Please answer "Are the street numbers visible?" on the Property Info step.')
+      return
+    }
+    // Same no-id guards as the other two submit paths. Without them a sign id
+    // cleared by the stale-id effect becomes a priced "(from storage)" line
+    // with nothing behind it: no hold is taken and no physical sign is
+    // reserved, but the cart row still charges for the install.
+    if (formData.sign_option === 'stored' && !formData.stored_sign_id) {
+      setError('Please go back to the Sign step and pick which sign you want installed.')
+      return
+    }
+    if (formData.second_post_enabled && formData.second_post_sign_option === 'stored' && !formData.second_post_stored_sign_id) {
+      setError('Please go back to the Second Post step and pick which sign you want installed.')
       return
     }
     // The cart splits the out-of-area fee too now, so the agreement is captured
@@ -1361,10 +1371,6 @@ export function ReviewStep({
           requested_date: formData.requested_date,
           is_expedited: formData.schedule_type === 'expedited',
           payment_method_id: formData.payment_method_id || defaultPaymentMethod?.id,
-          // Same token on a retry of THIS attempt, so the server's PaymentIntent
-          // idempotency key replays Stripe's cached PI instead of charging twice
-          // when the first response was lost.
-          client_submission_id: submissionIdRef.current,
           save_payment_method: formData.save_payment_method,
           promo_code: formData.promo_code,
           promo_code_id: formData.promo_code_id,
@@ -1391,10 +1397,14 @@ export function ReviewStep({
           )
         }
         if (data.code === 'payment_uncertain') {
-          // Do NOT let the customer retry: a charge may exist. New token so a
-          // later, deliberate new order is never confused with this attempt.
-          submissionIdRef.current = `${Date.now()}-${Math.random()}`
-          throw new Error(data.error)
+          // A charge may exist. Show the message and leave the button DISABLED
+          // (setIsSubmitting stays true, and the finally below skips the
+          // reset) so the next click cannot mint a second PaymentIntent for a
+          // second order row. Recovering means reloading the page, by which
+          // time the webhook has usually settled the first one.
+          setError(data.error)
+          setPaymentUncertain(true)
+          return
         }
         throw new Error(data.error || 'Failed to create order')
       }
@@ -1902,6 +1912,11 @@ export function ReviewStep({
           onClick={handleSubmit}
           disabled={
             isSubmitting ||
+            // Latched: the server could not tell us whether the card was
+            // charged. A second click would mint a second PaymentIntent for a
+            // second order row, so the only way forward is a reload -- by
+            // which time the webhook has usually settled the first attempt.
+            paymentUncertain ||
             loadingServiceAreaQuote ||
             (!activePaymentMethods?.length && !formData.payment_method_id) ||
             serviceAreaQuote?.tier === 'out_of_area' ||
@@ -1909,7 +1924,9 @@ export function ReviewStep({
             blockedOnQuoteFailure
           }
         >
-          {isSubmitting ? 'Processing...' : loadingServiceAreaQuote ? 'Checking address…' : `Place Order — $${displayTotal.toFixed(2)}`}
+          {paymentUncertain
+            ? 'Checking your payment…'
+            : isSubmitting ? 'Processing...' : loadingServiceAreaQuote ? 'Checking address…' : `Place Order — $${displayTotal.toFixed(2)}`}
         </Button>
       )}
 
