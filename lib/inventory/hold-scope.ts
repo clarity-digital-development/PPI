@@ -15,6 +15,7 @@
  * indefinitely through the bump endpoint.
  */
 import { prisma } from '@/lib/prisma'
+import type { HoldTx } from '@/lib/inventory-holds'
 
 /**
  * Concurrent holds one user may have on inventory they do not personally own.
@@ -53,18 +54,23 @@ export async function itemOwnerId(
  * Counted by resolving each live hold's row owner: `InventoryHold` stores only
  * (itemType, itemId), so there is no join to lean on.
  */
-export async function foreignHolds(ownerUserId: string): Promise<{
+export async function foreignHolds(
+  ownerUserId: string,
+  // Pass the transaction client when the count must be serialised with the
+  // insert that follows it (see the hold route's advisory lock).
+  client: HoldTx = prisma
+): Promise<{
   count: number
-  byItem: Array<{ holdId: string; itemType: HoldableItemType; itemId: string; ownerId: string }>
+  byItem: Array<{ holdId: string; itemType: HoldableItemType; itemId: string; ownerId: string; cartItemId: string | null }>
 }> {
-  const live = await prisma.inventoryHold.findMany({
+  const live = await client.inventoryHold.findMany({
     where: {
       ownerUserId,
       consumedByOrderId: null,
       releasedAt: null,
       expiresAt: { gt: new Date() },
     },
-    select: { id: true, itemType: true, itemId: true },
+    select: { id: true, itemType: true, itemId: true, cartItemId: true },
   })
   if (live.length === 0) return { count: 0, byItem: [] }
 
@@ -77,7 +83,7 @@ export async function foreignHolds(ownerUserId: string): Promise<{
 
   const owners = new Map<string, string>()
   for (const t of Array.from(byType.keys())) {
-    const model = (prisma as unknown as Record<string, {
+    const model = (client as unknown as Record<string, {
       findMany(args: unknown): Promise<Array<{ id: string; userId: string }>>
     }>)[MODEL_FOR_ITEM[t]]
     const rows = await model.findMany({
@@ -92,7 +98,7 @@ export async function foreignHolds(ownerUserId: string): Promise<{
       const t = h.itemType as HoldableItemType
       const ownerId = owners.get(`${t}:${h.itemId}`)
       return ownerId && ownerId !== ownerUserId
-        ? { holdId: h.id, itemType: t, itemId: h.itemId, ownerId }
+        ? { holdId: h.id, itemType: t, itemId: h.itemId, ownerId, cartItemId: h.cartItemId ?? null }
         : null
     })
     .filter((x): x is NonNullable<typeof x> => x !== null)

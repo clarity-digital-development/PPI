@@ -109,6 +109,14 @@ export interface OrderFormData {
 export interface StepProps {
   formData: OrderFormData
   updateFormData: (updates: Partial<OrderFormData>) => void
+  /**
+   * Ask the host page to re-fetch inventory. Called when the server refuses
+   * an order because an inventory row is no longer available: with a shared
+   * brokerage pool every linked agent's picker resolves the same
+   * representative sign id, so once one of them consumes it the others'
+   * pickers are stale and "please re-pick" would re-select the identical id.
+   */
+  onInventoryStale?: () => void
   inventory?: {
     // `source` marks whether a row is the agent's own or drawn from the
     // brokerage pool they're linked to (Ryan, 2026-09-08). Optional because

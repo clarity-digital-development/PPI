@@ -50,6 +50,12 @@ export async function PATCH(request: NextRequest) {
     }
 
     const result = await bumpHolds({ ownerUserId: user.id, cartItemIds: cartItemIds ?? null })
+    // A cart row whose hold was just released above must not read as
+    // "extended" -- the client would carry the dead hold forward and only
+    // discover it at checkout. Report it gone so the row is re-picked now.
+    for (const h of revoked) {
+      if (h.cartItemId) result.byCartItem[h.cartItemId] = { extended: false, reason: 'gone' }
+    }
     return NextResponse.json(result)
   } catch (error) {
     console.error('Error bumping holds:', error)

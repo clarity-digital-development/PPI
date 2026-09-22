@@ -65,10 +65,14 @@ export async function allowedInventoryOwnerIds(opts: {
 }): Promise<Set<string>> {
   const ids = new Set([opts.orderUserId, opts.actorId])
 
-  // Distinct ids only: ordering for yourself makes these the same person.
-  const principals = Array.from(new Set([opts.orderUserId, opts.actorId])).filter(Boolean)
-  const pools = await Promise.all(principals.map((id) => resolveBrokeragePool(id)))
-  for (const pool of pools) {
+  // The pool is a SELF-SERVICE grant: it widens what an agent may consume on
+  // their own orders. It is deliberately NOT extended to someone acting on
+  // the agent's behalf -- a team_admin from brokerage A placing for an agent
+  // who is rostered to brokerage B would otherwise be able to list and consume
+  // B's inventory through that agent. Internal admins bypass this whole
+  // function where they need to (edit route), so nothing is stranded.
+  if (opts.orderUserId === opts.actorId) {
+    const pool = await resolveBrokeragePool(opts.orderUserId)
     if (pool) ids.add(pool.ownerUserId)
   }
 

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { releaseOrderHoldsAndRestoreInventory } from '@/lib/inventory-holds'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { sendInstallationCompleteEmail } from '@/lib/email'
 import { createOrderNotification } from '@/lib/notifications'
@@ -127,6 +128,23 @@ export async function PUT(
         )
       } catch (notifError) {
         console.error('Error creating notification:', notifError)
+      }
+    }
+
+    // Cancelling from the admin status control must hand the inventory back.
+    // Every other cancel path (refund, admin cancel route, customer cancel,
+    // payment_failed webhook) already does; this one simply flipped the
+    // status and left the signs out of storage forever.
+    if (status === 'cancelled') {
+      try {
+        await releaseOrderHoldsAndRestoreInventory(
+          order.id,
+          'admin_status_cancelled',
+          { id: user.id, email: user.email, role: user.role },
+          request
+        )
+      } catch (restoreErr) {
+        console.error(`Order ${order.orderNumber}: cancelled but inventory restore failed`, restoreErr)
       }
     }
 

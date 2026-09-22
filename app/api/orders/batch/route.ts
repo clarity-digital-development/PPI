@@ -4,7 +4,7 @@ import { compressImageDataUri } from '@/lib/images/compress'
 import { getCurrentUser, generateOrderNumber } from '@/lib/auth-utils'
 import { createPaymentIntent, createCustomer, getStripeErrorMessage, stripe } from '@/lib/stripe/server'
 import { computeOrderPricing, computeFlatFeePricing, postRentalApplies } from '@/lib/orders/pricing'
-import { claimHoldsInTx, HoldConflictError, releaseHolds, describeHoldItems, type HoldClaim } from '@/lib/inventory-holds'
+import { claimHoldsInTx, consumeInventoryInTx, releaseOrderHoldsAndRestoreInventory, HoldConflictError, releaseHolds, describeHoldItems, type HoldClaim, type ConsumeRef } from '@/lib/inventory-holds'
 import { validateScheduling } from '@/lib/scheduling'
 import crypto from 'node:crypto'
 import { audit, AuditAction } from '@/lib/audit'
@@ -479,9 +479,10 @@ export async function POST(request: NextRequest) {
     // Orders are created with paymentIntentId: null and paymentStatus: 'pending',
     // then updated with the real PI id once Stripe accepts it (Step 5).
 
-    // Track which item ids were claimed-via-hold so the blind path skips them.
-    const heldItemIds = new Set<string>()
-    for (const claim of allClaims) heldItemIds.add(`${claim.itemType}:${claim.itemId}`)
+    // (Held-item bookkeeping is per order, inside the loop below. It used to
+    // be one batch-wide set, so order #2 in a cart referencing the sign order
+    // #1 had claimed via hold silently skipped its own flip and both orders
+    // ended up on one physical sign.)
 
     // Shrink the install-location photos BEFORE the tx opens — re-encoding a
     // 5 MB phone photo takes long enough that doing it inside would hold the
@@ -585,21 +586,35 @@ export async function POST(request: NextRequest) {
             )
           }
 
-          // Blind path: only items WITHOUT a live hold (brochure boxes always;
-          // signs/riders/lockboxes only for pre-rollout carts that didn't send
-          // a hold_id). Skip any item that was already claimed above.
-          const invUpdates: Promise<unknown>[] = []
+          // Everything this order consumes that was NOT claimed through a
+          // hold above goes through the same guarded flip the single-order
+          // route uses. This replaces a blind update-by-id that would take
+          // any row regardless of storage state, owner or another cart's
+          // hold. Hold-gating stops being client opt-in: a cart row that
+          // arrived without hold_ids still consumes ITS OWN live hold here
+          // (the helper finds it by owner) instead of dangling it.
+          const heldItemIds = new Set(c.claims.map((cl) => `${cl.itemType}:${cl.itemId}`))
+          const unheldRefs: ConsumeRef[] = []
           for (const item of o.items) {
             if (item.customer_sign_id && !heldItemIds.has(`sign:${item.customer_sign_id}`))
-              invUpdates.push(tx.customerSign.update({ where: { id: item.customer_sign_id }, data: { inStorage: false } }))
+              unheldRefs.push({ type: 'sign', id: item.customer_sign_id })
             if (item.customer_rider_id && !heldItemIds.has(`rider:${item.customer_rider_id}`))
-              invUpdates.push(tx.customerRider.update({ where: { id: item.customer_rider_id }, data: { inStorage: false } }))
+              unheldRefs.push({ type: 'rider', id: item.customer_rider_id })
             if (item.customer_lockbox_id && !heldItemIds.has(`lockbox:${item.customer_lockbox_id}`))
-              invUpdates.push(tx.customerLockbox.update({ where: { id: item.customer_lockbox_id }, data: { inStorage: false } }))
+              unheldRefs.push({ type: 'lockbox', id: item.customer_lockbox_id })
             if (item.customer_brochure_box_id)
-              invUpdates.push(tx.customerBrochureBox.update({ where: { id: item.customer_brochure_box_id }, data: { inStorage: false } }))
+              unheldRefs.push({ type: 'brochure_box', id: item.customer_brochure_box_id })
           }
-          if (invUpdates.length) await Promise.all(invUpdates)
+          if (unheldRefs.length) {
+            await consumeInventoryInTx(tx, {
+              refs: unheldRefs,
+              allowedOwnerIds: batchAllowedOwners,
+              holderUserIds: [actor.id],
+              orderId: order.id,
+              actor: { id: actor.id, email: actor.email, role: actor.role },
+              request,
+            })
+          }
         }
         return out
       })
@@ -812,7 +827,27 @@ export async function POST(request: NextRequest) {
     try {
       paymentIntent = await createPaymentIntent(grandTotal, stripeCustomerId ?? undefined, paymentMethodId, { idempotencyKey: idemKey })
     } catch (err) {
-      console.error('Batch: PI creation failed AFTER tx commit. Orders exist unpaid:', createdOrders.map((o) => o.id), err)
+      console.error('Batch: PI creation failed AFTER tx commit. Cancelling the orders and restoring inventory:', createdOrders.map((o) => o.id), err)
+      // Nothing was charged, so nothing should stay reserved. These orders
+      // used to sit 'pending' with pool signs out and no PI id, invisible to
+      // the webhook's restore.
+      for (const co of createdOrders) {
+        try {
+          await prisma.order.update({
+            where: { id: co.id },
+            data: { status: 'cancelled', paymentStatus: 'failed' },
+            select: { id: true },
+          })
+          await releaseOrderHoldsAndRestoreInventory(
+            co.id,
+            'pi_create_failed',
+            { id: actor.id, email: actor.email, role: actor.role },
+            request
+          )
+        } catch (compErr) {
+          console.error(`Batch: could not roll back order ${co.orderNumber} after PI failure`, compErr)
+        }
+      }
       try {
         await audit({
           actor: { id: actor.id, email: actor.email, role: actor.role },
@@ -832,7 +867,7 @@ export async function POST(request: NextRequest) {
       }
       return NextResponse.json(
         {
-          error: getStripeErrorMessage(err) || 'Payment failed. Your orders were saved but not charged. Please contact support.',
+          error: getStripeErrorMessage(err) || 'Payment failed. Nothing was charged and your items are still available - please try again.',
           orders_pending_payment: createdOrders.map((o) => ({ id: o.id, orderNumber: o.orderNumber })),
         },
         { status: 502 }

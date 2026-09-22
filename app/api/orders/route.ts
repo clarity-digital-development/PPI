@@ -11,6 +11,9 @@ import { resolveServiceArea } from '@/lib/service-area'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
 import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, postRentalApplies } from '@/lib/orders/pricing'
 import { allowedInventoryOwnerIds, checkInventoryOwnership, describeInventoryFailures } from '@/lib/orders/inventory-ownership'
+import { consumeInventoryInTx, releaseOrderHoldsAndRestoreInventory, HoldConflictError, type ConsumeRef } from '@/lib/inventory-holds'
+import { Prisma } from '@prisma/client'
+import crypto from 'node:crypto'
 
 export async function GET(request: NextRequest) {
   try {
@@ -529,42 +532,24 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Create payment intent (skip for $0 orders - fully discounted; skip
-    // entirely for invoice-billing payers — collection happens later).
+    // The PaymentIntent is created AFTER the order and its inventory are
+    // committed (see below). Until 2026-09-22 it was created here -- confirmed
+    // and auto-captured -- BEFORE the order row existed and before the
+    // inventory flips ran, so a lost inventory race could only ever be
+    // logged: the money had already moved.
     let paymentIntent: { id: string; status: string; client_secret: string | null } | null = null
-    if (!isInvoiceBilling && total > 0) {
-      try {
-        paymentIntent = await createPaymentIntent(
-          total,
-          stripeCustomerId ?? undefined,
-          orderData.payment_method_id
-        )
-      } catch (paymentError) {
-        console.error('Payment intent creation failed:', paymentError)
-        const friendlyMessage = getStripeErrorMessage(paymentError)
-        // Forensic trail — without this row, debugging a customer's failed
-        // checkout requires logs we may not retain. This was the gap that
-        // hid the round-5 createPaymentIntent regression for ~18h.
-        try {
-          await audit({
-            actor: { id: actor.id, email: actor.email, role: actor.role },
-            action: AuditAction.CartCheckoutFail,
-            targetType: 'order',
-            targetId: null,
-            metadata: {
-              stage: 'single_pi_create',
-              total,
-              payment_method_id: orderData.payment_method_id ?? null,
-              stripe_message: friendlyMessage ?? (paymentError instanceof Error ? paymentError.message : String(paymentError)),
-            },
-            request,
-          })
-        } catch {}
-        return NextResponse.json(
-          { error: friendlyMessage || 'Payment failed. Please check your card details and try again.' },
-          { status: 400 }
-        )
-      }
+    const initialPaymentStatus = isInvoiceBilling
+      ? 'pending_invoice'
+      : total > 0 ? 'pending' : 'succeeded'
+
+    // Every inventory row this order consumes. The helper dedupes, so the
+    // same stored sign on the main and second post is one flip.
+    const inventoryRefs: ConsumeRef[] = []
+    for (const item of orderData.items) {
+      if (item.customer_sign_id) inventoryRefs.push({ type: 'sign', id: item.customer_sign_id })
+      if (item.customer_rider_id) inventoryRefs.push({ type: 'rider', id: item.customer_rider_id })
+      if (item.customer_lockbox_id) inventoryRefs.push({ type: 'lockbox', id: item.customer_lockbox_id })
+      if (item.customer_brochure_box_id) inventoryRefs.push({ type: 'brochure_box', id: item.customer_brochure_box_id })
     }
 
     // Create order
@@ -573,7 +558,11 @@ export async function POST(request: NextRequest) {
       propertyType: orderData.property_type,
       propertyAddress: orderData.property_address,
     })
-    const order = await prisma.order.create({
+    type CreatedOrder = Prisma.OrderGetPayload<{ include: { orderItems: true } }>
+    let order: CreatedOrder
+    try {
+      order = await prisma.$transaction(async (tx) => {
+      const created = await tx.order.create({
       data: {
         orderNumber: generateOrderNumber(),
         userId: user.id,
@@ -622,10 +611,8 @@ export async function POST(request: NextRequest) {
         serviceAreaSecondChargeCents: pendingSecondChargeCents > 0 ? pendingSecondChargeCents : null,
         serviceAreaSecondChargeStatus: pendingSecondChargeCents > 0 ? 'pending' : null,
         promoCodeId,
-        paymentIntentId: paymentIntent?.id || null,
-        paymentStatus: isInvoiceBilling
-          ? 'pending_invoice'
-          : !paymentIntent ? 'succeeded' : paymentIntent.status === 'succeeded' ? 'succeeded' : 'processing',
+        paymentIntentId: null,
+        paymentStatus: initialPaymentStatus,
         orderItems: {
           create: orderData.items.map((item) => ({
             itemType: item.item_type,
@@ -645,7 +632,39 @@ export async function POST(request: NextRequest) {
       include: {
         orderItems: true,
       },
-    })
+      })
+
+      // THE guarded flip, in the same transaction as the order row. A row that
+      // is out of storage, owned by someone outside the allow-list, or held
+      // by another cart throws HoldConflictError and rolls the order back.
+      // No PaymentIntent exists yet, so a lost race costs nothing.
+      // holderUserIds carries both because an on-behalf-of hold is owned by
+      // the agent while the actor is the team_admin.
+      await consumeInventoryInTx(tx, {
+        refs: inventoryRefs,
+        allowedOwnerIds: allowedOwners,
+        holderUserIds: Array.from(new Set([user.id, actor.id])),
+        orderId: created.id,
+        actor: { id: actor.id, email: actor.email, role: actor.role },
+        request,
+      })
+      return created
+      }, { timeout: 15_000 })
+    } catch (txError) {
+      if (txError instanceof HoldConflictError) {
+        console.warn('[orders] inventory consume refused', {
+          actorId: actor.id,
+          orderUserId: user.id,
+          code: txError.code,
+          details: txError.details,
+        })
+        return NextResponse.json(
+          { error: txError.message, code: 'inventory_unavailable', conflict: txError.details },
+          { status: 409 }
+        )
+      }
+      throw txError
+    }
 
     // Audit surcharge application now that the order row exists.
     if (sa.tier === 'surcharge' && sa.decidedBy) {
@@ -665,63 +684,81 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Mark inventory items as no longer in storage after order is created.
-    // If payment later fails (3DS abandoned, card declined, etc.), the webhook
-    // for payment_intent.payment_failed / canceled restores these items —
-    // see app/api/webhooks/stripe/route.ts.
-    // updateMany, not update, so `inStorage: true` and the owner allowlist can
-    // both sit in the WHERE. The ownership check above runs before Stripe, but
-    // a concurrent order could consume the same row in between — a bare
-    // `update({ where: { id } })` would happily flip an item already out at a
-    // property and attach it to a second live order. A zero match here means
-    // we lost that race; it is logged loudly rather than passing silently.
-    // (The single-order path still has no reservations; holds arrive with the
-    // shared brokerage pool, where contention becomes real.)
-    const allowedOwnerList = Array.from(allowedOwners)
-    const guard = (id: string) => ({ id, inStorage: true, userId: { in: allowedOwnerList } })
-    const inventoryUpdates: Promise<{ count: number }>[] = []
-    const inventoryRefs: Array<{ kind: string; id: string }> = []
-    // ONE ROW, ONE UPDATE. The wizard can legitimately put the same stored
-    // sign on the main post and the second post, and a second guarded
-    // updateMany for an id we just flipped necessarily matches 0 rows — which
-    // the race check below would report as a lost race on a perfectly fine
-    // order.
-    const seenInventory = new Set<string>()
-    const queue = (
-      kind: string,
-      id: string | null | undefined,
-      run: (id: string) => Promise<{ count: number }>
-    ) => {
-      if (!id) return
-      const key = `${kind}:${id}`
-      if (seenInventory.has(key)) return
-      seenInventory.add(key)
-      inventoryRefs.push({ kind, id })
-      inventoryUpdates.push(run(id))
-    }
-    for (const item of orderData.items) {
-      queue('sign', item.customer_sign_id, (id) =>
-        prisma.customerSign.updateMany({ where: guard(id), data: { inStorage: false } }))
-      queue('rider', item.customer_rider_id, (id) =>
-        prisma.customerRider.updateMany({ where: guard(id), data: { inStorage: false } }))
-      queue('lockbox', item.customer_lockbox_id, (id) =>
-        prisma.customerLockbox.updateMany({ where: guard(id), data: { inStorage: false } }))
-      queue('brochure_box', item.customer_brochure_box_id, (id) =>
-        prisma.customerBrochureBox.updateMany({ where: guard(id), data: { inStorage: false } }))
-    }
-    if (inventoryUpdates.length > 0) {
-      const results = await Promise.all(inventoryUpdates)
-      const missed = results
-        .map((r, i) => ({ r, ref: inventoryRefs[i] }))
-        .filter((x) => x.r.count === 0)
-        .map((x) => x.ref)
-      if (missed.length > 0) {
-        console.error(
-          `[orders] inventory race on ${order.orderNumber} — ${missed.length} item(s) were consumed between validation and write; they remain out of storage and the order still references them`,
-          { orderNumber: order.orderNumber, missed }
+    // ---- PaymentIntent: only now that the order and its inventory are
+    // committed. Mirrors the cart route's tx-first ordering. If Stripe
+    // refuses, the order is cancelled and its inventory handed back
+    // immediately, rather than left pending with signs out and no PI id for
+    // the webhook to find.
+    if (!isInvoiceBilling && total > 0) {
+      // Same key for the same (actor, order, total) within 24h, so a network
+      // retry of this request returns Stripe's existing PI instead of
+      // charging twice.
+      const idempotencyKey = crypto
+        .createHash('sha256')
+        .update(`${actor.id}|${order.id}|${total.toFixed(2)}`)
+        .digest('hex')
+        .slice(0, 64)
+      try {
+        paymentIntent = await createPaymentIntent(
+          total,
+          stripeCustomerId ?? undefined,
+          orderData.payment_method_id,
+          { idempotencyKey }
+        )
+      } catch (paymentError) {
+        console.error('Payment intent creation failed:', paymentError)
+        const friendlyMessage = getStripeErrorMessage(paymentError)
+        // Forensic trail -- without this row, debugging a customer's failed
+        // checkout requires logs we may not retain.
+        try {
+          await audit({
+            actor: { id: actor.id, email: actor.email, role: actor.role },
+            action: AuditAction.CartCheckoutFail,
+            targetType: 'order',
+            targetId: order.id,
+            metadata: {
+              stage: 'single_pi_create_after_tx',
+              total,
+              payment_method_id: orderData.payment_method_id ?? null,
+              stripe_message: friendlyMessage ?? (paymentError instanceof Error ? paymentError.message : String(paymentError)),
+            },
+            request,
+          })
+        } catch {}
+        // Compensate: nothing was charged, so nothing should stay reserved.
+        try {
+          await prisma.order.update({
+            where: { id: order.id },
+            data: { status: 'cancelled', paymentStatus: 'failed' },
+            select: { id: true },
+          })
+          await releaseOrderHoldsAndRestoreInventory(
+            order.id,
+            'pi_create_failed',
+            { id: actor.id, email: actor.email, role: actor.role },
+            request
+          )
+        } catch (compErr) {
+          console.error(`[orders] could not roll back order ${order.orderNumber} after PI failure`, compErr)
+        }
+        return NextResponse.json(
+          { error: friendlyMessage || 'Payment failed. Please check your card details and try again.' },
+          { status: 400 }
         )
       }
-      console.log(`Marked ${inventoryUpdates.length - missed.length} inventory item(s) as out of storage for order ${order.orderNumber}`)
+
+      // Stamp the PI so the webhook can find this order. Re-read with items so
+      // the response shape is unchanged.
+      const piSucceeded = paymentIntent.status === 'succeeded'
+      order = await prisma.order.update({
+        where: { id: order.id },
+        data: {
+          paymentIntentId: paymentIntent.id,
+          paymentStatus: piSucceeded ? 'succeeded' : 'processing',
+          paidAt: piSucceeded ? new Date() : null,
+        },
+        include: { orderItems: true },
+      })
     }
 
     // Record promo code usage AFTER order is successfully created

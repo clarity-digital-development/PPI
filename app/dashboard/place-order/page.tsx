@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, Suspense } from 'react'
+import { useState, useEffect, useMemo, useCallback, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { Header } from '@/components/dashboard'
@@ -115,6 +115,24 @@ function PlaceOrderPageInner() {
   // is placing an order without an explicit ?on_behalf_of target.
   // Editing an existing cart row bypasses the gate — we already know the agent.
   const isTeamAdminGate = currentUserRole === 'team_admin' && !onBehalfOf && !editingItem
+
+  // Re-fetch the wizard's inventory after the server refuses an item as no
+  // longer available. Same URL logic as the initial load below. Best-effort:
+  // a failed refresh just leaves the current list in place.
+  const refetchInventory = useCallback(async () => {
+    const editingAgentId = editingItem?.agentId || undefined
+    const inventoryUrl = onBehalfOf
+      ? `/api/inventory?on_behalf_of=${encodeURIComponent(onBehalfOf)}`
+      : editingAgentId
+        ? `/api/inventory?member_id=${encodeURIComponent(editingAgentId)}`
+        : '/api/inventory'
+    try {
+      const res = await fetch(inventoryUrl)
+      if (res.ok) setInventory(await res.json())
+    } catch (err) {
+      console.error('Error refreshing inventory:', err)
+    }
+  }, [onBehalfOf, editingItem?.agentId])
 
   useEffect(() => {
     async function fetchData() {
@@ -283,6 +301,14 @@ function PlaceOrderPageInner() {
               ) : (
                 <OrderWizard
                   inventory={memberInventory}
+                  onInventoryStale={async () => {
+                    try {
+                      const res = await fetch(`/api/inventory?member_id=${encodeURIComponent(selectedMember.id)}`)
+                      if (res.ok) setMemberInventory(await res.json())
+                    } catch (err) {
+                      console.error('Error refreshing member inventory:', err)
+                    }
+                  }}
                   paymentMethods={paymentMethods}
                   currentUserRole={currentUserRole}
                   // Preset the agent name; the wizard merges this over its
@@ -435,6 +461,7 @@ function PlaceOrderPageInner() {
               // are correctly reinitialized when switching between rows.
               key={cartItemId || 'new'}
               inventory={inventory}
+              onInventoryStale={refetchInventory}
               paymentMethods={paymentMethods}
               // For gate-path cart rows (placedForMemberId set), the agentId
               // is a TeamMember.id and must NOT be passed as onBehalfOf —

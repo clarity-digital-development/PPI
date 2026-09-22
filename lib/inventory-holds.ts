@@ -561,7 +561,10 @@ export async function releaseOrderHoldsAndRestoreInventory(
   actor: AuditActor,
   request?: NextRequest | Request | null
 ): Promise<void> {
-  if (killed()) return
+  // NOT gated on the kill switch as a whole. Restoring inStorage after a
+  // refund/cancel is an inventory truth, not a hold mutation -- with holds
+  // switched off the sign still has to come back into the pool. Only the
+  // hold-row deletion below is skipped when killed().
 
   await prisma.$transaction(async (tx) => {
     const order = await tx.order.findUnique({
@@ -592,9 +595,11 @@ export async function releaseOrderHoldsAndRestoreInventory(
     }
 
     // Delete any consumed holds tied to this order.
-    await tx.inventoryHold.deleteMany({
-      where: { consumedByOrderId: orderId },
-    })
+    if (!killed()) {
+      await tx.inventoryHold.deleteMany({
+        where: { consumedByOrderId: orderId },
+      })
+    }
   }, { timeout: 15_000 })
 
   await audit({
@@ -604,6 +609,240 @@ export async function releaseOrderHoldsAndRestoreInventory(
     targetId: orderId,
     metadata: { reason, source: 'release_order_holds' },
     request,
+  })
+}
+
+export type ConsumeItemType = HoldItemType | 'brochure_box'
+export interface ConsumeRef {
+  type: ConsumeItemType
+  id: string
+}
+
+export interface ConsumeInventoryArgs {
+  /** Every inventory row this order consumes. Deduped here as well. */
+  refs: ConsumeRef[]
+  /** Accounts whose inventory may be consumed. `null` = internal-admin bypass. */
+  allowedOwnerIds: Set<string> | null
+  /** Whose live holds count as "mine" (the order owner AND the actor). */
+  holderUserIds: string[]
+  orderId: string
+  actor: AuditActor
+  request?: NextRequest | Request | null
+}
+
+/**
+ * THE guarded flip. One conditional UPDATE per inventory row, inside the
+ * caller's transaction, that both takes the row out of storage and proves it
+ * was available to take:
+ *
+ *     WHERE id = ? AND inStorage = true [AND userId IN allowed]
+ *       AND (heldByHoldId IS NULL          -- free
+ *            OR heldUntil < now()          -- expired hold = free (acquireHold's rule)
+ *            OR heldByHoldId = <my hold>)  -- reserved by this very checkout
+ *
+ * A live hold owned by anyone else matches none of the OR arms, so it is
+ * refused. count !== 1 throws HoldConflictError and the enclosing transaction
+ * rolls back -- so on every path that calls this before money moves, a lost
+ * race costs nothing.
+ *
+ * Why this is atomic with no schema change: under READ COMMITTED Postgres
+ * row-locks the target and re-evaluates the WHERE on the committed version
+ * before applying. Two transactions on one row cannot both see
+ * inStorage = true; whichever commits first wins and the other gets 0 rows.
+ * acquireHold's "fresh" update locks the same row, so a hold acquired
+ * concurrently either lands before this flip (refused as foreign) or after
+ * (acquire sees inStorage=false and throws item_unavailable).
+ *
+ * Before 2026-09-22 the three order paths each did this differently:
+ * single-order flipped OUTSIDE any transaction AFTER Stripe had captured and
+ * merely logged a 0-row result; cart fell back to a blind update-by-id for any
+ * row the client did not send a hold for; edit flipped with no inStorage
+ * precondition and never looked at the count. 37 rows were on more than one
+ * live order as a result. A shared brokerage pool makes that a daily event.
+ *
+ * Brochure boxes have no hold columns, so their predicate is just
+ * { id, inStorage, owner } -- nothing can hold one, so inStorage is the whole
+ * truth.
+ *
+ * Kill switch: INVENTORY_HOLDS_ENABLED=false skips only the own-hold lookup
+ * and consume. The guarded flip itself always runs -- it is the invariant,
+ * not the feature.
+ */
+export async function consumeInventoryInTx(
+  tx: HoldTx,
+  args: ConsumeInventoryArgs
+): Promise<{ consumed: number; consumedHoldIds: string[] }> {
+  const seen = new Set<string>()
+  const refs = args.refs.filter((r) => {
+    if (!r.id) return false
+    const key = `${r.type}:${r.id}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+  const ownerArm = args.allowedOwnerIds ? { userId: { in: Array.from(args.allowedOwnerIds) } } : {}
+  const consumedHoldIds: string[] = []
+
+  for (const ref of refs) {
+    const now = new Date()
+
+    if (ref.type === 'brochure_box') {
+      const r = await tx.customerBrochureBox.updateMany({
+        where: { id: ref.id, inStorage: true, ...ownerArm },
+        data: { inStorage: false },
+      })
+      if (r.count !== 1) {
+        const current = await tx.customerBrochureBox.findUnique({
+          where: { id: ref.id },
+          select: { inStorage: true, userId: true },
+        })
+        const code = !current
+          ? 'item_gone'
+          : args.allowedOwnerIds && !args.allowedOwnerIds.has(current.userId)
+            ? 'not_owned'
+            : 'already_assigned'
+        await auditConsumeConflict(args, ref, code, null)
+        throw new HoldConflictError(code, consumeMessage(code), { itemType: ref.type, itemId: ref.id, holdId: null })
+      }
+      continue
+    }
+
+    // Sign / rider / lockbox: honour this checkout's own live hold, refuse
+    // anyone else's.
+    const ownHold = killed()
+      ? null
+      : await tx.inventoryHold.findFirst({
+          where: {
+            itemType: ref.type,
+            itemId: ref.id,
+            ownerUserId: { in: args.holderUserIds },
+            consumedByOrderId: null,
+            releasedAt: null,
+            expiresAt: { gt: now },
+          },
+          select: { id: true },
+        })
+
+    const where = {
+      id: ref.id,
+      inStorage: true,
+      ...ownerArm,
+      OR: [
+        { heldByHoldId: null },
+        { heldUntil: { lt: now } },
+        ...(ownHold ? [{ heldByHoldId: ownHold.id }] : []),
+      ],
+    }
+    const data = { inStorage: false, heldByHoldId: null, heldUntil: null }
+
+    let count: number
+    switch (ref.type) {
+      case 'sign':
+        count = (await tx.customerSign.updateMany({ where: where as Prisma.CustomerSignWhereInput, data })).count
+        break
+      case 'rider':
+        count = (await tx.customerRider.updateMany({ where: where as Prisma.CustomerRiderWhereInput, data })).count
+        break
+      case 'lockbox':
+        count = (await tx.customerLockbox.updateMany({ where: where as Prisma.CustomerLockboxWhereInput, data })).count
+        break
+    }
+
+    if (count !== 1) {
+      const current = await readConsumeCols(tx, ref.type, ref.id)
+      let code = 'hold_lost'
+      if (!current) code = 'item_gone'
+      else if (args.allowedOwnerIds && !args.allowedOwnerIds.has(current.userId)) code = 'not_owned'
+      else if (!current.inStorage) code = 'already_assigned'
+      else if (current.heldByHoldId && current.heldUntil && current.heldUntil > now) code = 'item_already_held'
+      await auditConsumeConflict(args, ref, code, ownHold?.id ?? null)
+      throw new HoldConflictError(code, consumeMessage(code), {
+        itemType: ref.type,
+        itemId: ref.id,
+        holdId: ownHold?.id ?? null,
+      })
+    }
+
+    if (ownHold) {
+      // A hold swept between the lookup and here matches 0 rows, which is
+      // harmless: the heldByHoldId IS NULL arm already carried the flip.
+      await tx.inventoryHold.updateMany({
+        where: { id: ownHold.id, consumedByOrderId: null },
+        data: { consumedByOrderId: args.orderId },
+      })
+      consumedHoldIds.push(ownHold.id)
+    }
+  }
+
+  if (consumedHoldIds.length > 0) {
+    await audit({
+      actor: args.actor,
+      action: AuditAction.InventoryHoldConsumed,
+      targetType: 'order',
+      targetId: args.orderId,
+      metadata: { holdIds: consumedHoldIds, count: consumedHoldIds.length },
+      request: args.request,
+    })
+  }
+
+  return { consumed: refs.length, consumedHoldIds }
+}
+
+/**
+ * Put rows back into storage when an order stops referencing them, but only
+ * when nothing else live does -- the same rule the refund/cancel path uses.
+ * The edit route used to do an unconditional inStorage=true here, which put a
+ * sign that was ALSO on another live order back into the pool a third time.
+ */
+export async function restoreInventoryInTx(
+  tx: HoldTx,
+  refs: ConsumeRef[],
+  excludeOrderId: string
+): Promise<void> {
+  for (const ref of refs) {
+    if (!ref.id) continue
+    if (ref.type === 'brochure_box') {
+      await tx.customerBrochureBox.updateMany({
+        where: { id: ref.id, inStorage: false },
+        data: { inStorage: true },
+      })
+      continue
+    }
+    await restoreIfSafe(tx, ref.type, ref.id, excludeOrderId)
+  }
+}
+
+function consumeMessage(code: string): string {
+  switch (code) {
+    case 'item_already_held':
+      return 'This item is already in another cart.'
+    case 'already_assigned':
+      return 'This item is no longer in storage.'
+    case 'item_gone':
+    case 'not_owned':
+      // Same wording so the response cannot be used to probe which ids exist
+      // on other accounts.
+      return 'This item is no longer available.'
+    default:
+      return 'Your reservation was lost - please re-add to cart.'
+  }
+}
+
+async function auditConsumeConflict(
+  args: ConsumeInventoryArgs,
+  ref: ConsumeRef,
+  code: string,
+  holdId: string | null
+): Promise<void> {
+  // Audit BEFORE throwing so the row survives the parent tx rollback
+  // (audit() opens its own connection).
+  await audit({
+    actor: args.actor,
+    action: AuditAction.InventoryHoldConflict,
+    targetType: 'order',
+    targetId: args.orderId,
+    metadata: { itemType: ref.type, itemId: ref.id, holdId, orderId: args.orderId, code, source: 'consume' },
+    request: args.request,
   })
 }
 
@@ -783,6 +1022,22 @@ async function readHoldCols(
   }
 }
 
+async function readConsumeCols(
+  tx: HoldTx,
+  itemType: HoldItemType,
+  itemId: string
+): Promise<{ userId: string; inStorage: boolean; heldByHoldId: string | null; heldUntil: Date | null } | null> {
+  const select = { userId: true, inStorage: true, heldByHoldId: true, heldUntil: true }
+  switch (itemType) {
+    case 'sign':
+      return tx.customerSign.findUnique({ where: { id: itemId }, select })
+    case 'rider':
+      return tx.customerRider.findUnique({ where: { id: itemId }, select })
+    case 'lockbox':
+      return tx.customerLockbox.findUnique({ where: { id: itemId }, select })
+  }
+}
+
 interface UpdateHoldColsArgs {
   heldByHoldId: string | null
   heldUntil: Date | null
@@ -895,7 +1150,15 @@ async function restoreIfSafe(
     where: {
       [col]: itemId,
       orderId: { not: excludeOrderId },
-      order: { paymentStatus: { in: ['succeeded', 'processing', 'pending'] } },
+      order: {
+        // pending_invoice is a LIVE order (invoice-billed, not yet collected)
+        // and must block a restore just like a paid one. And a cancelled
+        // sibling must never block: refundOrder leaves paymentStatus
+        // 'succeeded' until the charge.refunded webhook lands, so without the
+        // status arm a refunded order kept its sign out of the pool.
+        paymentStatus: { in: ['succeeded', 'processing', 'pending', 'pending_invoice'] },
+        status: { not: 'cancelled' },
+      },
     },
     select: { id: true },
   })

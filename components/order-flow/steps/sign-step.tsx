@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Package, MapPin, X, AlertCircle } from 'lucide-react'
 import { Select } from '@/components/ui'
 import { cn } from '@/lib/utils'
@@ -10,6 +10,49 @@ import { PRICING } from '../types'
 export function SignStep({ formData, updateFormData, inventory }: StepProps) {
   const hasStoredSigns = inventory?.signs && inventory.signs.length > 0
   const [showNoSignsError, setShowNoSignsError] = useState(false)
+
+  // Group signs by description so duplicates only appear once -- keyed on
+  // description AND source. A brokerage pool can hold a sign described
+  // identically to the agent's own; grouping on description alone collapsed
+  // the two into one option carrying whichever id sorted first, so the agent
+  // could never actually choose the brokerage sign. 'on-order' rows (the
+  // sign already on the order being edited) are keyed by their exact id: the
+  // main-post and second-post signs can share a description, and folding
+  // them into one option left one of the two selects with no matching value.
+  const signOptions = useMemo(() => {
+    const grouped: Record<string, { id: string; label: string }> = {}
+    for (const sign of inventory?.signs ?? []) {
+      const base = `${sign.description}${sign.size ? ` (${sign.size})` : ''}`
+      const label =
+        sign.source === 'brokerage'
+          ? `${base} — ${sign.source_label || 'Brokerage'}`
+          : sign.source === 'on-order'
+            ? `${base} — currently on this order`
+            : base
+      const key = sign.source === 'on-order' ? `${base}::on-order::${sign.id}` : `${base}::${sign.source ?? 'own'}`
+      if (!grouped[key]) grouped[key] = { id: sign.id, label }
+    }
+    return Object.values(grouped).map((g) => ({ value: g.id, label: g.label }))
+  }, [inventory?.signs])
+
+  // A stored id that is no longer among the options (the row was consumed by
+  // another order, or the group's representative changed since this cart row
+  // was built) must not be silently kept: a controlled <select> would then
+  // DISPLAY the first option while the form still held the old id, and
+  // saving would consume a sign the agent was never shown. Clear it so the
+  // "please pick" hint appears and they choose again.
+  useEffect(() => {
+    if (
+      formData.sign_option === 'stored' &&
+      formData.stored_sign_id &&
+      signOptions.length > 0 &&
+      !signOptions.some((o) => o.value === formData.stored_sign_id)
+    ) {
+      updateFormData({ stored_sign_id: undefined })
+    }
+    // updateFormData is a stable setter from the wizard.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formData.sign_option, formData.stored_sign_id, signOptions])
 
   const handleStoredSignClick = () => {
     if (hasStoredSigns) {
@@ -79,33 +122,7 @@ export function SignStep({ formData, updateFormData, inventory }: StepProps) {
               label="Select sign"
               value={formData.stored_sign_id || ''}
               onChange={(e) => updateFormData({ stored_sign_id: e.target.value })}
-              options={(() => {
-                // Group signs by description so duplicates only appear once --
-                // but key on description AND source. A brokerage pool (Ryan,
-                // 2026-09-08) can hold a sign described identically to the
-                // agent's own; grouping on description alone collapsed the two
-                // into a single option carrying whichever id sorted first, so
-                // the agent could never actually choose the brokerage sign and
-                // might consume the wrong physical one.
-                const grouped: Record<string, { id: string; label: string }> = {}
-                for (const sign of inventory!.signs) {
-                  const base = `${sign.description}${sign.size ? ` (${sign.size})` : ''}`
-                  // 'on-order' is the row this order already holds. It gets its own
-                  // option so it can never mask a same-described sign from either
-                  // pool, and is labelled so the agent can tell it apart.
-                  const label =
-                    sign.source === 'brokerage'
-                      ? `${base} — ${sign.source_label || 'Brokerage'}`
-                      : sign.source === 'on-order'
-                        ? `${base} — currently on this order`
-                        : base
-                  const key = `${base}::${sign.source ?? 'own'}`
-                  if (!grouped[key]) {
-                    grouped[key] = { id: sign.id, label }
-                  }
-                }
-                return Object.values(grouped).map(g => ({ value: g.id, label: g.label }))
-              })()}
+              options={signOptions}
             />
             {!formData.stored_sign_id && (
               <p className="mt-2 text-xs text-amber-700">

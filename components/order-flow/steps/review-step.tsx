@@ -19,6 +19,7 @@ export function ReviewStep({
   formData,
   updateFormData,
   inventory,
+  onInventoryStale,
   paymentMethods,
   isSubmitting,
   setIsSubmitting,
@@ -925,7 +926,13 @@ export function ReviewStep({
         items.push({
           item_type: 'sign',
           item_category: 'storage',
-          description: storedSign ? `Sign Install: ${storedSign.description} (from storage)` : 'Sign Install (from storage)',
+          // A pooled sign says so on its line, so dispatch, the admin order
+          // page and the installer email all know it sits in the BROKERAGE's
+          // storage, not the agent's. Appended after "(from storage)" so the
+          // edit-page parser (which reads up to that token) is unaffected.
+          description: storedSign
+            ? `Sign Install: ${storedSign.description} (from storage)${storedSign.source === 'brokerage' ? ` — ${storedSign.source_label || 'brokerage'} inventory` : ''}`
+            : 'Sign Install (from storage)',
           quantity: 1,
           unit_price: PRICING.sign_install,
           total_price: PRICING.sign_install,
@@ -1069,7 +1076,9 @@ export function ReviewStep({
           items.push({
             item_type: 'sign',
             item_category: 'storage',
-            description: storedSign2 ? `Second Post Sign Install: ${storedSign2.description} (from storage)` : 'Second Post Sign Install (from storage)',
+            description: storedSign2
+              ? `Second Post Sign Install: ${storedSign2.description} (from storage)${storedSign2.source === 'brokerage' ? ` — ${storedSign2.source_label || 'brokerage'} inventory` : ''}`
+              : 'Second Post Sign Install (from storage)',
             quantity: 1,
             unit_price: PRICING.sign_install,
             total_price: PRICING.sign_install,
@@ -1227,6 +1236,13 @@ export function ReviewStep({
           setTimeout(() => window.location.reload(), 2500)
           return
         }
+        if (data.code === 'inventory_unavailable') {
+          // The row was taken by another order (or is no longer ours). The
+          // picker is stale, so refresh it before asking for a re-pick --
+          // otherwise the dropdown offers the very id that was just refused.
+          onInventoryStale?.()
+          throw new Error(`${data.error} Your inventory list has been refreshed — go back and choose a different item.`)
+        }
         throw new Error(data.error || 'Failed to save changes')
       }
       // Pass the edit-charge outcome through to the order detail page via
@@ -1323,6 +1339,10 @@ export function ReviewStep({
       const data = await response.json()
 
       if (!response.ok) {
+        if (data.code === 'inventory_unavailable') {
+          onInventoryStale?.()
+          throw new Error(`${data.error} Your inventory list has been refreshed — go back and choose a different item.`)
+        }
         throw new Error(data.error || 'Failed to create order')
       }
 
