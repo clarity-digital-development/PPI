@@ -11,7 +11,7 @@ import { chargePaymentMethod, isDetachedPaymentMethodError } from '@/lib/stripe'
 import { resolveEffectivePayer } from '@/lib/orders/effective-payer'
 import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, NO_POST_SURCHARGE, postRentalApplies, type OrderItemForPricing } from '@/lib/orders/pricing'
 import { allowedInventoryOwnerIds, checkInventoryOwnership, describeInventoryFailures } from '@/lib/orders/inventory-ownership'
-import { consumeInventoryInTx, restoreInventoryInTx, HoldConflictError, type ConsumeRef } from '@/lib/inventory-holds'
+import { consumeInventoryInTx, restoreInventoryInTx, flushAudits, HoldConflictError, type ConsumeRef, type PendingAudit } from '@/lib/inventory-holds'
 import { resolveServiceArea } from '@/lib/service-area'
 import { z } from 'zod'
 
@@ -720,6 +720,7 @@ export async function PATCH(
 
     let raceLost = false
     let holdConflict: HoldConflictError | null = null
+    let consumeAudits: PendingAudit[] = []
     const updatedOrder = await prisma.$transaction(async (tx) => {
       // Replace ALL line items (the post is included in items[] as item_type
       // 'post', mirroring order creation)
@@ -814,7 +815,12 @@ export async function PATCH(
           ...idsToRestore.lockboxes.map((id) => ({ type: 'lockbox' as const, id })),
           ...idsToRestore.brochureBoxes.map((id) => ({ type: 'brochure_box' as const, id })),
         ],
-        id
+        id,
+        // direct: these rows were flipped BY THIS ORDER; put them straight
+        // back. The "another live order references it" rule is for the
+        // asynchronous refund path -- here it wrongly refused every sign that
+        // had ever been on a completed install, stranding it on a plain edit.
+        { direct: true }
       )
 
       // Lock inventory referenced by the NEW order, in two classes.
@@ -847,7 +853,7 @@ export async function PATCH(
       )
 
       if (addedRefs.length > 0) {
-        await consumeInventoryInTx(tx, {
+        const consumed = await consumeInventoryInTx(tx, {
           refs: addedRefs,
           // Mirrors the ownership check's internal-admin bypass exactly; a
           // guard stricter than the check would let a staff rescue save while
@@ -858,6 +864,7 @@ export async function PATCH(
           actor: { id: user.id, email: user.email, role: user.role },
           request,
         })
+        consumeAudits = consumed.audits
       }
 
       const keptGuard = (ids: string[]) =>
@@ -984,9 +991,11 @@ export async function PATCH(
       }
       throw err
     })
+    if (updatedOrder) await flushAudits(consumeAudits)
 
     if (!updatedOrder && holdConflict) {
       const conflict: HoldConflictError = holdConflict
+      await flushAudits(conflict.pendingAudit ? [conflict.pendingAudit] : [])
       console.warn('[orders/edit] inventory consume refused', {
         actorId: user.id,
         orderId: id,

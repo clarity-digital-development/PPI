@@ -11,7 +11,7 @@ import { resolveServiceArea } from '@/lib/service-area'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
 import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, postRentalApplies } from '@/lib/orders/pricing'
 import { allowedInventoryOwnerIds, checkInventoryOwnership, describeInventoryFailures } from '@/lib/orders/inventory-ownership'
-import { consumeInventoryInTx, releaseOrderHoldsAndRestoreInventory, HoldConflictError, type ConsumeRef } from '@/lib/inventory-holds'
+import { consumeInventoryInTx, releaseOrderHoldsAndRestoreInventory, flushAudits, HoldConflictError, type ConsumeRef, type PendingAudit } from '@/lib/inventory-holds'
 import { Prisma } from '@prisma/client'
 import crypto from 'node:crypto'
 
@@ -560,6 +560,7 @@ export async function POST(request: NextRequest) {
     })
     type CreatedOrder = Prisma.OrderGetPayload<{ include: { orderItems: true } }>
     let order: CreatedOrder
+    let consumeAudits: PendingAudit[] = []
     try {
       order = await prisma.$transaction(async (tx) => {
       const created = await tx.order.create({
@@ -640,7 +641,7 @@ export async function POST(request: NextRequest) {
       // No PaymentIntent exists yet, so a lost race costs nothing.
       // holderUserIds carries both because an on-behalf-of hold is owned by
       // the agent while the actor is the team_admin.
-      await consumeInventoryInTx(tx, {
+      const consumed = await consumeInventoryInTx(tx, {
         refs: inventoryRefs,
         allowedOwnerIds: allowedOwners,
         holderUserIds: Array.from(new Set([user.id, actor.id])),
@@ -648,10 +649,13 @@ export async function POST(request: NextRequest) {
         actor: { id: actor.id, email: actor.email, role: actor.role },
         request,
       })
+      consumeAudits = consumed.audits
       return created
       }, { timeout: 15_000 })
+      await flushAudits(consumeAudits)
     } catch (txError) {
       if (txError instanceof HoldConflictError) {
+        await flushAudits(txError.pendingAudit ? [txError.pendingAudit] : [])
         console.warn('[orders] inventory consume refused', {
           actorId: actor.id,
           orderUserId: user.id,
@@ -685,80 +689,146 @@ export async function POST(request: NextRequest) {
     }
 
     // ---- PaymentIntent: only now that the order and its inventory are
-    // committed. Mirrors the cart route's tx-first ordering. If Stripe
-    // refuses, the order is cancelled and its inventory handed back
-    // immediately, rather than left pending with signs out and no PI id for
-    // the webhook to find.
+    // committed. Mirrors the cart route's tx-first ordering.
     if (!isInvoiceBilling && total > 0) {
-      // Same key for the same (actor, order, total) within 24h, so a network
-      // retry of this request returns Stripe's existing PI instead of
-      // charging twice.
+      // Keyed on the wizard's per-attempt token when it sends one, so a
+      // resubmit after a lost response replays Stripe's existing PI instead of
+      // capturing twice. Falls back to the order id (no retry protection --
+      // the row is fresh per request) for callers that do not send it.
+      const attemptToken = orderData.client_submission_id || order.id
       const idempotencyKey = crypto
         .createHash('sha256')
-        .update(`${actor.id}|${order.id}|${total.toFixed(2)}`)
+        .update(`${actor.id}|${attemptToken}|${total.toFixed(2)}`)
         .digest('hex')
         .slice(0, 64)
+      const piOpts = {
+        idempotencyKey,
+        // So a charge can always be traced back to its order from the Stripe
+        // dashboard or a webhook payload, even if the stamp below fails.
+        metadata: { orderId: order.id, orderNumber: order.orderNumber, kind: 'order' },
+      }
+      const actorAudit = { id: actor.id, email: actor.email, role: actor.role }
+
+      const createPI = () =>
+        createPaymentIntent(total, stripeCustomerId ?? undefined, orderData.payment_method_id, piOpts)
+
       try {
-        paymentIntent = await createPaymentIntent(
-          total,
-          stripeCustomerId ?? undefined,
-          orderData.payment_method_id,
-          { idempotencyKey }
-        )
-      } catch (paymentError) {
-        console.error('Payment intent creation failed:', paymentError)
-        const friendlyMessage = getStripeErrorMessage(paymentError)
-        // Forensic trail -- without this row, debugging a customer's failed
-        // checkout requires logs we may not retain.
+        paymentIntent = await createPI()
+      } catch (firstError) {
+        const errType = String((firstError as { type?: string } | null)?.type ?? '')
+        // Stripe told us the payment itself failed: no charge exists.
+        const definitelyNotCharged = errType === 'StripeCardError' || errType === 'StripeInvalidRequestError'
+
+        if (!definitelyNotCharged) {
+          // Connection reset, API error, rate limit, idempotency clash: the
+          // request MAY have executed. Re-issue once with the same key -- Stripe
+          // replays the cached result if it did.
+          try {
+            paymentIntent = await createPI()
+          } catch (secondError) {
+            console.error('Payment intent creation uncertain after retry:', secondError)
+            try {
+              await audit({
+                actor: actorAudit,
+                action: AuditAction.CartCheckoutFail,
+                targetType: 'order',
+                targetId: order.id,
+                metadata: {
+                  stage: 'single_pi_uncertain',
+                  total,
+                  idempotencyKey,
+                  payment_method_id: orderData.payment_method_id ?? null,
+                  stripe_type: String((secondError as { type?: string } | null)?.type ?? ''),
+                  stripe_message: getStripeErrorMessage(secondError) ?? (secondError instanceof Error ? secondError.message : String(secondError)),
+                },
+                request,
+              })
+            } catch {}
+            // Deliberately NOT cancelled and NOT restored: a charge may exist.
+            // The order stays pending (visible in admin as unpaid) with its
+            // inventory held, and the customer is told not to resubmit.
+            return NextResponse.json(
+              {
+                error:
+                  'We could not confirm your payment with our card processor. Please do NOT submit again -- your order has been saved and we will confirm the charge and follow up with you shortly.',
+                code: 'payment_uncertain',
+                order_number: order.orderNumber,
+              },
+              { status: 502 }
+            )
+          }
+        }
+
+        if (!paymentIntent) {
+          // Declined / rejected: nothing was charged, so nothing stays reserved.
+          console.error('Payment intent creation failed:', firstError)
+          const friendlyMessage = getStripeErrorMessage(firstError)
+          try {
+            await audit({
+              actor: actorAudit,
+              action: AuditAction.CartCheckoutFail,
+              targetType: 'order',
+              targetId: order.id,
+              metadata: {
+                stage: 'single_pi_declined',
+                total,
+                payment_method_id: orderData.payment_method_id ?? null,
+                stripe_message: friendlyMessage ?? (firstError instanceof Error ? firstError.message : String(firstError)),
+              },
+              request,
+            })
+          } catch {}
+          try {
+            await prisma.order.update({
+              where: { id: order.id },
+              data: {
+                status: 'cancelled',
+                paymentStatus: 'failed',
+                cancelledAt: new Date(),
+                cancelledByUserId: actor.id,
+                cancelReason: 'payment_declined',
+              },
+              select: { id: true },
+            })
+            // direct: undo exactly the rows this request just flipped.
+            await releaseOrderHoldsAndRestoreInventory(order.id, 'pi_declined', actorAudit, request, { direct: true })
+          } catch (compErr) {
+            console.error(`[orders] could not roll back order ${order.orderNumber} after decline`, compErr)
+          }
+          return NextResponse.json(
+            { error: friendlyMessage || 'Payment failed. Please check your card details and try again.' },
+            { status: 400 }
+          )
+        }
+      }
+
+      // Stamp the PI so the webhook can find this order. If the stamp itself
+      // fails the charge is still real and the order exists -- log loudly and
+      // carry on (the PI metadata above is the reconciliation breadcrumb).
+      const piSucceeded = paymentIntent.status === 'succeeded'
+      try {
+        order = await prisma.order.update({
+          where: { id: order.id },
+          data: {
+            paymentIntentId: paymentIntent.id,
+            paymentStatus: piSucceeded ? 'succeeded' : 'processing',
+            paidAt: piSucceeded ? new Date() : null,
+          },
+          include: { orderItems: true },
+        })
+      } catch (stampErr) {
+        console.error(`[orders] charged ${paymentIntent.id} but failed to stamp it on ${order.orderNumber}`, stampErr)
         try {
           await audit({
-            actor: { id: actor.id, email: actor.email, role: actor.role },
+            actor: actorAudit,
             action: AuditAction.CartCheckoutFail,
             targetType: 'order',
             targetId: order.id,
-            metadata: {
-              stage: 'single_pi_create_after_tx',
-              total,
-              payment_method_id: orderData.payment_method_id ?? null,
-              stripe_message: friendlyMessage ?? (paymentError instanceof Error ? paymentError.message : String(paymentError)),
-            },
+            metadata: { stage: 'single_pi_stamp_failed', paymentIntentId: paymentIntent.id, total },
             request,
           })
         } catch {}
-        // Compensate: nothing was charged, so nothing should stay reserved.
-        try {
-          await prisma.order.update({
-            where: { id: order.id },
-            data: { status: 'cancelled', paymentStatus: 'failed' },
-            select: { id: true },
-          })
-          await releaseOrderHoldsAndRestoreInventory(
-            order.id,
-            'pi_create_failed',
-            { id: actor.id, email: actor.email, role: actor.role },
-            request
-          )
-        } catch (compErr) {
-          console.error(`[orders] could not roll back order ${order.orderNumber} after PI failure`, compErr)
-        }
-        return NextResponse.json(
-          { error: friendlyMessage || 'Payment failed. Please check your card details and try again.' },
-          { status: 400 }
-        )
       }
-
-      // Stamp the PI so the webhook can find this order. Re-read with items so
-      // the response shape is unchanged.
-      const piSucceeded = paymentIntent.status === 'succeeded'
-      order = await prisma.order.update({
-        where: { id: order.id },
-        data: {
-          paymentIntentId: paymentIntent.id,
-          paymentStatus: piSucceeded ? 'succeeded' : 'processing',
-          paidAt: piSucceeded ? new Date() : null,
-        },
-        include: { orderItems: true },
-      })
     }
 
     // Record promo code usage AFTER order is successfully created

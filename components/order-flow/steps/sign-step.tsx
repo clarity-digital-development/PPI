@@ -27,7 +27,7 @@ export function SignStep({ formData, updateFormData, inventory }: StepProps) {
         sign.source === 'brokerage'
           ? `${base} — ${sign.source_label || 'Brokerage'}`
           : sign.source === 'on-order'
-            ? `${base} — currently on this order`
+            ? `${base} — currently on this order${sign.on_order_post === 'second' ? ' (second post)' : sign.on_order_post === 'main' ? ' (main post)' : ''}`
             : base
       const key = sign.source === 'on-order' ? `${base}::on-order::${sign.id}` : `${base}::${sign.source ?? 'own'}`
       if (!grouped[key]) grouped[key] = { id: sign.id, label }
@@ -42,17 +42,20 @@ export function SignStep({ formData, updateFormData, inventory }: StepProps) {
   // saving would consume a sign the agent was never shown. Clear it so the
   // "please pick" hint appears and they choose again.
   useEffect(() => {
+    // Gated on the list having LOADED (not on it being non-empty): a refetch
+    // that comes back with zero signs must clear the id too, or the tile stays
+    // selected with no picker and Place Order loops on the same 409.
     if (
+      inventory !== undefined &&
       formData.sign_option === 'stored' &&
       formData.stored_sign_id &&
-      signOptions.length > 0 &&
       !signOptions.some((o) => o.value === formData.stored_sign_id)
     ) {
       updateFormData({ stored_sign_id: undefined })
     }
     // updateFormData is a stable setter from the wizard.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [formData.sign_option, formData.stored_sign_id, signOptions])
+  }, [inventory, formData.sign_option, formData.stored_sign_id, signOptions])
 
   const handleStoredSignClick = () => {
     if (hasStoredSigns) {

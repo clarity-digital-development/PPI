@@ -4,7 +4,7 @@ import { compressImageDataUri } from '@/lib/images/compress'
 import { getCurrentUser, generateOrderNumber } from '@/lib/auth-utils'
 import { createPaymentIntent, createCustomer, getStripeErrorMessage, stripe } from '@/lib/stripe/server'
 import { computeOrderPricing, computeFlatFeePricing, postRentalApplies } from '@/lib/orders/pricing'
-import { claimHoldsInTx, consumeInventoryInTx, releaseOrderHoldsAndRestoreInventory, HoldConflictError, releaseHolds, describeHoldItems, type HoldClaim, type ConsumeRef } from '@/lib/inventory-holds'
+import { claimHoldsInTx, consumeInventoryInTx, releaseOrderHoldsAndRestoreInventory, flushAudits, holdsKilled, HoldConflictError, releaseHolds, describeHoldItems, type HoldClaim, type ConsumeRef, type PendingAudit } from '@/lib/inventory-holds'
 import { validateScheduling } from '@/lib/scheduling'
 import crypto from 'node:crypto'
 import { audit, AuditAction } from '@/lib/audit'
@@ -493,6 +493,7 @@ export async function POST(request: NextRequest) {
     }
 
     let createdOrders: Array<{ id: string; orderNumber: string; total: number }>
+    const consumeAudits: PendingAudit[] = []
     try {
       createdOrders = await prisma.$transaction(async (tx) => {
         const out: Array<{ id: string; orderNumber: string; total: number }> = []
@@ -593,7 +594,11 @@ export async function POST(request: NextRequest) {
           // hold. Hold-gating stops being client opt-in: a cart row that
           // arrived without hold_ids still consumes ITS OWN live hold here
           // (the helper finds it by owner) instead of dangling it.
-          const heldItemIds = new Set(c.claims.map((cl) => `${cl.itemType}:${cl.itemId}`))
+          // With the kill switch on, claimHoldsInTx is a no-op, so nothing may
+          // be excluded from the guarded flip or those rows never leave storage.
+          const heldItemIds = holdsKilled()
+            ? new Set<string>()
+            : new Set(c.claims.map((cl) => `${cl.itemType}:${cl.itemId}`))
           const unheldRefs: ConsumeRef[] = []
           for (const item of o.items) {
             if (item.customer_sign_id && !heldItemIds.has(`sign:${item.customer_sign_id}`))
@@ -606,7 +611,7 @@ export async function POST(request: NextRequest) {
               unheldRefs.push({ type: 'brochure_box', id: item.customer_brochure_box_id })
           }
           if (unheldRefs.length) {
-            await consumeInventoryInTx(tx, {
+            const consumed = await consumeInventoryInTx(tx, {
               refs: unheldRefs,
               allowedOwnerIds: batchAllowedOwners,
               holderUserIds: [actor.id],
@@ -614,11 +619,14 @@ export async function POST(request: NextRequest) {
               actor: { id: actor.id, email: actor.email, role: actor.role },
               request,
             })
+            consumeAudits.push(...consumed.audits)
           }
         }
         return out
       })
+      await flushAudits(consumeAudits)
     } catch (txError) {
+      if (txError instanceof HoldConflictError) await flushAudits(txError.pendingAudit ? [txError.pendingAudit] : [])
       // Tx failed → no orders, no PI, no charge. Release any holds the user
       // managed to acquire so they aren't locked out for 15 min on a retry.
       // (releaseHolds.{actor} expects the AuditActor shape.)
@@ -824,28 +832,69 @@ export async function POST(request: NextRequest) {
       .slice(0, 64)
 
     let paymentIntent
+    const batchPiOpts = {
+      idempotencyKey: idemKey,
+      metadata: { orderIds: createdOrders.map((o) => o.id).join(','), kind: 'batch' },
+    }
     try {
-      paymentIntent = await createPaymentIntent(grandTotal, stripeCustomerId ?? undefined, paymentMethodId, { idempotencyKey: idemKey })
+      try {
+        paymentIntent = await createPaymentIntent(grandTotal, stripeCustomerId ?? undefined, paymentMethodId, batchPiOpts)
+      } catch (firstErr) {
+        const errType = String((firstErr as { type?: string } | null)?.type ?? '')
+        const definitelyNotCharged = errType === 'StripeCardError' || errType === 'StripeInvalidRequestError'
+        if (definitelyNotCharged) throw firstErr
+        // The request may have executed; the key is stable per cart session,
+        // so one re-issue replays Stripe's cached result if it did.
+        try {
+          paymentIntent = await createPaymentIntent(grandTotal, stripeCustomerId ?? undefined, paymentMethodId, batchPiOpts)
+        } catch (secondErr) {
+          console.error('Batch: PI creation UNCERTAIN after retry. Orders left pending, inventory held:', createdOrders.map((o) => o.id), secondErr)
+          try {
+            await audit({
+              actor: { id: actor.id, email: actor.email, role: actor.role },
+              action: AuditAction.CartCheckoutFail,
+              targetType: 'cart',
+              targetId: cartSessionId,
+              metadata: { stage: 'batch_pi_uncertain', orderIds: createdOrders.map((o) => o.id), grandTotal, idempotencyKey: idemKey, stripeType: String((secondErr as { type?: string } | null)?.type ?? '') },
+              request,
+            })
+          } catch {}
+          return NextResponse.json(
+            {
+              error:
+                'We could not confirm your payment with our card processor. Please do NOT submit again -- your orders have been saved and we will confirm the charge and follow up with you shortly.',
+              code: 'payment_uncertain',
+              orders_pending_payment: createdOrders.map((o) => ({ id: o.id, orderNumber: o.orderNumber })),
+            },
+            { status: 502 }
+          )
+        }
+      }
     } catch (err) {
-      console.error('Batch: PI creation failed AFTER tx commit. Cancelling the orders and restoring inventory:', createdOrders.map((o) => o.id), err)
-      // Nothing was charged, so nothing should stay reserved. These orders
-      // used to sit 'pending' with pool signs out and no PI id, invisible to
-      // the webhook's restore.
+      console.error('Batch: card declined AFTER tx commit. Cancelling the orders and restoring inventory:', createdOrders.map((o) => o.id), err)
+      // Nothing was charged, so nothing should stay reserved.
       for (const co of createdOrders) {
         try {
           await prisma.order.update({
             where: { id: co.id },
-            data: { status: 'cancelled', paymentStatus: 'failed' },
+            data: {
+              status: 'cancelled',
+              paymentStatus: 'failed',
+              cancelledAt: new Date(),
+              cancelledByUserId: actor.id,
+              cancelReason: 'payment_declined',
+            },
             select: { id: true },
           })
           await releaseOrderHoldsAndRestoreInventory(
             co.id,
-            'pi_create_failed',
+            'pi_declined',
             { id: actor.id, email: actor.email, role: actor.role },
-            request
+            request,
+            { direct: true }
           )
         } catch (compErr) {
-          console.error(`Batch: could not roll back order ${co.orderNumber} after PI failure`, compErr)
+          console.error(`Batch: could not roll back order ${co.orderNumber} after decline`, compErr)
         }
       }
       try {

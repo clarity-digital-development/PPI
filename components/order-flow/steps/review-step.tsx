@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { CreditCard, Lock, AlertCircle, Tag, CheckCircle, Loader2, Plus } from 'lucide-react'
 import { Button, Input } from '@/components/ui'
@@ -14,6 +14,15 @@ import { PRICING } from '../types'
 import { FLAT_FEE_BASE, computeOrderPricing, computeDiscountableSubtotal, type OrderItemForPricing } from '@/lib/orders/pricing'
 
 // Post type values are now the display names themselves
+
+// A pooled sign says which brokerage's storage it sits in; an on-order row
+// carries whatever suffix its original line had, so a plain edit that does not
+// re-pick the sign round-trips the marker instead of stripping it.
+function signLineSuffix(sign: { source?: string; source_label?: string | null; line_suffix?: string }): string {
+  if (sign.source === 'brokerage') return ` — ${sign.source_label || 'brokerage'} inventory`
+  if (sign.source === 'on-order' && sign.line_suffix) return ` ${sign.line_suffix}`
+  return ''
+}
 
 export function ReviewStep({
   formData,
@@ -50,6 +59,11 @@ export function ReviewStep({
   const cartEnabled = (isTeamAdmin || !!onBehalfOf) && !isEdit
   const router = useRouter()
   const [error, setError] = useState<string | null>(null)
+  // One id per checkout attempt. Regenerated only after a payment-uncertain
+  // response, so an immediate retry after a lost response reuses it.
+  const submissionIdRef = useRef<string>(
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`
+  )
   const [promoCodeInput, setPromoCodeInput] = useState(formData.promo_code || '')
   const [promoCodeError, setPromoCodeError] = useState<string | null>(null)
   const [promoCodeSuccess, setPromoCodeSuccess] = useState<string | null>(
@@ -765,9 +779,11 @@ export function ReviewStep({
           if (!res.ok) {
             const errBody = await res.json().catch(() => ({}))
             if (res.status === 409) {
+              // Refresh the picker so a re-pick can land on a different row.
+              onInventoryStale?.()
               throw new Error(
                 errBody.code === 'item_already_held'
-                  ? 'One of these items is already in another cart. Please refresh the inventory list and re-pick.'
+                  ? `One of these items is already in another cart.${onInventoryStale ? ' The inventory list has been refreshed — please re-pick.' : ' Please reload and re-pick.'}`
                   : `Could not reserve item: ${errBody.error || errBody.code || 'conflict'}`
               )
             }
@@ -931,7 +947,7 @@ export function ReviewStep({
           // storage, not the agent's. Appended after "(from storage)" so the
           // edit-page parser (which reads up to that token) is unaffected.
           description: storedSign
-            ? `Sign Install: ${storedSign.description} (from storage)${storedSign.source === 'brokerage' ? ` — ${storedSign.source_label || 'brokerage'} inventory` : ''}`
+            ? `Sign Install: ${storedSign.description} (from storage)${signLineSuffix(storedSign)}`
             : 'Sign Install (from storage)',
           quantity: 1,
           unit_price: PRICING.sign_install,
@@ -1077,7 +1093,7 @@ export function ReviewStep({
             item_type: 'sign',
             item_category: 'storage',
             description: storedSign2
-              ? `Second Post Sign Install: ${storedSign2.description} (from storage)${storedSign2.source === 'brokerage' ? ` — ${storedSign2.source_label || 'brokerage'} inventory` : ''}`
+              ? `Second Post Sign Install: ${storedSign2.description} (from storage)${signLineSuffix(storedSign2)}`
               : 'Second Post Sign Install (from storage)',
             quantity: 1,
             unit_price: PRICING.sign_install,
@@ -1171,6 +1187,14 @@ export function ReviewStep({
       setError('Please keep at least one item on the order')
       return
     }
+    if (formData.sign_option === 'stored' && !formData.stored_sign_id) {
+      setError('Please go back to the Sign step and pick which sign you want installed.')
+      return
+    }
+    if (formData.second_post_enabled && formData.second_post_sign_option === 'stored' && !formData.second_post_stored_sign_id) {
+      setError('Please go back to the Second Post step and pick which sign you want installed.')
+      return
+    }
     // Edit mode allows jumping straight to Review, so canProceed's property-
     // step gate never runs — enforce the required question here too.
     if (formData.street_numbers_visible === undefined) {
@@ -1241,7 +1265,11 @@ export function ReviewStep({
           // picker is stale, so refresh it before asking for a re-pick --
           // otherwise the dropdown offers the very id that was just refused.
           onInventoryStale?.()
-          throw new Error(`${data.error} Your inventory list has been refreshed — go back and choose a different item.`)
+          throw new Error(
+            onInventoryStale
+              ? `${data.error} Your inventory list has been refreshed — go back and choose a different item.`
+              : `${data.error} Reload this page and choose a different item.`
+          )
         }
         throw new Error(data.error || 'Failed to save changes')
       }
@@ -1270,6 +1298,17 @@ export function ReviewStep({
     // Ensure at least one item is in the order
     if (orderItems.length === 0) {
       setError('Please select at least one item for your order')
+      return
+    }
+    // The step indicator bypasses canProceed, so re-check here: a storage
+    // sign with no id would be a "(from storage)" line the server cannot
+    // attach to a physical sign.
+    if (formData.sign_option === 'stored' && !formData.stored_sign_id) {
+      setError('Please go back to the Sign step and pick which sign you want installed.')
+      return
+    }
+    if (formData.second_post_enabled && formData.second_post_sign_option === 'stored' && !formData.second_post_stored_sign_id) {
+      setError('Please go back to the Second Post step and pick which sign you want installed.')
       return
     }
 
@@ -1322,6 +1361,10 @@ export function ReviewStep({
           requested_date: formData.requested_date,
           is_expedited: formData.schedule_type === 'expedited',
           payment_method_id: formData.payment_method_id || defaultPaymentMethod?.id,
+          // Same token on a retry of THIS attempt, so the server's PaymentIntent
+          // idempotency key replays Stripe's cached PI instead of charging twice
+          // when the first response was lost.
+          client_submission_id: submissionIdRef.current,
           save_payment_method: formData.save_payment_method,
           promo_code: formData.promo_code,
           promo_code_id: formData.promo_code_id,
@@ -1341,7 +1384,17 @@ export function ReviewStep({
       if (!response.ok) {
         if (data.code === 'inventory_unavailable') {
           onInventoryStale?.()
-          throw new Error(`${data.error} Your inventory list has been refreshed — go back and choose a different item.`)
+          throw new Error(
+            onInventoryStale
+              ? `${data.error} Your inventory list has been refreshed — go back and choose a different item.`
+              : `${data.error} Reload this page and choose a different item.`
+          )
+        }
+        if (data.code === 'payment_uncertain') {
+          // Do NOT let the customer retry: a charge may exist. New token so a
+          // later, deliberate new order is never confused with this attempt.
+          submissionIdRef.current = `${Date.now()}-${Math.random()}`
+          throw new Error(data.error)
         }
         throw new Error(data.error || 'Failed to create order')
       }

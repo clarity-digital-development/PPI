@@ -219,8 +219,12 @@ export function OrderWizard({ inventory, onInventoryStale, paymentMethods, onBeh
         // If "from inventory" is selected, customer must pick which specific sign
         if (formData.sign_option === 'stored' && !formData.stored_sign_id) return false
         return true
-      case 'rider':
       case 'second-post':
+        // A second-post storage sign with no id would emit a "(from storage)"
+        // line the server cannot attach to a physical sign.
+        if (formData.second_post_enabled && formData.second_post_sign_option === 'stored' && !formData.second_post_stored_sign_id) return false
+        return true
+      case 'rider':
       case 'brochure':
         return true // Optional steps
       case 'lockbox':

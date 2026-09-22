@@ -105,3 +105,39 @@ export async function foreignHolds(
 
   return { count: byItem.length, byItem }
 }
+
+/**
+ * How many rows owned by SOMEBODY ELSE this account currently has out of
+ * circulation through LIVE ORDERS (not just cart holds). The hold cap alone
+ * only guards the cart endpoint, which a linked agent placing single orders
+ * never touches -- so without this, one account could consume the whole
+ * brokerage pool one order at a time.
+ */
+export async function foreignConsumption(holderUserId: string, client: HoldTx = prisma): Promise<number> {
+  const items = await client.orderItem.findMany({
+    where: {
+      order: {
+        OR: [{ userId: holderUserId }, { placedByUserId: holderUserId }],
+        status: { not: 'cancelled' },
+        paymentStatus: { in: ['succeeded', 'processing', 'pending', 'pending_invoice'] as any },
+      },
+      OR: [
+        { customerSignId: { not: null } },
+        { customerRiderId: { not: null } },
+        { customerLockboxId: { not: null } },
+        { customerBrochureBoxId: { not: null } },
+      ],
+    },
+    select: { customerSignId: true, customerRiderId: true, customerLockboxId: true, customerBrochureBoxId: true },
+  })
+  if (items.length === 0) return 0
+  const ids = (k: 'customerSignId' | 'customerRiderId' | 'customerLockboxId' | 'customerBrochureBoxId') =>
+    Array.from(new Set(items.map((i) => i[k]).filter((x): x is string => !!x)))
+  const [signs, riders, lockboxes, boxes] = await Promise.all([
+    client.customerSign.count({ where: { id: { in: ids('customerSignId') }, userId: { not: holderUserId } } }),
+    client.customerRider.count({ where: { id: { in: ids('customerRiderId') }, userId: { not: holderUserId } } }),
+    client.customerLockbox.count({ where: { id: { in: ids('customerLockboxId') }, userId: { not: holderUserId } } }),
+    client.customerBrochureBox.count({ where: { id: { in: ids('customerBrochureBoxId') }, userId: { not: holderUserId } } }),
+  ])
+  return signs + riders + lockboxes + boxes
+}

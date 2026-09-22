@@ -121,7 +121,7 @@ export interface StepProps {
     // `source` marks whether a row is the agent's own or drawn from the
     // brokerage pool they're linked to (Ryan, 2026-09-08). Optional because
     // the vast majority of users have no pool and the API omits labelling.
-    signs: Array<{ id: string; description: string; size: string | null; source?: 'own' | 'brokerage' | 'on-order'; source_label?: string | null }>
+    signs: Array<{ id: string; description: string; size: string | null; source?: 'own' | 'brokerage' | 'on-order'; source_label?: string | null; /** on-order rows only: which post the sign sits on */ on_order_post?: 'main' | 'second'; /** on-order rows only: text after "(from storage)" in the original line, e.g. " — Semonin inventory" */ line_suffix?: string }>
     riders: Array<{ id: string; rider_type: string; quantity: number; source?: 'own' | 'brokerage' | 'on-order'; source_label?: string | null }>
     lockboxes: Array<{ id: string; lockbox_type: string; lockbox_type_name?: string; lockbox_code: string | null; serial_number?: string | null; source?: 'own' | 'brokerage'; source_label?: string | null }>
     brochureBoxes: { quantity: number; own_quantity?: number; brokerage_quantity?: number } | null

@@ -38,6 +38,11 @@ export const createOrderSchema = z.object({
   items: z.array(orderItemSchema).min(1, 'At least one item is required'),
   requested_date: z.string().optional(),
   is_expedited: z.boolean().default(false),
+  // Minted once per checkout attempt by the wizard and re-sent on a retry, so
+  // the PaymentIntent idempotency key survives "the response got lost and the
+  // customer clicked again" -- Stripe then replays the same PI instead of
+  // charging twice.
+  client_submission_id: z.string().max(64).optional(),
   payment_method_id: z.string().optional(),
   save_payment_method: z.boolean().default(false),
   promo_code: z.string().optional(),

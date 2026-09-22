@@ -138,7 +138,7 @@ export function SecondPostStep({ formData, updateFormData, inventory }: StepProp
         sign.source === 'brokerage'
           ? `${base} — ${sign.source_label || 'Brokerage'}`
           : sign.source === 'on-order'
-            ? `${base} — currently on this order`
+            ? `${base} — currently on this order${sign.on_order_post === 'second' ? ' (second post)' : sign.on_order_post === 'main' ? ' (main post)' : ''}`
             : base
       // on-order rows keyed by exact id: the main and second post signs can
       // share a description and must stay two options (see sign-step.tsx).
@@ -151,16 +151,18 @@ export function SecondPostStep({ formData, updateFormData, inventory }: StepProp
   // Same guard as sign-step: never let a stored id that no option carries
   // sit behind a <select> that visually shows something else.
   useEffect(() => {
+    // Gated on the list having LOADED, not on it being non-empty -- a refetch
+    // that returns zero signs must clear the id too.
     if (
+      inventory !== undefined &&
       formData.second_post_sign_option === 'stored' &&
       formData.second_post_stored_sign_id &&
-      signOptions.length > 0 &&
       !signOptions.some((o) => o.value === formData.second_post_stored_sign_id)
     ) {
       updateFormData({ second_post_stored_sign_id: undefined })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [formData.second_post_sign_option, formData.second_post_stored_sign_id, signOptions])
+  }, [inventory, formData.second_post_sign_option, formData.second_post_stored_sign_id, signOptions])
 
   const ridersCount = formData.second_post_riders.length
   const wireFrameCount = formData.second_post_wire_frame_quantity

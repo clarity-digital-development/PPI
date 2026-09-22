@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { HoldItemType } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser, canActOnBehalfOf, isAdminOrTeamAdmin } from '@/lib/auth-utils'
-import { acquireHold, releaseHolds, HoldConflictError } from '@/lib/inventory-holds'
+import { acquireHold, releaseHolds, flushAudits, HoldConflictError } from '@/lib/inventory-holds'
 import { allowedInventoryOwnerIds } from '@/lib/orders/inventory-ownership'
 import { itemOwnerId, foreignHolds, FOREIGN_HOLD_CAP } from '@/lib/inventory/hold-scope'
 
@@ -128,6 +128,10 @@ export async function POST(request: NextRequest) {
         },
         { timeout: 10_000 }
       )
+      // Written only now: inside the transaction (and its advisory lock) an
+      // audit needs a SECOND pool connection, and ten concurrent hold requests
+      // each holding one while waiting for another wedged the pool.
+      await flushAudits(result.pendingAudit ? [result.pendingAudit] : [])
       return NextResponse.json({
         hold_id: result.holdId,
         expires_at: result.expiresAt,

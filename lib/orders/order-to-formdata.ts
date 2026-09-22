@@ -69,7 +69,7 @@ export interface WizardInventory {
   // silently strip it on the edit path.
   // 'on-order' marks the row this order already holds, injected by
   // augmentInventoryWithOrder so it can never collide with a pool group.
-  signs: Array<{ id: string; description: string; size: string | null; source?: 'own' | 'brokerage' | 'on-order'; source_label?: string | null }>
+  signs: Array<{ id: string; description: string; size: string | null; source?: 'own' | 'brokerage' | 'on-order'; source_label?: string | null; /** on-order rows only: which post the sign sits on */ on_order_post?: 'main' | 'second'; /** on-order rows only: text after "(from storage)" in the original line, e.g. " — Semonin inventory" */ line_suffix?: string }>
   riders: Array<{ id: string; rider_type: string; quantity: number; source?: 'own' | 'brokerage' | 'on-order'; source_label?: string | null }>
   lockboxes: Array<{ id: string; lockbox_type: string; lockbox_type_name?: string; lockbox_code: string | null; source?: 'own' | 'brokerage'; source_label?: string | null }>
   brochureBoxes: { quantity: number; own_quantity?: number; brokerage_quantity?: number } | null
@@ -403,9 +403,20 @@ export function augmentInventoryWithOrder(
   // value (formData.stored_sign_id) wouldn't match any visible option.
   for (const item of order.orderItems) {
     if (item.itemType === 'sign' && item.customerSignId) {
-      if (!base.signs.some(s => s.id === item.customerSignId)) {
-        const m = item.description.match(/Sign Install:\s*(.+?)\s*\(from storage\)/i)
+      {
+        // ALWAYS present the attached sign as its own 'on-order' row, and drop
+        // any same-id row the inventory API returned. Skipping the injection
+        // when the API already listed the row (it is in storage again) let the
+        // description-grouped dropdown pick a NEWER same-described sign as the
+        // group's representative, so the attached id had no matching option
+        // and the stale-id guard wiped a perfectly valid selection.
+        base.signs = base.signs.filter(s => s.id !== item.customerSignId)
+        const m = item.description.match(/Sign Install:\s*(.+?)\s*\(from storage\)(.*)$/i)
         const desc = (m ? m[1] : '').trim() || 'Stored sign'
+        // Anything after "(from storage)" -- e.g. " — Semonin inventory" --
+        // must round-trip unchanged when the sign is not re-picked, or every
+        // edit silently strips the brokerage marker off the line.
+        const lineSuffix = (m && m[2] ? m[2] : '').trim()
         // Tagged 'on-order', never 'own'.
         //
         // The order item does not record which pool its sign came from. Left
@@ -421,6 +432,8 @@ export function augmentInventoryWithOrder(
           description: desc,
           size: null,
           source: 'on-order',
+          on_order_post: isSecondPost(item.description) ? 'second' : 'main',
+          ...(lineSuffix ? { line_suffix: lineSuffix } : {}),
         })
       }
     }
