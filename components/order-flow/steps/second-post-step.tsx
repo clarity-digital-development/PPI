@@ -131,9 +131,15 @@ export function SecondPostStep({ formData, updateFormData, inventory }: StepProp
     const grouped: Record<string, { id: string; label: string }> = {}
     for (const sign of inventory!.signs) {
       const base = `${sign.description}${sign.size ? ` (${sign.size})` : ''}`
-      const label = sign.source === 'brokerage'
-        ? `${base} — ${sign.source_label || 'Brokerage'}`
-        : base
+      // 'on-order' is the row this order already holds. It gets its own
+      // option so it can never mask a same-described sign from either
+      // pool, and is labelled so the agent can tell it apart.
+      const label =
+        sign.source === 'brokerage'
+          ? `${base} — ${sign.source_label || 'Brokerage'}`
+          : sign.source === 'on-order'
+            ? `${base} — currently on this order`
+            : base
       const key = `${base}::${sign.source ?? 'own'}`
       if (!grouped[key]) grouped[key] = { id: sign.id, label }
     }

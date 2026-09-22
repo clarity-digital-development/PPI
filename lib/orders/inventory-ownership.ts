@@ -97,6 +97,23 @@ type ItemLike = Partial<Record<InventoryField, string | null | undefined>>
  */
 export interface OwnershipCheckOptions {
   /**
+   * Set for Pink Posts INTERNAL admins (role 'admin'), never for a team_admin.
+   *
+   * Ownership enforcement is what makes roster removal revoke pool access, and
+   * that is deliberate -- but it also means an agent's existing order holding a
+   * brokerage sign stops passing the moment the link is cut. Staff are the
+   * escalation path for exactly that, and without this they hit the identical
+   * 400: the admin edit page loads the ADMIN's own inventory, so the order's
+   * sign is the only option present and every retry fails the same way. The
+   * order becomes unfixable by anyone.
+   *
+   * Bypasses OWNERSHIP only. The storage precondition still applies to newly
+   * added ids, so this cannot be used to double-book an item that is already
+   * out at another property.
+   */
+  internalAdmin?: boolean
+
+  /**
    * Ids already attached to the order being edited. Ownership is still
    * enforced for these; only the `inStorage: true` precondition is waived.
    *
@@ -182,7 +199,7 @@ export async function checkInventoryOwnership(
       //
       // The not_found and not_in_storage waivers above stay: those are about an
       // order's own history, and removing them stranded 240 of 296 live orders.
-      if (!allowedOwnerIds.has(row.userId)) {
+      if (!opts?.internalAdmin && !allowedOwnerIds.has(row.userId)) {
         // Same message as not_found so the response can't be used to probe
         // which ids exist on other accounts.
         failures.push({

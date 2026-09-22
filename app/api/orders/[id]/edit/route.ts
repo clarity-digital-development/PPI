@@ -674,7 +674,14 @@ export async function PATCH(
     const editInventoryFailures = await checkInventoryOwnership(
       editData.items,
       editAllowedOwners,
-      { alreadyAttached: attachedIds }
+      {
+        alreadyAttached: attachedIds,
+        // Pink Posts staff only -- NOT team_admin. They are the escalation path
+        // for an order whose inventory ownership moved underneath it (a revoked
+        // brokerage link), and their own edit page shows their own inventory,
+        // so without this they cannot fix what nobody else can either.
+        internalAdmin: user.role === 'admin',
+      }
     )
     if (editInventoryFailures.length > 0) {
       console.warn('[orders/edit] inventory ownership check failed', {
@@ -799,10 +806,15 @@ export async function PATCH(
       // roster link. The ownership check above already rejects ids the actor
       // may not use; this makes the write itself say the same thing, so the two
       // can never drift.
-      const lockGuard = (ids: Set<string>) => ({
-        id: { in: Array.from(ids) },
-        userId: { in: Array.from(editAllowedOwners) },
-      })
+      // Mirrors the ownership check above, INCLUDING its internal-admin
+      // bypass. If the guard were stricter than the check, a staff rescue of an
+      // order whose inventory ownership moved would pass validation and then
+      // silently match zero rows here -- the order saved, the item never
+      // locked.
+      const lockGuard = (ids: Set<string>) =>
+        user.role === 'admin'
+          ? { id: { in: Array.from(ids) } }
+          : { id: { in: Array.from(ids) }, userId: { in: Array.from(editAllowedOwners) } }
       if (newSignIds.size)
         await tx.customerSign.updateMany({ where: lockGuard(newSignIds), data: { inStorage: false } })
       if (newRiderIds.size)

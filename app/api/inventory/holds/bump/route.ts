@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getCurrentUser } from '@/lib/auth-utils'
-import { bumpHolds } from '@/lib/inventory-holds'
+import { bumpHolds, releaseHolds } from '@/lib/inventory-holds'
+import { allowedInventoryOwnerIds } from '@/lib/orders/inventory-ownership'
+import { foreignHolds } from '@/lib/inventory/hold-scope'
 
 export async function PATCH(request: NextRequest) {
   try {
@@ -20,6 +22,31 @@ export async function PATCH(request: NextRequest) {
       }
     } catch {
       // Empty body is fine — bump all live holds.
+    }
+
+    // Re-authorise before extending. A hold is granted once and then renewed
+    // every few minutes for as long as a tab stays open, so without this a
+    // brokerage could remove an agent from their roster and that agent's
+    // existing holds on the brokerage's signs would keep renewing forever --
+    // the pool stays hidden from its owner and only Pink Posts staff can clear
+    // it. Anything the holder may no longer hold is released here instead.
+    const stillAllowed = await allowedInventoryOwnerIds({
+      orderUserId: user.id,
+      actorId: user.id,
+    })
+    const { byItem } = await foreignHolds(user.id)
+    const revoked = byItem.filter((h) => !stillAllowed.has(h.ownerId))
+    for (const h of revoked) {
+      await releaseHolds(
+        { actor: { id: user.id, email: user.email, role: user.role }, holdId: h.holdId },
+        { request, reason: 'access_revoked' }
+      )
+    }
+    if (revoked.length > 0) {
+      console.warn('[holds/bump] released holds the owner may no longer hold', {
+        ownerUserId: user.id,
+        released: revoked.length,
+      })
     }
 
     const result = await bumpHolds({ ownerUserId: user.id, cartItemIds: cartItemIds ?? null })

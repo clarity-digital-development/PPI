@@ -67,8 +67,10 @@ export interface WizardInventory {
   // pool (Ryan, 2026-09-08). Optional: absent for the great majority of users,
   // who have no pool. Carried on the type so augmentInventoryWithOrder does not
   // silently strip it on the edit path.
-  signs: Array<{ id: string; description: string; size: string | null; source?: 'own' | 'brokerage'; source_label?: string | null }>
-  riders: Array<{ id: string; rider_type: string; quantity: number; source?: 'own' | 'brokerage'; source_label?: string | null }>
+  // 'on-order' marks the row this order already holds, injected by
+  // augmentInventoryWithOrder so it can never collide with a pool group.
+  signs: Array<{ id: string; description: string; size: string | null; source?: 'own' | 'brokerage' | 'on-order'; source_label?: string | null }>
+  riders: Array<{ id: string; rider_type: string; quantity: number; source?: 'own' | 'brokerage' | 'on-order'; source_label?: string | null }>
   lockboxes: Array<{ id: string; lockbox_type: string; lockbox_type_name?: string; lockbox_code: string | null; source?: 'own' | 'brokerage'; source_label?: string | null }>
   brochureBoxes: { quantity: number; own_quantity?: number; brokerage_quantity?: number } | null
   brokeragePool?: { name: string } | null
@@ -389,6 +391,10 @@ export function augmentInventoryWithOrder(
     riders: inv?.riders ? [...inv.riders] : [],
     lockboxes: inv?.lockboxes ? [...inv.lockboxes] : [],
     brochureBoxes: inv?.brochureBoxes ?? null,
+    // Carried through, not dropped: the edit wizard uses it to label pooled
+    // signs, and without it the edit page presented the brokerage's signs as
+    // the agent's own storage.
+    brokeragePool: inv?.brokeragePool ?? null,
   }
 
   // Prepend (unshift) the order's own items so that, where the wizard de-dupes
@@ -400,12 +406,22 @@ export function augmentInventoryWithOrder(
       if (!base.signs.some(s => s.id === item.customerSignId)) {
         const m = item.description.match(/Sign Install:\s*(.+?)\s*\(from storage\)/i)
         const desc = (m ? m[1] : '').trim() || 'Stored sign'
-        // No `source`: the order item does not record which pool the sign came
-        // from, so it keys as 'own' and, being unshifted, wins its group. The
-        // id is exact, so the correct physical sign is always selected. KNOWN
-        // cosmetic limit: a brokerage sign on an existing order shows without
-        // its brokerage label when editing.
-        base.signs.unshift({ id: item.customerSignId, description: desc, size: null })
+        // Tagged 'on-order', never 'own'.
+        //
+        // The order item does not record which pool its sign came from. Left
+        // untagged it keyed as `<desc>::own` and, being unshifted, won that
+        // group -- so when a linked agent's order held a BROKERAGE sign
+        // described the same as one of their own, the agent's own sign was
+        // dropped from the dropdown entirely and the remaining unlabelled
+        // option silently carried the brokerage id. The agent could believe
+        // they had switched back to their own sign when nothing had changed.
+        // A distinct key can never mask a row from either pool.
+        base.signs.unshift({
+          id: item.customerSignId,
+          description: desc,
+          size: null,
+          source: 'on-order',
+        })
       }
     }
     if (item.itemType === 'rider' && item.customerRiderId) {

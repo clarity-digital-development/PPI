@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { getCurrentUser, canActOnBehalfOf, isAdminOrTeamAdmin } from '@/lib/auth-utils'
 import { acquireHold, releaseHolds, HoldConflictError } from '@/lib/inventory-holds'
 import { allowedInventoryOwnerIds } from '@/lib/orders/inventory-ownership'
+import { itemOwnerId, foreignHolds, FOREIGN_HOLD_CAP } from '@/lib/inventory/hold-scope'
 
 const VALID_ITEM_TYPES: readonly HoldItemType[] = ['sign', 'rider', 'lockbox'] as const
 
@@ -77,19 +78,34 @@ export async function POST(request: NextRequest) {
       orderUserId: ownerUserId,
       actorId: user.id,
     })
-    const itemOwner = await (async () => {
-      const sel = { select: { userId: true } }
-      if (itemType === 'sign') return prisma.customerSign.findUnique({ where: { id: itemId }, ...sel })
-      if (itemType === 'rider') return prisma.customerRider.findUnique({ where: { id: itemId }, ...sel })
-      return prisma.customerLockbox.findUnique({ where: { id: itemId }, ...sel })
-    })()
-    if (!itemOwner || !holdAllowedOwners.has(itemOwner.userId)) {
+    const ownerOfItem = await itemOwnerId(itemType, itemId)
+    if (!ownerOfItem || !holdAllowedOwners.has(ownerOfItem)) {
       // Same opaque 409 the conflict path returns, so this cannot be used as an
       // existence oracle for ids on other accounts.
       return NextResponse.json(
         { error: 'item_unavailable', code: 'item_unavailable' },
         { status: 409 }
       )
+    }
+
+    // The ownership check above is necessary but NOT sufficient against the
+    // pool-blackout case: a linked agent is legitimately inside the allow-list
+    // for every one of the brokerage's signs, so "may you hold this?" is yes
+    // 317 times over. Bound how much shared inventory one account can take out
+    // of circulation at once. Only evaluated when the row is somebody else's,
+    // so ordinary agents holding their own items never pay for this.
+    if (ownerOfItem !== ownerUserId) {
+      const { count } = await foreignHolds(ownerUserId)
+      if (count >= FOREIGN_HOLD_CAP) {
+        return NextResponse.json(
+          {
+            error:
+              'You have too many shared items reserved at once. Finish or cancel an order before reserving more.',
+            code: 'too_many_shared_holds',
+          },
+          { status: 429 }
+        )
+      }
     }
 
     try {
