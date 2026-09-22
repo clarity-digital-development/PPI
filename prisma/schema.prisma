@@ -806,6 +806,11 @@ model Installation {
   lockboxes       InstallationLockbox[]
   serviceRequests ServiceRequest[]
 
+  // Admin Active Posts list (Ryan 2026-09-19): filter on status, sort on
+  // installedAt. Additive only -- pure CREATE INDEX on db push. No index on
+  // propertyAddress: a btree cannot serve `contains` (ILIKE '%x%') and after
+  // the status filter the residual scan is tiny.
+  @@index([status, installedAt])
   @@map("installations")
 }
 

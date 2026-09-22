@@ -16,6 +16,7 @@ import {
   Wrench,
   MapPin,
   FileText,
+  Signpost,
 } from 'lucide-react'
 import { Logo } from '@/components/shared'
 import { cn } from '@/lib/utils'
@@ -25,6 +26,8 @@ const fullNavItems = [
   { href: '/admin', label: 'Overview', icon: LayoutDashboard },
   { href: '/admin/customers', label: 'Customers', icon: Users },
   { href: '/admin/orders', label: 'Orders', icon: ShoppingCart },
+  // Ryan 2026-09-19: "see our active posts" -- agents forgetting to schedule removal.
+  { href: '/admin/installations', label: 'Active Posts', icon: Signpost },
   { href: '/admin/invoices', label: 'Invoices', icon: FileText },
   { href: '/admin/service-requests', label: 'Service Requests', icon: Wrench },
   { href: '/admin/inventory', label: 'Inventory', icon: Package },

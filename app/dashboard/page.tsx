@@ -11,9 +11,16 @@ export default function DashboardPage() {
   const [installations, setInstallations] = useState<Installation[]>([])
   const [orders, setOrders] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  // Dead <input> until 2026-09-22: it had no value/onChange, so typing did
+  // nothing. Client-side filter -- /api/installations is per-user and
+  // unpaginated, so the list is small.
+  const [search, setSearch] = useState('')
 
-  useEffect(() => {
-    async function fetchData() {
+  // Hoisted out of the effect so it can be handed to ActivePostsTable as
+  // onRefresh. Without that, scheduling a removal from the row menu left the
+  // badge reading "Active" until a manual reload (handleModalSuccess ->
+  // onRefresh?.() was a no-op).
+  async function fetchData() {
       try {
         const [installRes, ordersRes] = await Promise.all([
           fetch('/api/installations'),
@@ -22,8 +29,17 @@ export default function DashboardPage() {
 
         if (installRes.ok) {
           const installData = await installRes.json()
-          // Transform API data to match Installation interface
-          const transformed = installData.installations.map((inst: any) => ({
+          // Transform API data to match Installation interface.
+          //
+          // Removed installs are dropped: this section is "Active
+          // Installations", and /api/installations returns every status. NOT
+          // filtered to status=active alone -- removal_scheduled rows must stay
+          // (the customer still needs "Request Service" on them, and the
+          // "Scheduled Removals" tile counts from this same array). Removed
+          // history lives in Order History.
+          const transformed = installData.installations
+            .filter((inst: any) => inst.status !== 'removed')
+            .map((inst: any) => ({
             id: inst.id,
             installDate: inst.installedAt,
             address: inst.propertyAddress,
@@ -45,10 +61,19 @@ export default function DashboardPage() {
       } finally {
         setLoading(false)
       }
-    }
+  }
 
+  useEffect(() => {
     fetchData()
+    // fetchData is a stable closure over setters only; listing it would refetch
+    // every render. Same pattern as app/admin/service-requests/page.tsx.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  const visible = installations.filter((i) => {
+    const q = search.trim().toLowerCase()
+    return !q || `${i.address} ${i.city} ${i.zip}`.toLowerCase().includes(q)
+  })
 
   // Calculate stats from real data
   const activeCount = installations.filter((i) => i.status === 'active').length
@@ -112,7 +137,9 @@ export default function DashboardPage() {
             {installations.length > 0 && (
               <input
                 type="text"
-                placeholder="Search..."
+                placeholder="Search by street, city, or zip..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
                 className="w-full sm:w-auto px-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-pink-500"
               />
             )}
@@ -133,8 +160,12 @@ export default function DashboardPage() {
                 <Button>Place Your First Order</Button>
               </Link>
             </div>
+          ) : visible.length === 0 ? (
+            <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500">
+              No installations match &ldquo;{search.trim()}&rdquo;
+            </div>
           ) : (
-            <ActivePostsTable installations={installations} />
+            <ActivePostsTable installations={visible} onRefresh={fetchData} />
           )}
         </div>
       </div>

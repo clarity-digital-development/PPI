@@ -76,19 +76,24 @@ export default function AdminOverviewPage() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-pink-100 flex items-center justify-center">
-                <MapPin className="w-5 h-5 text-pink-600" />
+        {/* Links to the Active Posts page (Ryan 2026-09-19). Same
+            status='active' predicate on both sides, so the number here and
+            the page's total always agree. */}
+        <Link href="/admin/installations">
+          <Card className="h-full transition-all hover:shadow-md">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-pink-100 flex items-center justify-center">
+                  <MapPin className="w-5 h-5 text-pink-600" />
+                </div>
+                <div>
+                  <p className="text-sm text-gray-600">Active Installations</p>
+                  <p className="text-2xl font-bold text-gray-900">{stats?.activeInstallations || 0}</p>
+                </div>
               </div>
-              <div>
-                <p className="text-sm text-gray-600">Active Installations</p>
-                <p className="text-2xl font-bold text-gray-900">{stats?.activeInstallations || 0}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        </Link>
 
         <Card>
           <CardContent className="p-4">
