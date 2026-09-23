@@ -102,6 +102,9 @@ export const AuditAction = {
   // Per-team pricing perks, toggled from /admin/customers/[id].
   TeamPickupFeeWaiverToggle:   'team.pickup_fee_waiver_toggle',
   TeamFreeLockboxToggle:       'team.free_lockbox_install_toggle',
+  // Same perk held on the account itself, for broker logins that have no Team
+  // record (the Keller Williams offices). Either source grants it.
+  UserFreeLockboxToggle:       'user.free_lockbox_install_toggle',
   InvoiceCreated:              'invoice.created',
   InvoicePaid:                 'invoice.paid',
   InvoiceVoided:               'invoice.voided',

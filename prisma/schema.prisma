@@ -92,6 +92,12 @@ model User {
   // Enforced server-side at order create/edit; items still flow to fulfillment.
   // (Fuel went 2.47 → 3.49 on 2026-06-27 per Ryan.)
   flatFeeBilling      Boolean  @default(false) @map("flat_fee_billing")
+  // Per-account version of Team.freeLockboxInstall, for broker logins that
+  // have no Team record — the Keller Williams offices are team_admin accounts
+  // with teamId null, so the team-held perk gave Ryan nothing to toggle
+  // (Ryan, 2026-09-23). Either source grants the perk; the admin screen writes
+  // whichever one this account actually has.
+  freeLockboxInstall  Boolean  @default(false) @map("free_lockbox_install")
   // Optional billing-contact email — when set, bundled-invoice emails go
   // here instead of the broker's account email. Lets a broker route bills
   // to their accountant without forwarding. Falls back to `email` when null.

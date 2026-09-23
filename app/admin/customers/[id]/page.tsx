@@ -24,6 +24,7 @@ interface CustomerData {
     is_service_area_exempt?: boolean
     invoice_billing?: boolean
     flat_fee_billing?: boolean
+    free_lockbox_install?: boolean
     billing_email?: string | null
     /** Brokerage whose inventory pool this agent may order from. Derived from
      *  the roster row, NOT User.teamId -- see the brokerage route header. */
@@ -210,7 +211,12 @@ export default function CustomerDetailPage() {
           flat_fee_billing: data.customer.flat_fee_billing ?? false,
           billing_email: data.customer.billing_email || '',
           team_pickup_fee_waived: data.team?.pickup_fee_waived ?? false,
-          team_free_lockbox_install: data.team?.free_lockbox_install ?? false,
+          // Mirrors how pricing resolves it — EITHER source grants the perk
+          // (app/api/orders/[id]/route.ts). Reading only the team here would
+          // show OFF on an account that is in fact getting free installs.
+          team_free_lockbox_install: !!(
+            data.customer.free_lockbox_install || data.team?.free_lockbox_install
+          ),
         })
         setBrokerageTeamId(data.customer.brokerage_team_id || '')
       }
@@ -237,13 +243,13 @@ export default function CustomerDetailPage() {
           invoice_billing: editData.invoice_billing,
           flat_fee_billing: editData.flat_fee_billing,
           billing_email: editData.billing_email,
-          // Team perks exist only on a team; the API refuses them otherwise.
-          ...(data?.team
-            ? {
-                team_pickup_fee_waived: editData.team_pickup_fee_waived,
-                team_free_lockbox_install: editData.team_free_lockbox_install,
-              }
-            : {}),
+          // The sign-pickup waiver exists only on a team; the API refuses it
+          // otherwise. The lockbox perk always goes — the API writes it to the
+          // team when there is one and to the account when there isn't, so
+          // gating it here would make the checkbox a silent no-op for the
+          // broker logins that have no team.
+          ...(data?.team ? { team_pickup_fee_waived: editData.team_pickup_fee_waived } : {}),
+          team_free_lockbox_install: editData.team_free_lockbox_install,
         }),
       })
       if (!res.ok) {
@@ -1934,44 +1940,46 @@ export default function CustomerDetailPage() {
           {/* Team perks — stored on the Team, so they only exist once this
               account has one (every brokerage login does). Orders PAID by
               this account get them; agents paying with their own card don't. */}
-          {data?.team ? (
-            <>
-              <div>
-                <label className="flex items-start gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={editData.team_pickup_fee_waived}
-                    onChange={(e) => setEditData({ ...editData, team_pickup_fee_waived: e.target.checked })}
-                    className="mt-0.5 w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
-                  />
-                  <span className="text-sm">
-                    <span className="font-medium text-gray-700">No sign-pickup fee</span>
-                    <span className="block text-xs text-gray-500">
-                      Orders paid by this account never get the $10 fee for picking a sign up from another location. Agents who pay with their own card still do.
-                    </span>
+          {data?.team && (
+            <div>
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={editData.team_pickup_fee_waived}
+                  onChange={(e) => setEditData({ ...editData, team_pickup_fee_waived: e.target.checked })}
+                  className="mt-0.5 w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
+                />
+                <span className="text-sm">
+                  <span className="font-medium text-gray-700">No sign-pickup fee</span>
+                  <span className="block text-xs text-gray-500">
+                    Orders paid by this account never get the $10 fee for picking a sign up from another location. Agents who pay with their own card still do.
                   </span>
-                </label>
-              </div>
-              <div>
-                <label className="flex items-start gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={editData.team_free_lockbox_install}
-                    onChange={(e) => setEditData({ ...editData, team_free_lockbox_install: e.target.checked })}
-                    className="mt-0.5 w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
-                  />
-                  <span className="text-sm">
-                    <span className="font-medium text-gray-700">Free lockbox install</span>
-                    <span className="block text-xs text-gray-500">
-                      Installing a lockbox this account already owns is $0 instead of $5. Renting one is still charged.
-                    </span>
-                  </span>
-                </label>
-              </div>
-            </>
-          ) : (
+                </span>
+              </label>
+            </div>
+          )}
+          {/* Always available: unlike the pickup waiver this perk is also held
+              on the account, so broker logins with no team record still have a
+              switch (Ryan, 2026-09-23 — the Keller Williams offices). */}
+          <div>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={editData.team_free_lockbox_install}
+                onChange={(e) => setEditData({ ...editData, team_free_lockbox_install: e.target.checked })}
+                className="mt-0.5 w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
+              />
+              <span className="text-sm">
+                <span className="font-medium text-gray-700">Free lockbox install</span>
+                <span className="block text-xs text-gray-500">
+                  Installing a lockbox this account already owns is $0 instead of $5. Renting one is still charged.
+                </span>
+              </span>
+            </label>
+          </div>
+          {!data?.team && (
             <p className="text-xs text-gray-500">
-              Team perks (no sign-pickup fee, free lockbox install) appear here once this account has a team.
+              The sign-pickup fee waiver appears here once this account has a team.
             </p>
           )}
           {/* Billing-contact email — when set, bundled-invoice emails go here

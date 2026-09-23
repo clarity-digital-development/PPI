@@ -53,13 +53,16 @@ export async function GET(
     // server wouldn't charge. The edit route resolves the same payer.
     const payer = await prisma.user.findUnique({
       where: { id: order.placedByUserId ?? order.userId },
-      select: { team: { select: { freeLockboxInstall: true, pickupFeeWaived: true } } },
+      select: {
+        freeLockboxInstall: true,
+        team: { select: { freeLockboxInstall: true, pickupFeeWaived: true } },
+      },
     })
 
     const orderResponse = {
       ...order,
       payerPerks: {
-        freeLockboxInstall: !!payer?.team?.freeLockboxInstall,
+        freeLockboxInstall: !!(payer?.freeLockboxInstall || payer?.team?.freeLockboxInstall),
         pickupFeeWaived: !!payer?.team?.pickupFeeWaived,
       },
       paid_at: order.paidAt ? order.paidAt.toISOString() : null,

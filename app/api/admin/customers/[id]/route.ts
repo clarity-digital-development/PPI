@@ -215,6 +215,9 @@ export async function GET(
         is_service_area_exempt: customer.isServiceAreaExempt,
         invoice_billing: customer.invoiceBilling,
         flat_fee_billing: customer.flatFeeBilling,
+        // Account-level lockbox perk — the one that applies when this account
+        // has no team. The admin screen shows whichever of the two is in play.
+        free_lockbox_install: customer.freeLockboxInstall,
         billing_email: customer.billingEmail,
         // Which brokerage's inventory pool this agent draws from, if any.
         // Read off the ROSTER row, not customer.teamId: the link deliberately
@@ -387,37 +390,63 @@ export async function PUT(
     // Validated here with the other 400s; WRITTEN after the user update below
     // succeeds, so a failed save never leaves a perk changed without its audit.
     let pendingTeamUpdate: { teamId: string; data: { pickupFeeWaived?: boolean; freeLockboxInstall?: boolean } } | null = null
+    // The lockbox perk when this account has no Team: held on the account
+    // itself so broker logins without a team (the Keller Williams offices)
+    // still have a switch. Audited like the other per-user toggles.
+    let userFreeLockboxAudit: { from: boolean; to: boolean } | null = null
     if (body.team_pickup_fee_waived !== undefined || body.team_free_lockbox_install !== undefined) {
       const cur = await prisma.user.findUnique({
         where: { id },
-        select: { teamId: true, team: { select: { pickupFeeWaived: true, freeLockboxInstall: true } } },
+        select: {
+          teamId: true,
+          freeLockboxInstall: true,
+          team: { select: { pickupFeeWaived: true, freeLockboxInstall: true } },
+        },
       })
       if (!cur) {
         return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
       }
       if (!cur.teamId || !cur.team) {
-        return NextResponse.json(
-          { error: 'This account has no team yet, so team perks cannot be set. Add a team member first.' },
-          { status: 400 }
-        )
-      }
-      const teamData: { pickupFeeWaived?: boolean; freeLockboxInstall?: boolean } = {}
-      if (body.team_pickup_fee_waived !== undefined) {
-        const next = Boolean(body.team_pickup_fee_waived)
-        if (cur.team.pickupFeeWaived !== next) {
-          teamData.pickupFeeWaived = next
-          teamPerkAudits.push({ action: AuditAction.TeamPickupFeeWaiverToggle, from: cur.team.pickupFeeWaived, to: next, teamId: cur.teamId })
+        // The sign-pickup waiver is still team-only — it is enforced against
+        // the payer's team in lib/orders/pickup-fee.ts.
+        if (body.team_pickup_fee_waived !== undefined) {
+          return NextResponse.json(
+            { error: 'This account has no team yet, so the sign-pickup waiver cannot be set. Add a team member first.' },
+            { status: 400 }
+          )
         }
-      }
-      if (body.team_free_lockbox_install !== undefined) {
         const next = Boolean(body.team_free_lockbox_install)
-        if (cur.team.freeLockboxInstall !== next) {
-          teamData.freeLockboxInstall = next
-          teamPerkAudits.push({ action: AuditAction.TeamFreeLockboxToggle, from: cur.team.freeLockboxInstall, to: next, teamId: cur.teamId })
+        if (cur.freeLockboxInstall !== next) {
+          updateData.freeLockboxInstall = next
+          userFreeLockboxAudit = { from: cur.freeLockboxInstall, to: next }
         }
-      }
-      if (Object.keys(teamData).length > 0) {
-        pendingTeamUpdate = { teamId: cur.teamId, data: teamData }
+      } else {
+        const teamData: { pickupFeeWaived?: boolean; freeLockboxInstall?: boolean } = {}
+        if (body.team_pickup_fee_waived !== undefined) {
+          const next = Boolean(body.team_pickup_fee_waived)
+          if (cur.team.pickupFeeWaived !== next) {
+            teamData.pickupFeeWaived = next
+            teamPerkAudits.push({ action: AuditAction.TeamPickupFeeWaiverToggle, from: cur.team.pickupFeeWaived, to: next, teamId: cur.teamId })
+          }
+        }
+        if (body.team_free_lockbox_install !== undefined) {
+          const next = Boolean(body.team_free_lockbox_install)
+          if (cur.team.freeLockboxInstall !== next) {
+            teamData.freeLockboxInstall = next
+            teamPerkAudits.push({ action: AuditAction.TeamFreeLockboxToggle, from: cur.team.freeLockboxInstall, to: next, teamId: cur.teamId })
+          }
+          // Pricing ORs the two sources, so a leftover account-level flag —
+          // set while this account had no team — would keep granting free
+          // installs that the team checkbox can never switch off. The team is
+          // authoritative once it exists; clear the account copy with it.
+          if (cur.freeLockboxInstall && !next) {
+            updateData.freeLockboxInstall = false
+            userFreeLockboxAudit = { from: true, to: false }
+          }
+        }
+        if (Object.keys(teamData).length > 0) {
+          pendingTeamUpdate = { teamId: cur.teamId, data: teamData }
+        }
       }
     }
 
@@ -562,6 +591,17 @@ export async function PUT(
         targetType: 'user',
         targetId: customer.id,
         metadata: { email: customer.email, ...flatFeeBillingAudit },
+        request,
+      })
+    }
+
+    if (userFreeLockboxAudit) {
+      await audit({
+        actor: { id: user.id, email: user.email, role: user.role },
+        action: AuditAction.UserFreeLockboxToggle,
+        targetType: 'user',
+        targetId: customer.id,
+        metadata: { email: customer.email, ...userFreeLockboxAudit },
         request,
       })
     }
