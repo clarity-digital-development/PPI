@@ -219,6 +219,10 @@ export async function GET(
         // has no team. The admin screen shows whichever of the two is in play.
         free_lockbox_install: customer.freeLockboxInstall,
         billing_email: customer.billingEmail,
+        invoice_discount_percent:
+          customer.invoiceDiscountPercent !== null && customer.invoiceDiscountPercent !== undefined
+            ? Number(customer.invoiceDiscountPercent)
+            : null,
         // Which brokerage's inventory pool this agent draws from, if any.
         // Read off the ROSTER row, not customer.teamId: the link deliberately
         // does not write User.teamId, because that field carries act-as,
@@ -362,6 +366,39 @@ export async function PUT(
       if (cur.invoiceBilling !== nextInvoiceBilling) {
         updateData.invoiceBilling = nextInvoiceBilling
         invoiceBillingAudit = { from: cur.invoiceBilling, to: nextInvoiceBilling }
+      }
+    }
+
+    // Broker invoice discount — a percentage off this account's bundled
+    // invoices. Validated here with the other 400s; money, so it is audited.
+    let invoiceDiscountAudit: { from: number | null; to: number | null } | null = null
+    if (body.invoice_discount_percent !== undefined) {
+      const raw = body.invoice_discount_percent
+      const blank = raw === null || (typeof raw === 'string' && raw.trim() === '')
+      let next: number | null = null
+      if (!blank) {
+        const parsed = Number(raw)
+        if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+          return NextResponse.json(
+            { error: 'Invoice discount must be a number between 0 and 100.' },
+            { status: 400 }
+          )
+        }
+        // Decimal(5,2) — round rather than let the DB reject extra places.
+        next = Math.round(parsed * 100) / 100
+        if (next === 0) next = null
+      }
+      const cur = await prisma.user.findUnique({
+        where: { id },
+        select: { invoiceDiscountPercent: true },
+      })
+      if (!cur) {
+        return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
+      }
+      const curNum = cur.invoiceDiscountPercent !== null ? Number(cur.invoiceDiscountPercent) : null
+      if (curNum !== next) {
+        updateData.invoiceDiscountPercent = next
+        invoiceDiscountAudit = { from: curNum, to: next }
       }
     }
 
@@ -591,6 +628,17 @@ export async function PUT(
         targetType: 'user',
         targetId: customer.id,
         metadata: { email: customer.email, ...flatFeeBillingAudit },
+        request,
+      })
+    }
+
+    if (invoiceDiscountAudit) {
+      await audit({
+        actor: { id: user.id, email: user.email, role: user.role },
+        action: AuditAction.UserInvoiceDiscountChange,
+        targetType: 'user',
+        targetId: customer.id,
+        metadata: { email: customer.email, ...invoiceDiscountAudit },
         request,
       })
     }

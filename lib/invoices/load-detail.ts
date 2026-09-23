@@ -45,6 +45,11 @@ export async function loadInvoiceDetailForPdf(invoiceId: string): Promise<Invoic
     expedite_total: orderSum('expediteFee'),
     no_post_total: orderSum('noPostSurcharge'),
     discount_total: orderSum('discount'),
+    // Read off the invoice row, not re-derived from the account: the rate is
+    // snapshotted at bundle time so an already-sent invoice keeps showing the
+    // numbers the customer was billed even if their rate changes later.
+    broker_discount_percent: invoice.discountPercent !== null ? Number(invoice.discountPercent) : null,
+    broker_discount_amount: invoice.discountAmount !== null ? Number(invoice.discountAmount) : null,
     sent_at: invoice.sentAt?.toISOString() ?? null,
     paid_at: invoice.paidAt?.toISOString() ?? null,
     customer: {

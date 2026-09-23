@@ -26,6 +26,7 @@ interface CustomerData {
     flat_fee_billing?: boolean
     free_lockbox_install?: boolean
     billing_email?: string | null
+    invoice_discount_percent?: number | null
     /** Brokerage whose inventory pool this agent may order from. Derived from
      *  the roster row, NOT User.teamId -- see the brokerage route header. */
     brokerage_team_id?: string | null
@@ -134,6 +135,7 @@ export default function CustomerDetailPage() {
     invoice_billing: boolean
     flat_fee_billing: boolean
     billing_email: string
+    invoice_discount_percent: string
     // Team perks — only sent when the account has a team.
     team_pickup_fee_waived: boolean
     team_free_lockbox_install: boolean
@@ -147,6 +149,7 @@ export default function CustomerDetailPage() {
     invoice_billing: false,
     flat_fee_billing: false,
     billing_email: '',
+    invoice_discount_percent: '',
     team_pickup_fee_waived: false,
     team_free_lockbox_install: false,
   })
@@ -210,6 +213,8 @@ export default function CustomerDetailPage() {
           invoice_billing: data.customer.invoice_billing ?? false,
           flat_fee_billing: data.customer.flat_fee_billing ?? false,
           billing_email: data.customer.billing_email || '',
+          invoice_discount_percent:
+            data.customer.invoice_discount_percent != null ? String(data.customer.invoice_discount_percent) : '',
           team_pickup_fee_waived: data.team?.pickup_fee_waived ?? false,
           // Mirrors how pricing resolves it — EITHER source grants the perk
           // (app/api/orders/[id]/route.ts). Reading only the team here would
@@ -243,6 +248,7 @@ export default function CustomerDetailPage() {
           invoice_billing: editData.invoice_billing,
           flat_fee_billing: editData.flat_fee_billing,
           billing_email: editData.billing_email,
+          invoice_discount_percent: editData.invoice_discount_percent,
           // The sign-pickup waiver exists only on a team; the API refuses it
           // otherwise. The lockbox perk always goes — the API writes it to the
           // team when there is one and to the account when there isn't, so
@@ -1997,6 +2003,29 @@ export default function CustomerDetailPage() {
               />
               <p className="mt-1 text-xs text-gray-500">
                 Invoices will be sent here instead of the account email{editData.email ? ` (${editData.email})` : ''}. Leave blank to use the account email.
+              </p>
+            </div>
+          )}
+          {/* Broker invoice discount (Ryan, 2026-09-23 — the Keller Williams
+              offices pay the discounted amount and bill their agent the full
+              amount). One line off the bottom of the invoice, not per item. */}
+          {editData.invoice_billing && (
+            <div>
+              <Input
+                label="Invoice discount % (optional)"
+                /* Deliberately not type="number": a number input hands back an
+                   empty string for anything it can't parse, so a typo would
+                   silently CLEAR an existing discount instead of being
+                   rejected. Text lets the value reach the API, which validates
+                   it and says what's wrong. */
+                type="text"
+                inputMode="decimal"
+                placeholder="e.g. 15"
+                value={editData.invoice_discount_percent}
+                onChange={(e) => setEditData({ ...editData, invoice_discount_percent: e.target.value })}
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Taken off the subtotal as a single line at the bottom of every invoice for this account. Tax stays as charged on each order. Leave blank for no discount.
               </p>
             </div>
           )}

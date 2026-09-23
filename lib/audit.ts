@@ -105,6 +105,7 @@ export const AuditAction = {
   // Same perk held on the account itself, for broker logins that have no Team
   // record (the Keller Williams offices). Either source grants it.
   UserFreeLockboxToggle:       'user.free_lockbox_install_toggle',
+  UserInvoiceDiscountChange:   'user.invoice_discount_percent_change',
   InvoiceCreated:              'invoice.created',
   InvoicePaid:                 'invoice.paid',
   InvoiceVoided:               'invoice.voided',

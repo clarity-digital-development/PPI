@@ -63,6 +63,10 @@ export async function GET(
     expedite_total: invoice.orders.reduce((s, o) => s + Number(o.expediteFee ?? 0), 0),
     no_post_total: invoice.orders.reduce((s, o) => s + Number(o.noPostSurcharge ?? 0), 0),
     discount_total: invoice.orders.reduce((s, o) => s + Number(o.discount ?? 0), 0),
+    // Snapshot off the invoice row — same as lib/invoices/load-detail.ts, so
+    // the public PDF and the admin-generated one show identical numbers.
+    broker_discount_percent: invoice.discountPercent !== null ? Number(invoice.discountPercent) : null,
+    broker_discount_amount: invoice.discountAmount !== null ? Number(invoice.discountAmount) : null,
     sent_at: invoice.sentAt?.toISOString() ?? null,
     paid_at: invoice.paidAt?.toISOString() ?? null,
     customer: {

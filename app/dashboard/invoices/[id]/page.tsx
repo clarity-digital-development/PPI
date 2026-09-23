@@ -390,6 +390,18 @@ export default function InvoiceDetailPage() {
                   </span>
                 </div>
               ))}
+              {/* Broker discount — one line off the subtotal, matching the PDF. */}
+              {!!invoice.broker_discount_amount && invoice.broker_discount_amount > 0 && (
+                <div className="flex justify-between text-green-600">
+                  <span>
+                    Broker discount
+                    {invoice.broker_discount_percent
+                      ? ` (${Number(invoice.broker_discount_percent.toFixed(2))}%)`
+                      : ''}
+                  </span>
+                  <span>-{formatCurrency(invoice.broker_discount_amount)}</span>
+                </div>
+              )}
               {invoice.discount_total > 0 && (
                 <div className="flex justify-between text-green-600">
                   <span>Discount</span><span>-{formatCurrency(invoice.discount_total)}</span>

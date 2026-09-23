@@ -61,6 +61,11 @@ export async function GET(
       expedite_total: invoice.orders.reduce((s, o) => s + Number(o.expediteFee ?? 0), 0),
       no_post_total: invoice.orders.reduce((s, o) => s + Number(o.noPostSurcharge ?? 0), 0),
       discount_total: invoice.orders.reduce((s, o) => s + Number(o.discount ?? 0), 0),
+      // Broker discount snapshot. This is the page the customer pays from and
+      // the PDF button reads the same object, so leaving it out showed a total
+      // short by the discount with no line explaining the gap.
+      broker_discount_percent: invoice.discountPercent !== null ? Number(invoice.discountPercent) : null,
+      broker_discount_amount: invoice.discountAmount !== null ? Number(invoice.discountAmount) : null,
       sent_at: invoice.sentAt?.toISOString() ?? null,
       paid_at: invoice.paidAt?.toISOString() ?? null,
       customer: {

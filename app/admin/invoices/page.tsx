@@ -48,6 +48,10 @@ interface PreviewResponse {
   // Post-invoice edit adjustments the next bundle will sweep. Optional for
   // back-compat with cached pre-feature responses.
   adjustments?: PreviewAdjustment[]
+  /** Broker discount already netted out of `total` — shown so the headline
+   *  number is explainable against the rows listed beneath it. */
+  discount_percent?: number | null
+  discount_amount?: number | null
   subtotal: number
   total: number
   count: number
@@ -519,6 +523,15 @@ export default function AdminInvoicesPage() {
                     <>{' + '}{preview.service_request_count ?? preview.service_requests?.length ?? 0} service trip{(preview.service_request_count ?? preview.service_requests?.length ?? 0) === 1 ? '' : 's'}</>
                   )}
                 </p>
+                {/* Without this the headline total is quietly short by the
+                    discount and disagrees with the order rows listed below. */}
+                {!!preview.discount_amount && preview.discount_amount > 0 && (
+                  <p className="text-xs text-green-600">
+                    incl. broker discount
+                    {preview.discount_percent ? ` (${Number(preview.discount_percent.toFixed(2))}%)` : ''}
+                    {' '}-{formatCurrency(preview.discount_amount)}
+                  </p>
+                )}
                 <p className="text-lg font-bold text-pink-600">{formatCurrency(preview.total)}</p>
               </div>
             </div>

@@ -4,6 +4,8 @@ import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { audit, AuditAction } from '@/lib/audit'
 import { processInvoiceSendJob } from '@/lib/invoices/send-invoice-job'
+import { invoiceDiscount } from '@/lib/invoices/discount'
+import { uncollectableInvoice, uncollectableMessage } from '@/lib/invoices/bundle-errors'
 
 /**
  * Admin invoice bundler.
@@ -123,8 +125,17 @@ export async function GET(request: NextRequest) {
     // orders (customer page, PDF) — the adjustment source orders belong to
     // OLD invoices and are never in this invoice's orders relation.
     const subtotal = ordersSubtotal + srTotal
-    const total = ordersTotal + srTotal + adjustmentCents / 100
+    // Same discount the POST will apply, so the admin never previews one
+    // number and sends another.
+    const previewCustomer = await prisma.user.findUnique({
+      where: { id: customerId },
+      select: { invoiceDiscountPercent: true },
+    })
+    const discount = invoiceDiscount(subtotal, previewCustomer?.invoiceDiscountPercent)
+    const total = ordersTotal + srTotal + adjustmentCents / 100 - discount.amount
     return NextResponse.json({
+      discount_percent: discount.amount > 0 ? discount.percent : null,
+      discount_amount: discount.amount > 0 ? discount.amount : null,
       adjustments: adjustmentOrders.map((o) => ({
         order_id: o.id,
         order_number: o.orderNumber,
@@ -240,7 +251,12 @@ export async function POST(request: NextRequest) {
 
   const customer = await prisma.user.findUnique({
     where: { id: customerId },
-    select: { id: true, email: true, fullName: true, name: true, company: true, billingEmail: true },
+    select: {
+      id: true, email: true, fullName: true, name: true, company: true, billingEmail: true,
+      // Snapshotted onto the invoice below, so changing the account's rate
+      // later never rewrites what an already-sent invoice said.
+      invoiceDiscountPercent: true,
+    },
   })
   if (!customer) return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
 
@@ -321,14 +337,27 @@ export async function POST(request: NextRequest) {
     const srTotal = serviceRequests.reduce((s, sr) => s + Number(sr.invoiceAmount || 0), 0)
     // Adjustments ride into TOTAL only — see the preview branch comment.
     const subtotal = ordersSubtotal + srTotal
-    const total = ordersTotal + srTotal + adjustmentCents / 100
+    // Broker discount off the pre-tax subtotal — see lib/invoices/discount.ts.
+    // Deliberately NOT applied to `adjustmentCents`: an adjustment is a
+    // tax-inclusive correction to an order that a PREVIOUS invoice already
+    // settled, so discounting it again would apply the rate to a different
+    // base than every other line. It means a correction settles at list value
+    // while the original settled at the discounted rate. Nothing in production
+    // has ever carried an adjustment line (checked 2026-09-23: 0 invoices), so
+    // this is a documented choice rather than an observed behaviour — revisit
+    // with Ryan the first time an invoice actually carries one.
+    const discount = invoiceDiscount(subtotal, customer.invoiceDiscountPercent)
+    const total = ordersTotal + srTotal + adjustmentCents / 100 - discount.amount
 
     // Net-negative or zero invoices can't be collected via a Stripe Payment
     // Link. Rare (needs credits exceeding the period's new work) — surface it
     // to the admin instead of creating an uncollectable invoice.
     if (total <= 0) {
-      throw new Error(
-        `Pending adjustments (-$${Math.abs(adjustmentCents / 100).toFixed(2)}) meet or exceed this period's charges ($${(ordersTotal + srTotal).toFixed(2)}). Handle the credit manually, or wait for more orders before invoicing.`
+      const charges = (ordersTotal + srTotal).toFixed(2)
+      throw uncollectableInvoice(
+        discount.amount > 0
+          ? `This period's charges ($${charges}) don't cover the ${discount.percent}% discount (-$${discount.amount.toFixed(2)}) plus pending adjustments (-$${Math.abs(adjustmentCents / 100).toFixed(2)}). Handle it manually, or wait for more orders before invoicing.`
+          : `Pending adjustments (-$${Math.abs(adjustmentCents / 100).toFixed(2)}) meet or exceed this period's charges ($${charges}). Handle the credit manually, or wait for more orders before invoicing.`
       )
     }
 
@@ -340,6 +369,8 @@ export async function POST(request: NextRequest) {
         rangeEnd: endDate,
         subtotal,
         total,
+        discountPercent: discount.amount > 0 ? discount.percent : null,
+        discountAmount: discount.amount > 0 ? discount.amount : null,
         status: 'sent',
         sentAt: new Date(),
         // Capability token for the public PDF viewer. Generated at bundler
@@ -431,8 +462,9 @@ export async function POST(request: NextRequest) {
     const msg = err instanceof Error ? err.message : ''
     // Our own deliberate aborts carry instructive messages — surface them as
     // structured errors instead of letting them decay into a bare 500 page.
-    if (msg.startsWith('Pending adjustments')) {
-      return NextResponse.json({ error: msg }, { status: 400 })
+    const uncollectable = uncollectableMessage(err)
+    if (uncollectable) {
+      return NextResponse.json({ error: uncollectable }, { status: 400 })
     }
     if (msg.startsWith('Concurrent bundle race')) {
       return NextResponse.json(

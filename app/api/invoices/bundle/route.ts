@@ -6,6 +6,8 @@ import { audit, AuditAction } from '@/lib/audit'
 import { sendInvoiceEmail } from '@/lib/email'
 import { buildInvoicePdfBytes } from '@/lib/invoices/invoice-pdf'
 import { loadInvoiceDetailForPdf } from '@/lib/invoices/load-detail'
+import { invoiceDiscount } from '@/lib/invoices/discount'
+import { uncollectableInvoice, uncollectableMessage } from '@/lib/invoices/bundle-errors'
 import { createInvoiceCheckoutSession } from '@/lib/stripe/server'
 
 /**
@@ -56,6 +58,9 @@ export async function POST(request: NextRequest) {
     select: {
       id: true, email: true, fullName: true, name: true, company: true,
       invoiceBilling: true, billingEmail: true, role: true,
+      // Same broker discount the admin bundler applies — the two paths must
+      // never disagree about what this account owes.
+      invoiceDiscountPercent: true,
     },
   })
   if (!profile) return NextResponse.json({ error: 'User not found' }, { status: 404 })
@@ -186,11 +191,16 @@ export async function POST(request: NextRequest) {
     // Adjustments ride into TOTAL only — subtotal must keep matching the live
     // sum of the bundled orders (customer page + PDF re-derive it from them).
     const subtotal = ordersSubtotal + srTotal
-    const total = ordersTotal + srTotal + adjustmentCents / 100
+    // Broker discount off the pre-tax subtotal — see lib/invoices/discount.ts.
+    const discount = invoiceDiscount(subtotal, profile.invoiceDiscountPercent)
+    const total = ordersTotal + srTotal + adjustmentCents / 100 - discount.amount
 
     if (total <= 0) {
-      throw new Error(
-        `Pending adjustments (-$${Math.abs(adjustmentCents / 100).toFixed(2)}) meet or exceed this period's charges ($${(ordersTotal + srTotal).toFixed(2)}). Contact Pink Posts to settle the credit directly.`
+      const charges = (ordersTotal + srTotal).toFixed(2)
+      throw uncollectableInvoice(
+        discount.amount > 0
+          ? `This period's charges ($${charges}) don't cover your ${discount.percent}% discount (-$${discount.amount.toFixed(2)}) plus pending adjustments (-$${Math.abs(adjustmentCents / 100).toFixed(2)}). Contact Pink Posts to settle it directly.`
+          : `Pending adjustments (-$${Math.abs(adjustmentCents / 100).toFixed(2)}) meet or exceed this period's charges ($${charges}). Contact Pink Posts to settle the credit directly.`
       )
     }
 
@@ -202,6 +212,8 @@ export async function POST(request: NextRequest) {
         rangeEnd: endDate,
         subtotal,
         total,
+        discountPercent: discount.amount > 0 ? discount.percent : null,
+        discountAmount: discount.amount > 0 ? discount.amount : null,
         status: 'sent',
         sentAt: new Date(),
         publicPdfToken: generatePublicPdfToken(),
@@ -273,8 +285,9 @@ export async function POST(request: NextRequest) {
     result = await runBundleTransaction()
   } catch (err) {
     const msg = err instanceof Error ? err.message : ''
-    if (msg.startsWith('Pending adjustments')) {
-      return NextResponse.json({ error: msg }, { status: 400 })
+    const uncollectable = uncollectableMessage(err)
+    if (uncollectable) {
+      return NextResponse.json({ error: uncollectable }, { status: 400 })
     }
     if (msg.startsWith('Concurrent bundle race')) {
       return NextResponse.json(

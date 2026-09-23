@@ -83,6 +83,11 @@ export interface InvoiceDetail {
   expedite_total: number
   no_post_total: number
   discount_total: number
+  // Broker discount — a flat percentage off this invoice's subtotal, snapshot
+  // at bundle time. Distinct from discount_total, which is the sum of promo
+  // codes applied to the individual orders.
+  broker_discount_percent: number | null
+  broker_discount_amount: number | null
   sent_at: string | null
   paid_at: string | null
   customer: {
@@ -97,6 +102,11 @@ export interface InvoiceDetail {
 
 function fmtCurrency(n: number): string {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(n)
+}
+
+/** "15" not "15.00", but "12.5" survives — the rate is a Decimal(5,2). */
+function fmtPercent(n: number): string {
+  return String(Number(n.toFixed(2)))
 }
 
 function fmtDate(iso: string | null): string {
@@ -382,6 +392,15 @@ export function buildInvoicePdfDoc(invoice: InvoiceDetail): jsPDF {
       `Adjustment — Order ${adj.order_number} (edited after invoicing)`,
       Math.abs(adj.amount_cents) / 100,
       adj.amount_cents < 0
+    )
+  }
+  // Straight off the subtotal, before the fees and tax, so the invoice reads
+  // the way Ryan described it: one line at the bottom, no per-item breakdown.
+  if (invoice.broker_discount_amount && invoice.broker_discount_amount > 0) {
+    detailRow(
+      `Broker discount${invoice.broker_discount_percent ? ` (${fmtPercent(invoice.broker_discount_percent)}%)` : ''}`,
+      invoice.broker_discount_amount,
+      true
     )
   }
   if (invoice.discount_total > 0) detailRow('Discount', invoice.discount_total, true)

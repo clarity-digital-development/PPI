@@ -98,6 +98,13 @@ model User {
   // (Ryan, 2026-09-23). Either source grants the perk; the admin screen writes
   // whichever one this account actually has.
   freeLockboxInstall  Boolean  @default(false) @map("free_lockbox_install")
+  // Flat percentage taken off this account's bundled invoices, as one line at
+  // the bottom rather than broken out per item (Ryan, 2026-09-23 — the four
+  // Keller Williams offices pay the discounted amount and bill their own agent
+  // the full amount). Null/0 = no discount. Applied to the PRE-TAX subtotal:
+  // per-order tax was already charged at full price, so discounting it too
+  // would mean remitting tax that was never collected.
+  invoiceDiscountPercent Decimal? @db.Decimal(5, 2) @map("invoice_discount_percent")
   // Optional billing-contact email — when set, bundled-invoice emails go
   // here instead of the broker's account email. Lets a broker route bills
   // to their accountant without forwarding. Falls back to `email` when null.
@@ -610,6 +617,13 @@ model Invoice {
 
   subtotal Decimal @db.Decimal(10, 2)
   total    Decimal @db.Decimal(10, 2)
+
+  // Broker discount, SNAPSHOT at bundle time for the same reason `adjustments`
+  // is: the account's percentage can change later and the PDF must keep
+  // rendering the numbers the customer was actually billed. Null on every
+  // invoice raised before the account had a discount.
+  discountPercent Decimal? @db.Decimal(5, 2) @map("discount_percent")
+  discountAmount  Decimal? @db.Decimal(10, 2) @map("discount_amount")
 
   status InvoiceStatus @default(sent)
 
