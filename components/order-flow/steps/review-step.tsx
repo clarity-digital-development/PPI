@@ -92,15 +92,20 @@ export function ReviewStep({
     reason?: string
   } | null>(null)
 
-  // Build the "— Serial: X · Code: Y" suffix for a selected stored lockbox so
-  // the install crew can see which physical box to bring (flows into emails too)
+  // Build the "— Box: X · Code: Y" suffix for a selected stored lockbox so the
+  // install crew can see which physical box to bring (flows into emails too).
+  // The inventory identity and the code typed on the order are separate values
+  // and both go out — see lib/orders/lockbox-description.ts.
   const lockboxIdentifierSuffix = (): string => {
-    if (!formData.customer_lockbox_id) return ''
-    const lb = inventory?.lockboxes.find(l => l.id === formData.customer_lockbox_id)
-    if (!lb) return ''
+    // A box that's already held or out of storage can be missing from the
+    // loaded inventory list; that must not swallow the typed code as well.
+    const lb = formData.customer_lockbox_id
+      ? inventory?.lockboxes.find(l => l.id === formData.customer_lockbox_id)
+      : undefined
     return lockboxDescriptionSuffix({
-      serialNumber: lb.serial_number,
-      code: lb.lockbox_code || formData.lockbox_code,
+      serialNumber: lb?.serial_number,
+      code: lb?.lockbox_code,
+      accessCode: formData.lockbox_code,
     })
   }
 
@@ -1041,13 +1046,10 @@ export function ReviewStep({
           custom_value: formData.lockbox_code || undefined,
         })
       } else if (formData.lockbox_option === 'at_property') {
-        // Prefer the stored-unit suffix (Serial+Code) when a lockbox was picked;
-        // otherwise fall back to the free-text code the agent typed in
-        const fallback = formData.lockbox_code ? ` — code ${formData.lockbox_code}` : ''
         items.push({
           item_type: 'lockbox',
           item_category: 'owned',
-          description: `Lockbox Install (at property / pickup)${lbSuffix || fallback}`,
+          description: `Lockbox Install (at property / pickup)${lbSuffix}`,
           quantity: 1,
           unit_price: lockboxInstall,
           total_price: lockboxInstall,
@@ -1055,11 +1057,10 @@ export function ReviewStep({
           custom_value: formData.lockbox_code || undefined,
         })
       } else if (formData.lockbox_option === 'mechanical_rent') {
-        const fallback = formData.lockbox_code ? ` — code ${formData.lockbox_code}` : ''
         items.push({
           item_type: 'lockbox',
           item_category: 'rental',
-          description: `Mechanical Lockbox Rental${lbSuffix || fallback}`,
+          description: `Mechanical Lockbox Rental${lbSuffix}`,
           quantity: 1,
           unit_price: PRICING.lockbox_rental,
           total_price: PRICING.lockbox_rental,

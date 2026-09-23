@@ -15,6 +15,7 @@
 import type { OrderFormData, RiderSelection } from '@/components/order-flow/types'
 import { categoryToSignLocation, pickupAddressFromDescription, type SignLocation } from './sign-descriptions'
 import { lockedPickupFeeDecision } from './pickup-fee'
+import { lockboxIdentityFromDescription } from './lockbox-description'
 import { parseCustomRiderLabel } from '@/components/order-flow/RiderSelector/constants'
 
 export interface OrderItemLike {
@@ -255,7 +256,11 @@ export function orderToFormData(order: OrderLike): OrderFormData {
   let lockbox_code = ''
   let customer_lockbox_id: string | undefined
   if (lockboxItem) {
-    const desc = lockboxItem.description.toLowerCase()
+    // Classify on the BASE label only. Everything after the em-dash is the
+    // appended identifier suffix ("— Box: X · Code: Y"), which carries the
+    // free text the admin typed on the order — a note like "pickup from the
+    // office" would otherwise flip a Sentrilock order to at_property on edit.
+    const desc = lockboxItem.description.toLowerCase().split(' — ')[0]
     if (lockboxItem.itemCategory === 'rental') {
       lockbox_option = 'mechanical_rent'
       lockbox_type = 'mechanical'
@@ -554,12 +559,19 @@ export function augmentInventoryWithOrder(
     }
     if (item.itemType === 'lockbox' && item.customerLockboxId) {
       if (!base.lockboxes.some(l => l.id === item.customerLockboxId)) {
-        const isSentri = /sentri/i.test(item.description)
+        // Base label only — the suffix carries the free text the admin typed,
+        // so a note like "same as the sentri box" on a mechanical order would
+        // otherwise relabel the box and flip lockbox_option on re-select.
+        const isSentri = /sentri/i.test(item.description.split(' — ')[0])
         base.lockboxes.unshift({
           id: item.customerLockboxId,
           lockbox_type: isSentri ? 'sentrilock' : 'mechanical',
           lockbox_type_name: isSentri ? 'SentriLock' : 'Mechanical Lockbox',
-          lockbox_code: item.customValue || null,
+          // The box's identity, recovered from the description — NOT customValue,
+          // which is the code typed on this order. Publishing the typed code here
+          // made the rebuilt line read "Box: 1525" and sent the crew after a box
+          // that doesn't exist.
+          lockbox_code: lockboxIdentityFromDescription(item.description),
         })
       }
     }
