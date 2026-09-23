@@ -135,3 +135,38 @@ export function getRiderBySlug(slug: string): RiderOption | undefined {
 export function getRiderById(id: string): RiderOption | undefined {
   return RIDERS.find(r => r.id === id)
 }
+
+/**
+ * How a rider that carries a typed number reads on screen and on the order:
+ * "5 Acres", "4 Car Garage". The unit comes from the rider's own inputSuffix,
+ * because every one of these used to be hard-coded as "Acres" — so picking
+ * 4 on the Car Garage rider saved and displayed "4 Acres", right down to the
+ * crew's email (Ryan, 2026-09-22).
+ *
+ * Accepts a catalog id ('custom-car-garage') or a slug ('car-garage'), since
+ * the picker holds ids and the saved order items hold slugs.
+ */
+export function customRiderLabel(slugOrId: string, value: string | number): string | null {
+  const rider = RIDERS.find(r => r.slug === slugOrId || r.id === slugOrId)
+  const unit = rider?.inputSuffix?.trim()
+  // Null, never a guess: a rider with no unit is not one of these, and any
+  // fallback here would rewrite its label. Callers keep their own naming for
+  // that case — an ordinary rider that happens to carry a value must still
+  // read (and read back) as itself.
+  return unit ? `${value} ${unit}` : null
+}
+
+/**
+ * The reverse, for reading an existing order back into the wizard: turns
+ * "5 Acres" / "4 Car Garage" into the rider it came from. Returns null for
+ * anything that isn't one of these, so ordinary riders fall through to the
+ * caller's own slug handling. Legacy "N Acres" rows still resolve to the
+ * acres rider exactly as before.
+ */
+export function parseCustomRiderLabel(label: string): { slug: string; value: string } | null {
+  const match = label.trim().match(/^([\d.]+)\s+(.+)$/)
+  if (!match) return null
+  const unit = match[2].trim().toLowerCase()
+  const rider = RIDERS.find(r => r.inputSuffix?.trim().toLowerCase() === unit)
+  return rider ? { slug: rider.slug, value: match[1] } : null
+}

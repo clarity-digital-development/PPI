@@ -5,6 +5,7 @@ import { Mountain, Car, X, Check } from 'lucide-react'
 import { Input } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import type { RiderSource, RiderOption } from '../types'
+import { customRiderLabel } from '../constants'
 
 interface CustomRiderInputProps {
   rider: RiderOption
@@ -60,11 +61,9 @@ export function CustomRiderInput({
     onChange(null)
   }
 
-  const displayValue = value
-    ? rider.id === 'custom-car-garage'
-      ? `${value} Car Garage`
-      : `${value} Acres`
-    : null
+  // Same helper the pill, the review and the saved description use, so this
+  // preview can never promise a unit the order won't get.
+  const displayValue = value ? customRiderLabel(rider.id, value) : null
 
   return (
     <div className={cn(

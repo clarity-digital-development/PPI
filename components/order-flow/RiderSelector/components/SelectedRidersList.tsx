@@ -2,7 +2,7 @@
 
 import { X } from 'lucide-react'
 import type { SelectedRider } from '../types'
-import { RIDERS } from '../constants'
+import { RIDERS, customRiderLabel } from '../constants'
 
 interface SelectedRidersListProps {
   selectedRiders: SelectedRider[]
@@ -55,11 +55,15 @@ export function SelectedRidersList({
             .split('-')
             .map(w => (w.length > 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w))
             .join(' ')
+          // Unit comes from the rider itself — this pill read "4 Acres" for
+          // the Car Garage rider until 2026-09-22. Null for riders that take
+          // no typed value, which then show their own name as before.
+          const valuedLabel = rider.customValue != null && !isCustomText
+            ? customRiderLabel(rider.riderId, rider.customValue)
+            : null
           const displayName = isCustomText
             ? String(rider.customValue || 'Custom rider')
-            : rider.customValue
-              ? `${rider.customValue} Acres`
-              : riderData?.name || humanizedSlug
+            : valuedLabel ?? (riderData?.name || humanizedSlug)
           const sourceLabel = rider.source === 'rental'
             ? 'Rental'
             : rider.source === 'at_property'

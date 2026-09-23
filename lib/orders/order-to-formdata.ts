@@ -15,6 +15,7 @@
 import type { OrderFormData, RiderSelection } from '@/components/order-flow/types'
 import { categoryToSignLocation, pickupAddressFromDescription, type SignLocation } from './sign-descriptions'
 import { lockedPickupFeeDecision } from './pickup-fee'
+import { parseCustomRiderLabel } from '@/components/order-flow/RiderSelector/constants'
 
 export interface OrderItemLike {
   itemType: string
@@ -120,11 +121,14 @@ function parseMainRider(item: OrderItemLike): RiderSelection {
     }
   }
 
-  // Custom acreage riders render as "<number> Acres"
-  const acresMatch = body.match(/^([\d.]+)\s+Acres$/i)
-  const slug = acresMatch ? 'custom-acres' : nameToSlug(body)
-  const customValue = acresMatch
-    ? acresMatch[1]
+  // Riders that carry a typed number render as "<number> <unit>" — "5 Acres",
+  // "4 Car Garage". Reading the unit back off the catalog (rather than
+  // assuming acres) is what lets a Car Garage rider survive an edit as a Car
+  // Garage rider instead of turning into acres.
+  const valued = parseCustomRiderLabel(body)
+  const slug = valued ? valued.slug : nameToSlug(body)
+  const customValue = valued
+    ? valued.value
     : (item.customValue || undefined)
 
   return {
@@ -167,13 +171,16 @@ function parseSecondPostRider(item: OrderItemLike): RiderSelection {
     }
   }
 
-  const slug = body.split(' (')[0].trim()
+  // Newer rows carry "<number> <unit>" (e.g. "4 Car Garage"); older ones the
+  // raw "<slug> (<value>)". Try the unit form first, fall back to the slug.
+  const valued = parseCustomRiderLabel(body)
+  const slug = valued ? valued.slug : body.split(' (')[0].trim()
   return {
     rider_type: slug,
     is_rental: source === 'rental',
     source,
     quantity: 1,
-    custom_value: item.customValue || undefined,
+    custom_value: valued ? valued.value : (item.customValue || undefined),
     customer_rider_id: item.customerRiderId || undefined,
   }
 }

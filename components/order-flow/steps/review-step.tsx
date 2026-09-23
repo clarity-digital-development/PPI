@@ -14,6 +14,7 @@ import { PRICING } from '../types'
 import { FLAT_FEE_BASE, computeOrderPricing, computeDiscountableSubtotal, type OrderItemForPricing } from '@/lib/orders/pricing'
 import { PICKUP_FEE_DESCRIPTION, sanitizePickupAddress, signInstallDescription, signLocationToCategory } from '@/lib/orders/sign-descriptions'
 import { mainSignIsPickup, secondSignIsPickup, signChoiceProblem } from '../sign-choice'
+import { customRiderLabel } from '../RiderSelector/constants'
 
 // Post type values are now the display names themselves
 
@@ -153,11 +154,13 @@ export function ReviewStep({
     // Custom free-text riders (pickup/at-property) — render as "Custom: <name>"
     // so the agent's typed name flows into the review, admin detail, and emails.
     const isCustomText = rider.rider_type.startsWith('custom-text-')
+    const valuedLabel = rider.custom_value && !isCustomText
+      ? customRiderLabel(rider.rider_type, rider.custom_value)
+      : null
     const name = isCustomText
       ? `Custom: ${rider.custom_value || 'rider'}`
-      : rider.custom_value
-        ? `${rider.custom_value} Acres`
-        : rider.rider_type.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+      : valuedLabel
+        ?? rider.rider_type.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
     const description = source === 'rental'
       ? `Rider Rental: ${name}`
       : source === 'at_property'
@@ -978,11 +981,17 @@ export function ReviewStep({
         // Custom free-text riders (pickup/at-property) flow the agent's typed
         // name through to the order item description as "Custom: <name>".
         const isCustomText = rider.rider_type.startsWith('custom-text-')
+        // This description is what gets SAVED on the order and read by the
+        // crew, so the unit has to come from the rider itself: a Car Garage
+        // rider was being stored as "4 Acres" (Ryan, 2026-09-22). Riders that
+        // take no typed value keep their own name, exactly as before.
+        const valuedLabel = rider.custom_value && !isCustomText
+          ? customRiderLabel(rider.rider_type, rider.custom_value)
+          : null
         const name = isCustomText
           ? `Custom: ${rider.custom_value || 'rider'}`
-          : rider.custom_value
-            ? `${rider.custom_value} Acres`
-            : rider.rider_type.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+          : valuedLabel
+            ?? rider.rider_type.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
         const description = source === 'rental'
           ? `Rider Rental: ${name}`
           : source === 'at_property'
@@ -1125,9 +1134,15 @@ export function ReviewStep({
           // Custom free-text riders render with their typed name instead of
           // the synthetic "custom-text-..." slug.
           const isCustomText = rider.rider_type.startsWith('custom-text-')
+          // A rider with a typed number reads as "4 Car Garage" / "5 Acres",
+          // same as the main post. Every other rider keeps the existing
+          // "<slug> (<value>)" shape so older orders still read back.
+          const valuedLabel = rider.custom_value && !isCustomText
+            ? customRiderLabel(rider.rider_type, rider.custom_value)
+            : null
           const displayName = isCustomText
             ? `Custom: ${rider.custom_value || 'rider'}`
-            : `${rider.rider_type}${rider.custom_value ? ` (${rider.custom_value})` : ''}`
+            : valuedLabel ?? `${rider.rider_type}${rider.custom_value ? ` (${rider.custom_value})` : ''}`
           items.push({
             item_type: 'rider',
             item_category: source === 'rental' ? 'rental' : 'owned',
