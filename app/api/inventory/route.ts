@@ -16,6 +16,12 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const onBehalfOf = searchParams.get('on_behalf_of')
     const memberId = searchParams.get('member_id')
+    // team_admin ordering for THEMSELVES: only the items not handed to any
+    // agent. Everything an agent has been assigned is physically stored under
+    // the team_admin's account, so an unfiltered read shows every agent's
+    // signs and riders as the admin's own — and riders collapse into one
+    // option per type, so picking "For Sale" could quietly take an agent's.
+    const unassignedOnly = searchParams.get('unassigned') === '1'
     let targetUserId = user.id
     if (onBehalfOf && onBehalfOf !== user.id) {
       if (!(await canActOnBehalfOf(user, onBehalfOf))) {
@@ -28,8 +34,14 @@ export async function GET(request: NextRequest) {
     // inventory, return items from the team_admin's own pool that are assigned
     // to that member. Name-only members have no userId, so we filter by
     // assignedToMemberId rather than ownership.
-    let memberFilter: { assignedToMemberId: string } | undefined
-    if (memberId) {
+    let memberFilter: { assignedToMemberId: string | null } | undefined
+    if (unassignedOnly && user.role === 'team_admin' && !memberId && targetUserId === user.id) {
+      // Own-account read only: never narrows someone else's inventory, and
+      // member_id already scopes the roster path on its own. team_admin only —
+      // setting memberFilter skips the brokerage-pool lookup below, which a
+      // linked agent (a customer) must keep.
+      memberFilter = { assignedToMemberId: null }
+    } else if (memberId) {
       if (user.role !== 'admin' && user.role !== 'team_admin') {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
       }

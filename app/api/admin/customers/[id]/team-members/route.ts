@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
+import { ensureTeamFor } from '@/lib/teams/ensure-team'
 
 // POST /api/admin/customers/[id]/team-members
 // Pink Posts admins add a managed agent to a team_admin's team (creating the
@@ -27,14 +28,12 @@ export async function POST(
   const phone = (body.phone ?? '').toString().trim()
   if (!name) return NextResponse.json({ error: 'Member name is required' }, { status: 400 })
 
-  // Ensure the team_admin has a team
+  // Ensure the team_admin has a team — race-safe, see lib/teams/ensure-team.ts.
+  // If a concurrent save claimed one first, the member goes into THAT team
+  // rather than an orphan.
   let teamId = target.teamId
   if (!teamId) {
-    const team = await prisma.team.create({
-      data: { name: `${target.fullName || target.name || target.email}'s Team` },
-    })
-    teamId = team.id
-    await prisma.user.update({ where: { id: target.id }, data: { teamId } })
+    teamId = (await ensureTeamFor(target)).teamId
   }
 
   const member = await prisma.teamMember.create({

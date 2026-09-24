@@ -77,6 +77,10 @@ export const AuditAction = {
   // Linking an agent login to a brokerage so they can order from the
   // brokerage's inventory pool. Inventory-only: this NEVER touches billing.
   AgentLinkedToBrokerage: 'user.brokerage_link',
+  // A Team created for a team_admin that had none — on promotion, or on the
+  // next save of one left half set up. The Team is what makes the account
+  // selectable as a brokerage inventory pool. metadata.via says which.
+  TeamCreatedForTeamAdmin: 'team.created_for_team_admin',
   InventoryReassignBulk: 'inventory.reassign.bulk',
   CartCheckoutBegin: 'cart.checkout.begin',
   CartCheckoutSucceed: 'cart.checkout.succeed',

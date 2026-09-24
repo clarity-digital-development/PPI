@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { Header } from '@/components/dashboard'
 import { Card, CardContent, Button, Select } from '@/components/ui'
-import { useCart, useHoldHeartbeat } from '@/lib/cart'
+import { useCart, useHoldHeartbeat, NO_AGENT_LABEL } from '@/lib/cart'
 import { getOrCreateCartSessionId } from '@/lib/cart-session'
 import {
   ShoppingCart,
@@ -195,7 +195,11 @@ export default function CartPage() {
             // endpoint refuses any row that would incur a split out-of-area
             // fee without it, exactly like the single-order route.
             service_area_fee_agreed: fd.service_area_fee_agreed,
-            placed_for_agent_name: fd.placed_for_agent_name?.trim() || cartItem.agentName || undefined,
+            // The row's agentName is a display label; for a self-placed row it's
+            // the NO_AGENT_LABEL placeholder, which must not become the agent.
+            placed_for_agent_name:
+              fd.placed_for_agent_name?.trim() ||
+              (cartItem.agentName && cartItem.agentName !== NO_AGENT_LABEL ? cartItem.agentName : undefined),
           }
         }),
       }
@@ -437,7 +441,10 @@ export default function CartPage() {
                 </p>
               )}
               {successCount > 0 && (
-                <Link href="/admin/orders">
+                // /admin/orders bounces anyone who isn't a platform admin back
+                // to /dashboard, so a team_admin checking out their cart landed
+                // on the overview instead of their orders.
+                <Link href={actorRole === 'admin' ? '/admin/orders' : '/dashboard/order-history'}>
                   <Button className="mt-3">View placed orders</Button>
                 </Link>
               )}

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser, isAdminOrTeamAdmin, canActOnBehalfOf } from '@/lib/auth-utils'
 import { audit, AuditAction } from '@/lib/audit'
+import { ensureTeamFor } from '@/lib/teams/ensure-team'
 
 const ALLOWED_ROLES = ['customer', 'admin', 'team_admin'] as const
 type AllowedRole = (typeof ALLOWED_ROLES)[number]
@@ -556,6 +557,38 @@ export async function PUT(
         data: pendingTeamUpdate.data,
         select: { id: true },
       })
+    }
+
+    // A brokerage is a team_admin that owns a Team (see /api/admin/brokerages),
+    // but promoting an account never created the Team — one only appeared once
+    // someone added a roster member. So Ryan could set Daphne to Team Admin and
+    // she still never showed in the "Brokerage inventory" picker; he reverted
+    // her two minutes later (2026-09-24). Now any save of a team_admin with no
+    // team gives it one, so the Role dropdown is the whole self-serve path.
+    //
+    // Deliberately not limited to the save that changes the role: a team_admin
+    // with no team is always a half-set-up brokerage, and this heals one on its
+    // next save. The audit row records which it was.
+    //
+    // Written after the user update succeeds, like the perk writes above, so a
+    // failed save leaves no orphan. Race-safe via ensureTeamFor.
+    if (customer.role === 'team_admin' && !customer.teamId) {
+      const { teamId: ensuredTeamId, created } = await ensureTeamFor(customer)
+      customer.teamId = ensuredTeamId
+      if (created) {
+        await audit({
+          action: AuditAction.TeamCreatedForTeamAdmin,
+          targetType: 'team',
+          targetId: ensuredTeamId,
+          actor: user,
+          request,
+          metadata: {
+            email: customer.email,
+            userId: id,
+            via: roleChangeAudit ? 'promotion' : 'save_of_existing_team_admin',
+          },
+        })
+      }
     }
 
     // Invariant: only ordinary customer accounts may draw from a brokerage

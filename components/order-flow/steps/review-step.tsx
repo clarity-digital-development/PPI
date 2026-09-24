@@ -7,7 +7,7 @@ import { Button, Input } from '@/components/ui'
 import { AddCardModal } from '@/components/billing'
 import { cn } from '@/lib/utils'
 import { getStripe } from '@/lib/stripe/client'
-import { useCart } from '@/lib/cart'
+import { useCart, NO_AGENT_LABEL } from '@/lib/cart'
 import { lockboxDescriptionSuffix } from '@/lib/orders/lockbox-description'
 import type { StepProps } from '../types'
 import { PRICING } from '../types'
@@ -318,7 +318,16 @@ export function ReviewStep({
   const blockedOnQuoteFailure =
     serviceAreaQuoteFailed && !isEdit && !isInvoiceBillingPayer && !flatFee
   const itemsSubtotal = orderItems.reduce((sum, item) => sum + item.price, 0)
-  const fuelSurchargeWaived = formData.fuel_surcharge_waived || false
+  // Promo codes (and the fuel waiver, which only a promo sets) apply to the
+  // single-order checkout only. The cart checkout — every team_admin and
+  // on-behalf order — sends no promo fields and app/api/orders/batch prices
+  // with no discount, so letting a promo move the total here showed a price
+  // the card was never charged: apply 20%, see $80, pay $100. In cart mode
+  // the total ignores promos, and the Promo Code box below is hidden, so what
+  // is shown is what is charged. This also covers a cart row re-opened with a
+  // promo already saved in its form data.
+  const promosApply = !cartEnabled
+  const fuelSurchargeWaived = promosApply && (formData.fuel_surcharge_waived || false)
 
   // Build the items array for the shared pricing helper. Mirror the server's
   // items[] shape — only item_type + item_category matter to the helper:
@@ -344,7 +353,9 @@ export function ReviewStep({
   // server's recomputation whenever items changed afterwards.
   const discountableSubtotal = computeDiscountableSubtotal(pricingItemsTagged)
   let discount = 0
-  if (formData.promo_code_id && formData.promo_discount_type && formData.promo_discount_value !== undefined) {
+  if (!promosApply) {
+    // See promosApply above — the cart can't carry a promo.
+  } else if (formData.promo_code_id && formData.promo_discount_type && formData.promo_discount_value !== undefined) {
     if (formData.promo_discount_type === 'percentage') {
       discount = discountableSubtotal * (Number(formData.promo_discount_value) / 100)
     } else {
@@ -849,7 +860,7 @@ export function ReviewStep({
         // Update in place — preserve original agentId/agentEmail/addedAt so
         // the row's identity stays stable. Refresh display fields and holds.
         cart.updateItem(editingCartItemId, {
-          agentName: agentName || existingRow.agentName || 'Unassigned',
+          agentName: agentName || existingRow.agentName || NO_AGENT_LABEL,
           formData,
           items,
           estimatedTotal: displayTotal,
@@ -870,7 +881,7 @@ export function ReviewStep({
           // edit fetched the team_admin's entire pool — Ryan's "showed
           // every rider in inventory for everyone" bug.
           agentId: placedForMemberId || onBehalfOf || '',
-          agentName: agentName || 'Unassigned',
+          agentName: agentName || NO_AGENT_LABEL,
           agentEmail,
           // Discriminated TeamMember.id (gate path only). Lets cart's
           // "Next order" route back with ?team_member_id= instead of
@@ -1492,9 +1503,10 @@ export function ReviewStep({
 
         {/* Promo Code — hidden while editing (the server keeps the order's
             existing promo and recomputes the discount; promo can't be changed
-            during an edit) and hidden for flat-fee accounts (promo doesn't
-            apply to the flat $66.07). */}
-        {!isEdit && !isFlatFee && (
+            during an edit), hidden for flat-fee accounts (promo doesn't
+            apply to the flat $66.07), and hidden in cart mode, whose checkout
+            can't carry one (see promosApply). */}
+        {!isEdit && !isFlatFee && promosApply && (
         <div className="mt-4 pt-4 border-t border-gray-200">
           <div className="flex items-center gap-2 mb-2">
             <Tag className="w-4 h-4 text-gray-500" />

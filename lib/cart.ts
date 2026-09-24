@@ -19,6 +19,16 @@ import { getOrCreateCartSessionId } from '@/lib/cart-session'
  * server-side. The cart page heartbeats to extend TTL while visible.
  */
 
+/**
+ * Display label for a cart row that isn't for any agent — the person ordering
+ * is placing it for themselves. It is ONLY a label: checkout must never send
+ * it as the order's agent, or the order is credited to an agent literally
+ * named "Unassigned" on the admin order page, the dispatch email, the invoice
+ * PDF and the per-agent invoice filter. Reachable for team_admins now that
+ * they can order for themselves.
+ */
+export const NO_AGENT_LABEL = 'Unassigned'
+
 export interface CartItem {
   /** Stable id for the cart row */
   id: string

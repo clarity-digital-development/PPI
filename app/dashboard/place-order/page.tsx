@@ -87,6 +87,12 @@ function PlaceOrderPageInner() {
   // the "Who is this order for?" gate instead of the wizard.
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([])
   const [hasTeam, setHasTeam] = useState(false)
+  // team_admin chose to order for themselves rather than an agent. Without
+  // this the gate was the ONLY thing a team_admin could see, so one with an
+  // empty roster couldn't order at all — which is every brokerage the moment
+  // it's promoted (Daphne orders her own signs). Their own UNASSIGNED
+  // inventory is already loaded on this page (see the fetch below).
+  const [orderingForSelf, setOrderingForSelf] = useState(false)
   // Per-broker perks: owned-lockbox install free, no $10 sign-pickup fee.
   // Both read from /api/profile because the logged-in user is the payer on
   // every path through this page. The lockbox perk used to come from
@@ -119,20 +125,27 @@ function PlaceOrderPageInner() {
   // the standard (own/inventory or on_behalf_of) flow. Only when a team_admin
   // is placing an order without an explicit ?on_behalf_of target.
   // Editing an existing cart row bypasses the gate — we already know the agent.
-  const isTeamAdminGate = currentUserRole === 'team_admin' && !onBehalfOf && !editingItem
+  const isTeamAdminGate =
+    currentUserRole === 'team_admin' && !onBehalfOf && !editingItem && !orderingForSelf
 
   useEffect(() => {
     async function fetchData() {
       try {
         // Editing path: load inventory for the agent the cart row belongs to.
         // agentId is empty for self-placed team-admin rows, in which case the
-        // default /api/inventory (current user's) is what we want.
+        // caller's own inventory is what we want.
+        //
+        // The own-account read asks for unassigned items only. The server
+        // honours that for team_admins alone (for everyone else it's a no-op),
+        // which is why it can be sent before the role is known: a team_admin
+        // ordering for themselves must not be offered the signs and riders
+        // they've handed to their agents.
         const editingAgentId = editingItem?.agentId || undefined
         const inventoryUrl = onBehalfOf
           ? `/api/inventory?on_behalf_of=${encodeURIComponent(onBehalfOf)}`
           : editingAgentId
             ? `/api/inventory?member_id=${encodeURIComponent(editingAgentId)}`
-            : '/api/inventory'
+            : '/api/inventory?unassigned=1'
 
         const requests: Promise<Response>[] = [
           fetch(inventoryUrl),
@@ -310,8 +323,17 @@ function PlaceOrderPageInner() {
             <div className="max-w-2xl">
               <h2 className="text-lg font-semibold text-gray-900">Who is this order for?</h2>
               <p className="text-sm text-gray-600 mt-1 mb-5">
-                Select the agent on your team this order is being placed for.
+                Select the agent on your team this order is being placed for, or order for yourself.
               </p>
+              <Card variant="bordered" className="p-4 mb-4 flex items-center justify-between gap-4">
+                <div>
+                  <p className="font-medium text-gray-900">For myself</p>
+                  <p className="text-sm text-gray-600">Use your own account and your own inventory.</p>
+                </div>
+                <Button variant="primary" size="sm" onClick={() => setOrderingForSelf(true)}>
+                  Order for myself
+                </Button>
+              </Card>
               {teamMembers.length === 0 ? (
                 <Card variant="bordered" className="p-6 text-center">
                   <p className="text-gray-900 font-medium">
@@ -321,7 +343,7 @@ function PlaceOrderPageInner() {
                     Add a team member to place an order for them.
                   </p>
                   <Link href="/dashboard/teams">
-                    <Button variant="primary" size="md">Go to Team Management</Button>
+                    <Button variant="outline" size="md">Go to Team Management</Button>
                   </Link>
                 </Card>
               ) : (
@@ -435,6 +457,17 @@ function PlaceOrderPageInner() {
                     Their inventory is loaded. Your card on file will be charged at checkout.
                   </p>
                 </div>
+              </div>
+            )}
+            {orderingForSelf && (
+              <div className="mb-6 p-4 bg-pink-50 border border-pink-200 rounded-xl flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold text-pink-700 uppercase tracking-wide">Placing order for</p>
+                  <p className="font-semibold text-gray-900">Yourself</p>
+                </div>
+                <Button variant="outline" size="sm" onClick={() => setOrderingForSelf(false)}>
+                  Order for an agent instead
+                </Button>
               </div>
             )}
             <OrderWizard
