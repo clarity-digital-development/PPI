@@ -4,6 +4,7 @@ import { getCurrentUser } from '@/lib/auth-utils'
 import { sendInstallationCompleteEmail } from '@/lib/email'
 import { createOrderNotification } from '@/lib/notifications'
 import { chargePaymentMethod } from '@/lib/stripe'
+import { keepsLockedServiceAreaFee } from '@/lib/orders/service-area-lock'
 
 export async function GET(
   request: NextRequest,
@@ -55,6 +56,12 @@ export async function GET(
       where: { id: order.placedByUserId ?? order.userId },
       select: {
         freeLockboxInstall: true,
+        // Whether the out-of-area fee is split (half now, half at pickup) or
+        // billed whole — the edit route decides it from the same payer, and
+        // the edit screen must agree or it previews half of what's saved.
+        invoiceBilling: true,
+        // For the shared keep-the-locked-fee rule below.
+        isServiceAreaExempt: true,
         team: { select: { freeLockboxInstall: true, pickupFeeWaived: true } },
       },
     })
@@ -64,7 +71,12 @@ export async function GET(
       payerPerks: {
         freeLockboxInstall: !!(payer?.freeLockboxInstall || payer?.team?.freeLockboxInstall),
         pickupFeeWaived: !!payer?.team?.pickupFeeWaived,
+        invoiceBilling: !!payer?.invoiceBilling,
       },
+      // Whether an address edit keeps this order's locked out-of-area fee rather
+      // than re-pricing it — the SAME rule the edit route applies, so the edit
+      // screen previews what gets saved. See lib/orders/service-area-lock.ts.
+      keepsLockedServiceAreaFee: keepsLockedServiceAreaFee(order, payer),
       paid_at: order.paidAt ? order.paidAt.toISOString() : null,
       scheduled_date: order.scheduledDate ? order.scheduledDate.toISOString() : null,
       refund_id: order.refundId ?? null,

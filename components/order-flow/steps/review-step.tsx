@@ -273,12 +273,10 @@ export function ReviewStep({
   }
 
   // WHY: server pushes a synthetic surcharge OrderItem into items[] then sums — mirror that here.
-  // Flat-fee orders never carry an OOA surcharge (server clamps to FLAT_FEE_BASE on save), so
-  // zero the surcharge for display regardless of what the quote endpoint returns. Belt-and-
-  // suspenders for the admin-edit case where the quote endpoint resolves exemption against
-  // the admin session (not the order owner) and so wrongly returns a surcharge for an exempt
-  // broker. Even after the quote endpoint is payer-aware this stays defensive: if the gate
-  // is ever refactored, the surcharge is already neutralized at source for flat-fee orders.
+  // Flat-fee orders DO carry it now: the fee is charged on top of the flat rate rather than
+  // swallowed by it (Ryan, 2026-09-27), so this used to zero it for flat accounts and no longer
+  // does. An account that shouldn't pay it is exempted in its profile, and the quote endpoint
+  // honours that exemption.
   //
   // Split fee (Ryan, 2026-07-09/12): the quote endpoint always returns the
   // FULL surcharge — invoice-billing payers see/pay that full amount as one
@@ -295,13 +293,33 @@ export function ReviewStep({
   // area fees so this will be for everyone at some point" (2026-09-19) — so
   // the cart now matches a single order exactly.
   const skipsOOASplit = isInvoiceBillingPayer
-  const serviceAreaSurcharge = flatFee
-    ? 0
-    : serviceAreaQuote?.tier === 'surcharge'
-      ? skipsOOASplit
-        ? serviceAreaQuote.surchargeCents / 100
-        : Math.round(serviceAreaQuote.surchargeCents / 2) / 100
-      : 0
+  const liveServiceAreaFee = serviceAreaQuote?.tier === 'surcharge'
+    ? skipsOOASplit
+      ? serviceAreaQuote.surchargeCents / 100
+      : Math.round(serviceAreaQuote.surchargeCents / 2) / 100
+    : 0
+  // EDIT mode mirrors app/api/orders/[id]/edit/route.ts: the order keeps the fee
+  // it's locked at, and only an address change re-prices it from a fresh quote.
+  // Showing the live quote regardless previewed a different number from the one
+  // saved — and, before the edit pages passed invoiceBilling, half of it for an
+  // invoice-billed broker whose order carries the whole fee.
+  const savedAddress = editMeta?.originalAddress
+  // Same test the edit route applies: a blank field counts as unchanged.
+  const fieldChanged = (input: string | undefined, saved: string) => {
+    const t = input?.trim()
+    return !!t && t !== saved
+  }
+  const addressChanged = !!savedAddress && (
+    fieldChanged(formData.property_address, savedAddress.street) ||
+    fieldChanged(formData.property_city, savedAddress.city) ||
+    fieldChanged(formData.property_state, savedAddress.state) ||
+    fieldChanged(formData.property_zip, savedAddress.zip)
+  )
+  // ...unless the server keeps it anyway: a now-exempt payer with a fee, or a
+  // flat order placed before the fee rode on top (lib/orders/service-area-lock.ts).
+  const feeRepricesOnAddressChange = addressChanged && !editMeta?.keepsLockedFee
+  const useLockedFee = isEdit && editMeta?.lockedServiceAreaFee !== undefined && !feeRepricesOnAddressChange
+  const serviceAreaSurcharge = useLockedFee ? editMeta!.lockedServiceAreaFee! : liveServiceAreaFee
   // Consent is required wherever money will actually move in two parts: the
   // direct checkout AND the cart. Never in edit mode (no re-charge there) and
   // never for invoice-billing payers (nothing splits for them).
@@ -315,8 +333,14 @@ export function ReviewStep({
   // is worse: the bad row is persisted and then kills the whole batch at
   // checkout. Block instead, and say why. Edit mode and payers who can never
   // be charged a split fee are unaffected.
-  const blockedOnQuoteFailure =
-    serviceAreaQuoteFailed && !isEdit && !isInvoiceBillingPayer && !flatFee
+  // Flat fee no longer exempts: a flat-fee card payer can owe a split fee too.
+  // In EDIT mode it blocks only when the save will re-price the fee from this
+  // address (and then for every payer, invoice-billed included — the server
+  // re-resolves for them too): previewing $0 and saving the real fee is the
+  // same dead end in a different place.
+  const blockedOnQuoteFailure = isEdit
+    ? serviceAreaQuoteFailed && feeRepricesOnAddressChange
+    : serviceAreaQuoteFailed && !isInvoiceBillingPayer
   const itemsSubtotal = orderItems.reduce((sum, item) => sum + item.price, 0)
   // Promo codes (and the fuel waiver, which only a promo sets) apply to the
   // single-order checkout only. The cart checkout — every team_admin and
@@ -402,8 +426,65 @@ export function ReviewStep({
   const flatFeeBase = isEdit && isPositiveNumber(editMeta?.flatFeeBase) ? editMeta!.flatFeeBase! : FLAT_FEE_BASE
   const flatFeeFuel = isEdit && isPositiveNumber(editMeta?.flatFeeFuel) ? editMeta!.flatFeeFuel! : PRICING.fuel_surcharge
   const flatTax = Math.round(flatFeeBase * PRICING.tax_rate * 100) / 100
-  const flatTotal = flatFeeBase + flatFeeFuel + flatTax
+  // The flat rate alone, for the "billed a flat $X per order" note...
+  const flatRateTotal = Math.round((flatFeeBase + flatFeeFuel + flatTax) * 100) / 100
+  // ...and what is actually charged: the out-of-area fee rides on top, untaxed,
+  // matching computeFlatFeePricing on the server.
+  const flatTotal = Math.round((flatRateTotal + serviceAreaSurcharge) * 100) / 100
   const displayTotal = isFlatFee ? flatTotal : total
+
+  // The out-of-area "couldn't check" notice and the split-fee agreement box.
+  // Rendered in BOTH total layouts: they used to live only inside the
+  // non-flat one, which was harmless while flat-fee accounts never carried
+  // the fee. Now they can, and a flat-fee card payer would be required to
+  // agree to a box that was never shown — a disabled button with no way on.
+  const ooaGate = (
+    <>
+    {/* Required consent for the split out-of-area fee (Ryan,
+        2026-07-09/12): $25 charged now (the line above), $25 more
+        auto-charged when removal gets scheduled. Full details live in
+        the "What's this?" expander on the fee line right above —
+        deliberately not duplicated here. */}
+    {/* A disabled button with no stated reason reads as a broken page. */}
+    {blockedOnQuoteFailure && (
+      <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
+        <p className="text-xs text-amber-900 leading-relaxed">
+          We couldn&apos;t check this address for out-of-area fees just now. Give it a
+          moment — this usually clears on its own. If it keeps happening, call us on
+          859-395-8188 and we&apos;ll place the order for you.
+        </p>
+      </div>
+    )}
+    {requiresOOAConsent && (
+      <div className="rounded-lg border border-pink-200 bg-pink-50/60 p-3">
+        <label className="flex items-start gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={formData.service_area_fee_agreed || false}
+            onChange={(e) => updateFormData({ service_area_fee_agreed: e.target.checked })}
+            className="mt-0.5 w-4 h-4 text-pink-500 border-gray-300 rounded focus:ring-pink-500"
+          />
+          {/* The amount is COMPUTED, not the old hardcoded "$25". Under
+              per-mile pricing a distant property can owe $45 or more per
+              trip, and agreeing to "$25" then being charged $45 is the
+              kind of surprise that generates a chargeback. Ryan asked us
+              not to re-prompt everyone on the standing policy notice
+              ("keep it as is and I'll handle those that have questions"),
+              so lib/policy-notices.ts and CURRENT_NOTICE_VERSION are
+              untouched — this per-order consent line is separate and has
+              to state the real number. */}
+          <span className="text-xs text-gray-700 leading-relaxed">
+            By selecting I Agree, there is a ${serviceAreaSurcharge.toFixed(2)} out of area fee to install. When removal is scheduled, ${(
+              serviceAreaQuote && serviceAreaQuote.tier === 'surcharge'
+                ? (serviceAreaQuote.surchargeCents - Math.round(serviceAreaQuote.surchargeCents / 2)) / 100
+                : serviceAreaSurcharge
+            ).toFixed(2)} to pickup will be charged.
+          </span>
+        </label>
+      </div>
+    )}
+    </>
+  )
 
   // Build items for tax calculation (same structure used in submit)
   const buildTaxItems = useCallback(() => {
@@ -1234,6 +1315,11 @@ export function ReviewStep({
       setError('Please keep at least one item on the order')
       return
     }
+    // The button is disabled for this too; mirrors the create/cart handlers.
+    if (blockedOnQuoteFailure) {
+      setError("We couldn't check the new address for out-of-area fees. Try again in a moment.")
+      return
+    }
     // Edit mode allows jumping straight to Review, so canProceed's property-
     // step gate never runs — enforce the required question here too.
     if (formData.street_numbers_visible === undefined) {
@@ -1562,12 +1648,19 @@ export function ReviewStep({
           {isFlatFee && (
             <>
               <div className="rounded-lg bg-pink-50 border border-pink-200 p-2 text-xs text-pink-700">
-                Flat-fee account — billed a flat ${flatTotal.toFixed(2)} per order regardless of items selected.
+                Flat-fee account — billed a flat ${flatRateTotal.toFixed(2)} per order regardless of items selected
+                {serviceAreaSurcharge > 0 ? ', plus the out-of-area fee below.' : '.'}
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-gray-600">Flat Installation Fee</span>
                 <span className="text-gray-900">${flatFeeBase.toFixed(2)}</span>
               </div>
+              {serviceAreaSurcharge > 0 && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600">Out of Area Service Fee</span>
+                  <span className="text-gray-900">${serviceAreaSurcharge.toFixed(2)}</span>
+                </div>
+              )}
               <div className="flex justify-between text-sm">
                 <span className="text-gray-600">Fuel Surcharge</span>
                 <span className="text-gray-900">${flatFeeFuel.toFixed(2)}</span>
@@ -1575,6 +1668,13 @@ export function ReviewStep({
               <div className="flex justify-between text-sm">
                 <span className="text-gray-600">Sales Tax (6%)</span>
                 <span className="text-gray-900">${flatTax.toFixed(2)}</span>
+              </div>
+              {ooaGate}
+              {/* Stated outright now: with the out-of-area fee on top, the flat
+                  rate in the note above is no longer the whole charge. */}
+              <div className="flex justify-between text-lg font-bold pt-2 border-t border-gray-200">
+                <span className="text-gray-900">{isEdit ? 'New Total' : 'Total'}</span>
+                <span className="text-pink-600">${flatTotal.toFixed(2)}</span>
               </div>
             </>
           )}
@@ -1596,7 +1696,11 @@ export function ReviewStep({
               <span className="text-gray-900">${noPostSurcharge.toFixed(2)}</span>
             </div>
           )}
-          {serviceAreaSurcharge > 0 && serviceAreaQuote?.tier === 'surcharge' && (
+          {/* Rendered whenever the fee is in the total. It used to also need a live
+              'surcharge' quote, so an edit keeping a locked fee (payer since made
+              exempt, quote failed, centre moved) counted it in Subtotal with no
+              row to explain it. */}
+          {serviceAreaSurcharge > 0 && (
             <details className="group">
               {/* The whole <summary> is the native click target — clicking
                   anywhere on the row toggles the explainer. The "What's this?"
@@ -1621,11 +1725,15 @@ export function ReviewStep({
                       2026-06-27); "40 road miles from Cincinnati" cannot be
                       misread that way. Falls back to the admin-only minutes
                       line for any centre still on legacy minute bands. */}
-                  {serviceAreaQuote.explanation
-                    ? ` — ${serviceAreaQuote.explanation}`
-                    : adminView && serviceAreaQuote.centerName && serviceAreaQuote.driveTimeMinutes != null
-                      ? ` — ${serviceAreaQuote.centerName} (~${serviceAreaQuote.driveTimeMinutes} min)`
-                      : ''}
+                  {/* The live quote's miles/centre describe the LIVE fee — never
+                      pair them with a locked amount they may not match. */}
+                  {useLockedFee || !serviceAreaQuote
+                    ? ''
+                    : serviceAreaQuote.explanation
+                      ? ` — ${serviceAreaQuote.explanation}`
+                      : adminView && serviceAreaQuote.centerName && serviceAreaQuote.driveTimeMinutes != null
+                        ? ` — ${serviceAreaQuote.centerName} (~${serviceAreaQuote.driveTimeMinutes} min)`
+                        : ''}
                   <span className="text-pink-600 underline text-xs font-medium group-open:hidden">
                     What&apos;s this?
                   </span>
@@ -1640,49 +1748,7 @@ export function ReviewStep({
               </p>
             </details>
           )}
-          {/* Required consent for the split out-of-area fee (Ryan,
-              2026-07-09/12): $25 charged now (the line above), $25 more
-              auto-charged when removal gets scheduled. Full details live in
-              the "What's this?" expander on the fee line right above —
-              deliberately not duplicated here. */}
-          {/* A disabled button with no stated reason reads as a broken page. */}
-          {blockedOnQuoteFailure && (
-            <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
-              <p className="text-xs text-amber-900 leading-relaxed">
-                We couldn&apos;t check this address for out-of-area fees just now. Give it a
-                moment — this usually clears on its own. If it keeps happening, call us on
-                859-395-8188 and we&apos;ll place the order for you.
-              </p>
-            </div>
-          )}
-          {requiresOOAConsent && (
-            <div className="rounded-lg border border-pink-200 bg-pink-50/60 p-3">
-              <label className="flex items-start gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={formData.service_area_fee_agreed || false}
-                  onChange={(e) => updateFormData({ service_area_fee_agreed: e.target.checked })}
-                  className="mt-0.5 w-4 h-4 text-pink-500 border-gray-300 rounded focus:ring-pink-500"
-                />
-                {/* The amount is COMPUTED, not the old hardcoded "$25". Under
-                    per-mile pricing a distant property can owe $45 or more per
-                    trip, and agreeing to "$25" then being charged $45 is the
-                    kind of surprise that generates a chargeback. Ryan asked us
-                    not to re-prompt everyone on the standing policy notice
-                    ("keep it as is and I'll handle those that have questions"),
-                    so lib/policy-notices.ts and CURRENT_NOTICE_VERSION are
-                    untouched — this per-order consent line is separate and has
-                    to state the real number. */}
-                <span className="text-xs text-gray-700 leading-relaxed">
-                  By selecting I Agree, there is a ${serviceAreaSurcharge.toFixed(2)} out of area fee to install. When removal is scheduled, ${(
-                    serviceAreaQuote && serviceAreaQuote.tier === 'surcharge'
-                      ? (serviceAreaQuote.surchargeCents - Math.round(serviceAreaQuote.surchargeCents / 2)) / 100
-                      : serviceAreaSurcharge
-                  ).toFixed(2)} to pickup will be charged.
-                </span>
-              </label>
-            </div>
-          )}
+          {ooaGate}
           <div className="flex justify-between text-sm">
             <span className="text-gray-600">Fuel Surcharge</span>
             <span className={cn("text-gray-900", fuelSurchargeWaived && "line-through text-gray-400")}>
@@ -1871,7 +1937,7 @@ export function ReviewStep({
           size="lg"
           className="w-full"
           onClick={handleSaveEdit}
-          disabled={isSubmitting || loadingServiceAreaQuote || serviceAreaQuote?.tier === 'out_of_area'}
+          disabled={isSubmitting || loadingServiceAreaQuote || serviceAreaQuote?.tier === 'out_of_area' || blockedOnQuoteFailure}
         >
           {isSubmitting ? 'Saving…' : loadingServiceAreaQuote ? 'Checking address…' : 'Save Changes'}
         </Button>

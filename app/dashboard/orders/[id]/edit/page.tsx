@@ -8,6 +8,8 @@ import { Card, CardContent, Button } from '@/components/ui'
 import { ArrowLeft, AlertCircle } from 'lucide-react'
 import { OrderWizard } from '@/components/order-flow'
 import type { OrderFormData } from '@/components/order-flow'
+import type { OrderWizardProps } from '@/components/order-flow/order-wizard'
+import { lockedFlatBase } from '@/lib/orders/pricing'
 import {
   orderToFormData,
   augmentInventoryWithOrder,
@@ -24,7 +26,10 @@ export default function EditOrderPage() {
   const [error, setError] = useState<string | null>(null)
   const [formData, setFormData] = useState<OrderFormData | null>(null)
   const [inventory, setInventory] = useState<WizardInventory | undefined>()
-  const [editMeta, setEditMeta] = useState<{ orderNumber: string; originalTotal: number; flatFeeBase?: number; flatFeeFuel?: number } | null>(null)
+  const [editMeta, setEditMeta] = useState<NonNullable<OrderWizardProps['editMeta']> | null>(null)
+  // The PAYER's invoice billing — decides whether the out-of-area fee shown
+  // here is split or whole, exactly as the edit route decides it.
+  const [invoiceBilling, setInvoiceBilling] = useState(false)
   // Owned-lockbox install and sign-pickup fees for this edit: what the order
   // was placed at, else the PAYER's perks (e.g. Semonin). See editFeeOverrides.
   const [fees, setFees] = useState<{ pickupFee?: number; lockboxInstallFee?: number }>({})
@@ -60,13 +65,21 @@ export default function EditOrderPage() {
           subtotal: number | string
           placedForAgentName?: string | null
           flatFeeApplied?: boolean
-          payerPerks?: { freeLockboxInstall?: boolean; pickupFeeWaived?: boolean }
+          payerPerks?: { freeLockboxInstall?: boolean; pickupFeeWaived?: boolean; invoiceBilling?: boolean }
+          flatFeeBase?: number | string | null
+          serviceAreaSurchargeCents?: number | null
+          propertyAddress?: string
+          propertyCity?: string
+          propertyState?: string
+          propertyZip?: string
+          keepsLockedServiceAreaFee?: boolean
         }
 
         // Set flatFee BEFORE setFormData so first paint already has the flat-fee
         // branch — avoids a flash of the per-item total.
         setFlatFee(!!order.flatFeeApplied)
         setFees(editFeeOverrides(order, order.payerPerks))
+        setInvoiceBilling(!!order.payerPerks?.invoiceBilling)
 
         if (order.status === 'completed' || order.status === 'cancelled') {
           throw new Error('This order can no longer be edited')
@@ -104,8 +117,19 @@ export default function EditOrderPage() {
         setEditMeta({
           orderNumber: order.orderNumber,
           originalTotal: Number(order.total),
-          flatFeeBase: order.flatFeeApplied ? Number(order.subtotal) : undefined,
+          // The locked flat RATE — stored on the order, since the subtotal
+          // now also carries the out-of-area fee (see lockedFlatBase).
+          flatFeeBase: order.flatFeeApplied ? lockedFlatBase(order) : undefined,
           flatFeeFuel: order.flatFeeApplied ? Number(order.fuelSurcharge) : undefined,
+          // What the edit route will keep unless the address changes.
+          lockedServiceAreaFee: (order.serviceAreaSurchargeCents ?? 0) / 100,
+          originalAddress: {
+            street: order.propertyAddress ?? '',
+            city: order.propertyCity ?? '',
+            state: order.propertyState ?? '',
+            zip: order.propertyZip ?? '',
+          },
+          keepsLockedFee: !!order.keepsLockedServiceAreaFee,
         })
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load order')
@@ -187,6 +211,7 @@ export default function EditOrderPage() {
           lockboxInstallFee={fees.lockboxInstallFee}
           pickupFee={fees.pickupFee}
           flatFee={flatFee}
+          invoiceBilling={invoiceBilling}
         />
       </div>
     </div>

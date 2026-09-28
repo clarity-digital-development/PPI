@@ -86,6 +86,7 @@ export async function GET(
       subtotal: Number(o.subtotal),
       total: Number(o.total),
       flat_fee_applied: o.flatFeeApplied,
+      flat_fee_base: o.flatFeeBase !== null ? Number(o.flatFeeBase) : null,
       placed_for_agent_name: o.placedForAgentName,
       items: o.orderItems.map((it) => ({
         description: it.description,

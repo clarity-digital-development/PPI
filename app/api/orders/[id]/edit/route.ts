@@ -9,7 +9,8 @@ import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
 import { audit, AuditAction } from '@/lib/audit'
 import { chargePaymentMethod, isDetachedPaymentMethodError } from '@/lib/stripe'
 import { resolveEffectivePayer } from '@/lib/orders/effective-payer'
-import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, NO_POST_SURCHARGE, postRentalApplies, type OrderItemForPricing } from '@/lib/orders/pricing'
+import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, lockedFlatBase, NO_POST_SURCHARGE, postRentalApplies, type OrderItemForPricing } from '@/lib/orders/pricing'
+import { keepsLockedServiceAreaFee } from '@/lib/orders/service-area-lock'
 import { applyPickupFeePolicy, lockedPickupFeeDecision } from '@/lib/orders/pickup-fee'
 import { isPickupFeeWaivedForPayer } from '@/lib/orders/pickup-fee-waiver'
 import { allowedInventoryOwnerIds, checkInventoryOwnership, describeInventoryFailures } from '@/lib/orders/inventory-ownership'
@@ -306,14 +307,14 @@ export async function PATCH(
     // the OOA charge was locked at placement — a customer stuck with
     // Andi's $50 could not remove it by editing their address to
     // Lexington, and inversely someone editing INTO an unserved area
-    // bypassed the block entirely. Flat-fee accounts stay exempt
-    // regardless of address per Ryan's policy.
+    // bypassed the block entirely. Flat-fee accounts used to be skipped
+    // here, because the flat rate swallowed the fee; it no longer does
+    // (Ryan, 2026-09-27 — charged on top), so an address change must
+    // re-price it for them like anyone else.
     //
     // Trigger: any of property_address / property_city / property_state
-    // / property_zip changed AND not flat-fee AND payer is not exempt.
-    // resolveServiceArea handles the exempt fast-path internally, but
-    // we still short-circuit when isFlatFee so we don't waste a Google
-    // Routes call on flat-fee edits.
+    // / property_zip changed AND payer is not exempt. resolveServiceArea
+    // handles the exempt fast-path internally.
     //
     // Empty-string coerce (adversarial review 2026-07-06): the wizard's
     // form state defaults these to '' and a customer can clear a field
@@ -337,8 +338,8 @@ export async function PATCH(
     // still belongs to the WALLET, not the acting admin.
     const payerForOOA = await prisma.user.findUnique({
       where: { id: existingOrder.placedByUserId ?? existingOrder.userId },
-      // invoiceBilling / flatFeeBilling decide whether the fee splits 50/50,
-      // exactly as they do at create time.
+      // invoiceBilling decides whether the fee splits 50/50, exactly as it
+      // does at create time.
       select: { id: true, role: true, isServiceAreaExempt: true, invoiceBilling: true, flatFeeBilling: true },
     })
 
@@ -357,9 +358,11 @@ export async function PATCH(
     // moment they can (2026-09-19), it meant every broker order silently
     // skipped re-resolving on an address change, freezing the fee from the
     // original address in both directions.
-    const wouldFastPathExempt = !!payerForOOA && payerForOOA.isServiceAreaExempt
-    const hadPaidSurcharge = (existingOrder.serviceAreaSurchargeCents ?? 0) > 0
-    const skipReresolveForExemptPromoted = wouldFastPathExempt && hadPaidSurcharge
+    //
+    // Now also covers flat-fee orders placed before the fee rode on top of the
+    // flat rate: see lib/orders/service-area-lock.ts. The edit screen reads the
+    // same rule so it previews what this route saves.
+    const skipReresolveForExemptPromoted = keepsLockedServiceAreaFee(existingOrder, payerForOOA)
 
     let resolvedSurchargeCents: number | null = null
     let resolvedCenterId: string | null | undefined = undefined
@@ -368,7 +371,7 @@ export async function PATCH(
     let resolvedSecondChargeCents: number | null | undefined = undefined
     let resolvedSecondChargeStatus: 'pending' | null | undefined = undefined
     let resolvedDriveTimeSource: string | null | undefined = undefined
-    if (propertyLocationChanged && !isFlatFee && !skipReresolveForExemptPromoted) {
+    if (propertyLocationChanged && !skipReresolveForExemptPromoted) {
       const newZip = zipInput ?? existingOrder.propertyZip
       const newStreet = streetInput ?? existingOrder.propertyAddress
       const newCity = cityInput ?? existingOrder.propertyCity
@@ -402,7 +405,8 @@ export async function PATCH(
       // diff, once when removal was scheduled). Harmless-looking while every
       // fee was a flat $50/$25; with per-mile pricing the doubled amount
       // scales with distance.
-      const oooSkipsSplit = !!payerForOOA && (payerForOOA.invoiceBilling || payerForOOA.flatFeeBilling)
+      // Invoice-billing only, matching create — flat fee is no longer a reason.
+      const oooSkipsSplit = !!payerForOOA && payerForOOA.invoiceBilling
       const resolvedFullCents = sa.tier === 'surcharge' ? sa.surchargeCents : 0
       resolvedSurchargeCents = oooSkipsSplit
         ? resolvedFullCents
@@ -467,9 +471,9 @@ export async function PATCH(
           if (item.customerBrochureBoxId) return !payloadBrochureIds.has(item.customerBrochureBoxId) && !awareBrochureIds.has(item.customerBrochureBoxId)
           return false
         })
-    // Locked-surcharge source of truth:
-    //   - Flat-fee: 0 (flat total absorbs all fees).
-    //   - Re-resolved on this edit (address/zip changed, non-flat-fee):
+    // Locked-surcharge source of truth (flat-fee included — the fee is charged
+    // on top of the flat rate, no longer absorbed by it):
+    //   - Re-resolved on this edit (address/zip changed):
     //     resolvedSurchargeCents wins — the resolver just measured the new
     //     address and its answer is canonical.
     //   - Else: existing serviceAreaSurchargeCents (locked at placement).
@@ -479,11 +483,10 @@ export async function PATCH(
     const preservedSurchargeFromLines = preserveItems
       .filter(it => it.itemType === 'surcharge')
       .reduce((sum, it) => sum + Number(it.totalPrice), 0)
-    const lockedSurchargeCents = isFlatFee
-      ? 0
-      : (resolvedSurchargeCents !== null
-          ? resolvedSurchargeCents
-          : (existingOrder.serviceAreaSurchargeCents ?? 0))
+    const lockedSurchargeCents =
+      resolvedSurchargeCents !== null
+        ? resolvedSurchargeCents
+        : (existingOrder.serviceAreaSurchargeCents ?? 0)
     const lockedSurcharge = lockedSurchargeCents / 100
     const surchargeShortfall = Math.max(0, lockedSurcharge - preservedSurchargeFromLines)
 
@@ -552,8 +555,10 @@ export async function PATCH(
     // non-expedited while the column stays true — that mismatch fed phantom
     // credits into the post-invoice adjustment baseline.
     const effectiveIsExpedited = editData.is_expedited ?? existingOrder.isExpedited
+    // Flat: the order's own locked rate (subtotal less its fee — NOT the raw
+    // subtotal, which now carries the fee) plus the locked/re-resolved fee.
     const pricing = isFlatFee
-      ? computeFlatFeePricing(Number(existingOrder.fuelSurcharge), Number(existingOrder.subtotal))
+      ? computeFlatFeePricing(Number(existingOrder.fuelSurcharge), lockedFlatBase(existingOrder), lockedSurcharge)
       : computeOrderPricing({
           items: pricingItems,
           hasPostType,
@@ -597,13 +602,13 @@ export async function PATCH(
       const oldSurchargeFromLines = oldPricingItems
         .filter((it) => it.item_type === 'surcharge')
         .reduce((s, it) => s + it.total_price, 0)
-      const oldLockedSurcharge = isFlatFee ? 0 : (existingOrder.serviceAreaSurchargeCents ?? 0) / 100
+      const oldLockedSurcharge = (existingOrder.serviceAreaSurchargeCents ?? 0) / 100
       const oldShortfall = Math.max(0, oldLockedSurcharge - oldSurchargeFromLines)
       if (oldShortfall > 0) {
         oldPricingItems.push({ item_type: 'surcharge', total_price: oldShortfall })
       }
       const oldPricing = isFlatFee
-        ? computeFlatFeePricing(Number(existingOrder.fuelSurcharge), Number(existingOrder.subtotal))
+        ? computeFlatFeePricing(Number(existingOrder.fuelSurcharge), lockedFlatBase(existingOrder), oldLockedSurcharge)
         : computeOrderPricing({
             items: oldPricingItems,
             // NOT !!existingOrder.postTypeId: open_house orders persist

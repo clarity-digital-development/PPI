@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { compressImageDataUri } from '@/lib/images/compress'
 import { getCurrentUser, generateOrderNumber } from '@/lib/auth-utils'
 import { createPaymentIntent, createCustomer, getStripeErrorMessage, stripe } from '@/lib/stripe/server'
-import { computeOrderPricing, computeFlatFeePricing, postRentalApplies } from '@/lib/orders/pricing'
+import { computeOrderPricing, computeFlatFeePricing, FLAT_FEE_BASE, postRentalApplies } from '@/lib/orders/pricing'
 import { applyPickupFeePolicy } from '@/lib/orders/pickup-fee'
 import { isPickupFeeWaivedForPayer } from '@/lib/orders/pickup-fee-waiver'
 import { claimHoldsInTx, HoldConflictError, releaseHolds, describeHoldItems, type HoldClaim } from '@/lib/inventory-holds'
@@ -318,7 +318,9 @@ export async function POST(request: NextRequest) {
       let surchargeItemCents = 0
       let secondChargeCents = 0
       if (sa.tier === 'surcharge' && sa.surchargeCents > 0) {
-        const skipsSplit = isInvoiceBilling || !!actor.flatFeeBilling
+        // Invoice-billing only — see app/api/orders/route.ts. Flat fee is no
+        // longer a reason: the fee now rides on top of the flat rate.
+        const skipsSplit = isInvoiceBilling
         surchargeItemCents = sa.surchargeCents
         if (!skipsSplit) {
           // Server-side gate — the wizard's checkbox is client-side only and
@@ -361,11 +363,13 @@ export async function POST(request: NextRequest) {
         postTypeId = pt.id
       }
 
-      // CR4 (Round 22): flat-fee accounts pay a fixed $66.07 per order
+      // CR4 (Round 22): flat-fee accounts pay a fixed rate per order
       // regardless of items. Clamp here so grandTotal, the PaymentIntent, and
       // the persisted totals are all flat; real items still flow to fulfillment.
+      // The out-of-area fee is charged ON TOP of the flat rate, not swallowed
+      // by it (Ryan, 2026-09-27) — the same amount decided above.
       const pricing = actor.flatFeeBilling
-        ? computeFlatFeePricing()
+        ? computeFlatFeePricing(undefined, undefined, surchargeItemCents / 100)
         : computeOrderPricing({
             items: o.items,
             hasPostType: !!o.post_type,
@@ -545,6 +549,8 @@ export async function POST(request: NextRequest) {
               total: c.pricing.total,
               // CR4: mark flat-fee orders so edits recompute as flat (no diff).
               flatFeeApplied: !!actor.flatFeeBilling,
+              // The flat rate itself, stored outright — see lockedFlatBase.
+              flatFeeBase: actor.flatFeeBilling ? FLAT_FEE_BASE : null,
               // WHY: persist actual surcharge so reporting + invoice math match
               // what the customer paid. This MUST be what landed in the
               // OrderItem (the install half for a split order), not the
@@ -552,7 +558,10 @@ export async function POST(request: NextRequest) {
               // as ground truth for "how much of the total is the surcharge
               // line" when reconciling a diff, and a disagreement overcharges
               // on every subsequent edit. Mirrors app/api/orders/route.ts.
-              serviceAreaSurchargeCents: actor.flatFeeBilling ? 0 : c.surchargeItemCents,
+              // Flat-fee orders keep it too: the fee is charged on top of the
+              // flat rate, and the edit route recovers that rate as subtotal −
+              // this column (lib/orders/pricing.ts lockedFlatBase).
+              serviceAreaSurchargeCents: c.surchargeItemCents,
               // The pickup half, collected when removal is scheduled
               // (lib/orders/out-of-area-charge.ts reads these two).
               serviceAreaSecondChargeCents: c.secondChargeCents > 0 ? c.secondChargeCents : null,

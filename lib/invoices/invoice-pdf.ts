@@ -37,6 +37,15 @@ export interface InvoiceOrder {
   // CR4: flat-fee orders bill a single line ($60 base; fuel + tax show in the
   // invoice Total) instead of the real à-la-carte items.
   flat_fee_applied: boolean
+  // The flat RATE a flat-fee order was placed at (Order.flatFeeBase; null on
+  // orders that predate the column, whose subtotal IS the rate). A flat order
+  // renders as the rate plus, separately, the out-of-area fee riding on top
+  // (Ryan, 2026-09-27) — fee = subtotal − rate. Deliberately NOT read from
+  // serviceAreaSurchargeCents: an address edit on an invoiced order rewrites
+  // that column but leaves subtotal frozen, which re-rendered an invoice the
+  // customer already had with different (even negative) lines. subtotal and
+  // this are both fixed once invoiced, so a sent invoice always reads the same.
+  flat_fee_base: number | null
   placed_for_agent_name: string | null
   items: InvoiceItem[]
 }
@@ -254,10 +263,16 @@ export function buildInvoicePdfDoc(invoice: InvoiceDetail): jsPDF {
     const addr = formatAddress(o.property_address, o.property_city, o.property_state, o.property_zip)
     const agent = o.placed_for_agent_name || '—'
     if (o.flat_fee_applied) {
-      // CR4: one flat line at the order subtotal ($60); the $2.47 fuel + 6% tax
-      // are reflected in the invoice Total below, so line items reconcile to the
-      // invoice Subtotal.
-      rows.push([o.order_number, fmtDate(o.created_at), addr, agent, 'Flat Installation Fee', '1', fmtCurrency(o.subtotal), fmtCurrency(o.subtotal)])
+      // CR4: the flat rate as one line; the fuel + 6% tax are reflected in the
+      // invoice Total below. The out-of-area fee is its own line, not folded
+      // into the rate — the two still sum to the order subtotal, so line items
+      // keep reconciling to the invoice Subtotal.
+      const rate = o.flat_fee_base ?? o.subtotal
+      const fee = Math.max(0, Math.round((o.subtotal - rate) * 100) / 100)
+      rows.push([o.order_number, fmtDate(o.created_at), addr, agent, 'Flat Installation Fee', '1', fmtCurrency(rate), fmtCurrency(rate)])
+      if (fee > 0) {
+        rows.push(['', '', '', '', 'Out of Area Service Fee', '1', fmtCurrency(fee), fmtCurrency(fee)])
+      }
     } else if (o.items.length === 0) {
       rows.push([o.order_number, fmtDate(o.created_at), addr, agent, '(order)', '', '', fmtCurrency(o.total)])
     } else {

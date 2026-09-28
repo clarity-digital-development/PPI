@@ -9,7 +9,7 @@ import { createPaymentIntent, createCustomer, calculateTax, getStripeErrorMessag
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 import { resolveServiceArea } from '@/lib/service-area'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
-import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, postRentalApplies, UNTAXED_ITEM_TYPES } from '@/lib/orders/pricing'
+import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, FLAT_FEE_BASE, postRentalApplies, UNTAXED_ITEM_TYPES } from '@/lib/orders/pricing'
 import { applyPickupFeePolicy } from '@/lib/orders/pickup-fee'
 import { isPickupFeeWaivedForPayer } from '@/lib/orders/pickup-fee-waiver'
 import { allowedInventoryOwnerIds, checkInventoryOwnership, describeInventoryFailures } from '@/lib/orders/inventory-ownership'
@@ -228,15 +228,18 @@ export async function POST(request: NextRequest) {
     // persisted on the Order row (serviceAreaCenterId / DriveMinutes /
     // DriveTimeSource) so admin can audit without leaking to the customer.
     //
-    // Split fee (Ryan, 2026-07-09/12): the one exception is a payer whose
-    // order total isn't collected as a normal now-charge in the first place
-    // — invoice-billing (accumulates into a bundled Invoice) and flat-fee
-    // (the whole total is clamped to a fixed amount below, ignoring item
-    // prices entirely) payers both keep the OLD single full-amount item and
-    // never get split/consent/a second charge, since "charge $25 later"
-    // doesn't mean anything for an account that was never charged per-item
-    // to begin with. Everyone else pays HALF now (this item) and half when
-    // removal gets scheduled — see lib/orders/out-of-area-charge.ts.
+    // Split fee (Ryan, 2026-07-09/12): the one exception is an invoice-billing
+    // payer. Their orders accumulate into a bundled Invoice and nothing is
+    // collected at checkout, while the pickup half is charged to a saved CARD
+    // when removal gets scheduled — there is no card to take it from. So they
+    // keep the single full-amount item, no consent, no second charge.
+    // Everyone else pays HALF now (this item) and half when removal gets
+    // scheduled — see lib/orders/out-of-area-charge.ts.
+    //
+    // Flat-fee used to be exempted from the split here too, on the grounds
+    // that its total ignored item prices. It no longer does for this fee — the
+    // fee rides on top of the flat rate (see the flat-fee block below) — so
+    // flat fee by itself is no reason to skip the split (Ryan, 2026-09-27).
     //
     // orderItemSurchargeCents tracks exactly what dollar amount ends up in
     // THIS item (half or full) — Order.serviceAreaSurchargeCents below is
@@ -250,7 +253,7 @@ export async function POST(request: NextRequest) {
     let orderItemSurchargeCents = 0
     if (sa.tier === 'surcharge' && sa.surchargeCents > 0) {
       const description = 'Out of Area Service Fee'
-      const skipsSplit = !!payer.invoiceBilling || !!payer.flatFeeBilling
+      const skipsSplit = !!payer.invoiceBilling
       orderItemSurchargeCents = sa.surchargeCents
       if (!skipsSplit) {
         // Required consent — server-side gate; the review-step checkbox is
@@ -418,13 +421,21 @@ export async function POST(request: NextRequest) {
         })
       : fallbackPricing
 
-    // CR4 (Round 22): flat-fee accounts pay a fixed $66.07 regardless of items
+    // CR4 (Round 22): flat-fee accounts pay a fixed rate regardless of items
     // selected. Enforced HERE on the server (item totals are client-trusted, so
     // the UI alone can't be authoritative). Real items are still persisted below
     // for fulfillment; only the money fields are clamped. Suppresses expedite,
-    // no-post, promo discount, and the out-of-area surcharge.
+    // no-post and promo discount.
+    //
+    // NOT the out-of-area fee. That used to be swallowed too, so an out-of-area
+    // flat-fee order billed the same as one next door; Ryan wants it charged
+    // on top, in its own bucket, and exempts an account per-profile when he
+    // doesn't (2026-09-27). The amount is the one already decided above —
+    // half for a split payer, full for invoice-billing.
     const isFlatFee = !!payer.flatFeeBilling
-    const flat = isFlatFee ? computeFlatFeePricing() : null
+    const flat = isFlatFee
+      ? computeFlatFeePricing(undefined, undefined, orderItemSurchargeCents / 100)
+      : null
     const finalSubtotal = flat ? flat.subtotal : pricing.subtotal
     const finalDiscount = flat ? 0 : discount
     const finalFuelSurcharge = flat ? flat.fuelSurcharge : pricing.fuelSurcharge
@@ -435,7 +446,9 @@ export async function POST(request: NextRequest) {
     // Matches orderItemSurchargeCents (the actual OrderItem amount — half for
     // a split order, full for invoice-billing) so the edit route's
     // reconciliation math stays correct. NOT the always-full sa.surchargeCents.
-    const finalServiceAreaSurchargeCents = flat ? 0 : orderItemSurchargeCents
+    // Flat-fee orders keep it too now: it is how the edit route recovers the
+    // locked flat rate (subtotal − this; lib/orders/pricing.ts lockedFlatBase).
+    const finalServiceAreaSurchargeCents = orderItemSurchargeCents
 
     // Invoice-billing payers skip the Stripe charge at checkout — their orders
     // accumulate as pending_invoice and an admin collects via /admin/invoices.
@@ -625,6 +638,8 @@ export async function POST(request: NextRequest) {
         total,
         // CR4: mark flat-fee orders so edits recompute as flat (no diff-charge).
         flatFeeApplied: isFlatFee,
+        // The flat rate itself, stored outright — see lockedFlatBase.
+        flatFeeBase: isFlatFee ? FLAT_FEE_BASE : null,
         // WHY: persist actual surcharge so reporting + invoice math match what the customer paid.
         serviceAreaSurchargeCents: finalServiceAreaSurchargeCents,
         serviceAreaCenterId: sa.decidedBy?.centerId ?? null,

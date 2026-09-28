@@ -282,7 +282,15 @@ export default function InvoiceDetailPage() {
                     )}
                     <ul className="mt-2 text-xs text-gray-600 space-y-0.5">
                       {o.flat_fee_applied ? (
-                        <li>• Flat Installation Fee — {formatCurrency(o.subtotal)} (+ gas &amp; tax)</li>
+                        <>
+                          {/* The out-of-area fee is its own line, not folded into
+                              the flat rate — rate + fee = the order subtotal.
+                              Same derivation as lib/invoices/invoice-pdf.ts. */}
+                          <li>• Flat Installation Fee — {formatCurrency(o.flat_fee_base ?? o.subtotal)} (+ gas &amp; tax)</li>
+                          {o.subtotal - (o.flat_fee_base ?? o.subtotal) >= 0.01 && (
+                            <li>• Out of Area Service Fee — {formatCurrency(o.subtotal - (o.flat_fee_base ?? o.subtotal))}</li>
+                          )}
+                        </>
                       ) : (
                         o.items.map((it, idx) => (
                           <li key={idx}>

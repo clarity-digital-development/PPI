@@ -472,7 +472,15 @@ model Order {
   // had flatFeeBilling at creation). Frozen on the order so edits recompute as
   // flat (no diff-charge) and invoices/reporting can identify clamped orders.
   flatFeeApplied                         Boolean                        @default(false) @map("flat_fee_applied")
-  expediteFee                            Decimal                        @default(0) @map("expedite_fee") @db.Decimal(10, 2)
+  // The flat RATE this order was placed at (e.g. 65.00), stored outright.
+  // Needed since the out-of-area fee rides on top of the flat rate inside
+  // `subtotal` (Ryan, 2026-09-27): the rate can no longer be read off the
+  // subtotal, and deriving it as subtotal − serviceAreaSurchargeCents breaks on
+  // invoiced orders, where an address edit rewrites the fee column but leaves
+  // subtotal frozen. Null on orders placed before this existed — their subtotal
+  // IS the rate, since the fee was never added then. See lockedFlatBase.
+  flatFeeBase                            Decimal?                       @map("flat_fee_base") @db.Decimal(10, 2)
+  expediteFee                           Decimal                        @default(0) @map("expedite_fee") @db.Decimal(10, 2)
   discount                               Decimal                        @default(0) @db.Decimal(10, 2)
   tax                                    Decimal                        @default(0) @db.Decimal(10, 2)
   total                                  Decimal                        @db.Decimal(10, 2)

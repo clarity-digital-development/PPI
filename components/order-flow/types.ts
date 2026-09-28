@@ -170,7 +170,20 @@ export interface StepProps {
   // actually save for a pre-rate-bump order instead of showing the current
   // global FLAT_FEE_BASE / fuel constant. Undefined for create mode (uses
   // the current constants, correct for a brand-new order).
-  editMeta?: { orderNumber: string; originalTotal: number; flatFeeBase?: number; flatFeeFuel?: number }
+  editMeta?: {
+    orderNumber: string
+    originalTotal: number
+    flatFeeBase?: number
+    flatFeeFuel?: number
+    /** The out-of-area fee this order is locked at (dollars). The edit route
+     *  keeps it unless the address changes; the review step must show it. */
+    lockedServiceAreaFee?: number
+    /** Address as saved — an edit re-prices the fee only if this changes. */
+    originalAddress?: { street: string; city: string; state: string; zip: string }
+    /** Server's rule (lib/orders/service-area-lock.ts): an address edit keeps
+     *  the locked fee instead of re-pricing it. */
+    keepsLockedFee?: boolean
+  }
   // Per-broker override for the OWNED-lockbox install fee (sentri/supra,
   // mechanical-owned, at-property). Defaults to PRICING.lockbox_install ($5).
   // Some brokers (e.g. Semonin) get it free ($0). Rental is unaffected.

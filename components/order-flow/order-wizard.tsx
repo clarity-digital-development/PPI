@@ -88,7 +88,7 @@ const defaultFormData: OrderFormData = {
   placed_for_agent_name: '',
 }
 
-interface OrderWizardProps {
+export interface OrderWizardProps {
   inventory?: {
     signs: Array<{ id: string; description: string; size: string | null }>
     riders: Array<{ id: string; rider_type: string; quantity: number }>
@@ -123,7 +123,20 @@ interface OrderWizardProps {
   // Edit mode passes a full OrderFormData; create mode may pass a partial
   // preset (e.g. a team_admin's selected agent name). Merged over defaults.
   initialFormData?: Partial<OrderFormData>
-  editMeta?: { orderNumber: string; originalTotal: number; flatFeeBase?: number; flatFeeFuel?: number }
+  editMeta?: {
+    orderNumber: string
+    originalTotal: number
+    flatFeeBase?: number
+    flatFeeFuel?: number
+    /** The out-of-area fee this order is locked at (dollars). The edit route
+     *  keeps it unless the address changes; the review step must show it. */
+    lockedServiceAreaFee?: number
+    /** Address as saved — an edit re-prices the fee only if this changes. */
+    originalAddress?: { street: string; city: string; state: string; zip: string }
+    /** Server's rule (lib/orders/service-area-lock.ts): an address edit keeps
+     *  the locked fee instead of re-pricing it. */
+    keepsLockedFee?: boolean
+  }
   // Per-broker owned-lockbox install fee override ($0 for free-install teams).
   lockboxInstallFee?: number
   // Sign-pickup fee for the payer: 0 when their team has the waiver.

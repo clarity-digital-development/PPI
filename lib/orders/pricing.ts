@@ -82,12 +82,57 @@ export const FLAT_FEE_BASE = 65
  * its ORIGINAL base on edit instead of silently jumping to the current
  * constant — per Ryan, rate changes apply to future orders only.
  */
-export function computeFlatFeePricing(fuelOverride?: number, baseOverride?: number): ComputedOrderPricing {
+export function computeFlatFeePricing(
+  fuelOverride?: number,
+  baseOverride?: number,
+  /**
+   * The out-of-area fee, in dollars, charged ON TOP of the flat rate. It used
+   * to be swallowed: the flat total ignored every item, so an out-of-area
+   * order billed exactly the same $72.39 as one next door (Ryan, 2026-09-27,
+   * the first two Semonin orders after he turned their exemption off lost
+   * $165.20). Accounts that shouldn't pay it are exempted per-account, not by
+   * the flat rate. Sits in the subtotal and stays OUT of the tax base, exactly
+   * like the surcharge line on a normal order (UNTAXED_ITEM_TYPES).
+   */
+  serviceAreaFee = 0,
+): ComputedOrderPricing {
   const fuel = fuelOverride !== undefined ? fuelOverride : FUEL_SURCHARGE
-  const subtotal = baseOverride !== undefined ? baseOverride : FLAT_FEE_BASE
-  const tax = Math.round(subtotal * FALLBACK_TAX_RATE * 100) / 100
-  const total = subtotal + fuel + tax
+  const base = baseOverride !== undefined ? baseOverride : FLAT_FEE_BASE
+  const tax = Math.round(base * FALLBACK_TAX_RATE * 100) / 100
+  const fee = serviceAreaFee > 0 ? Math.round(serviceAreaFee * 100) / 100 : 0
+  const subtotal = Math.round((base + fee) * 100) / 100
+  const total = Math.round((subtotal + fuel + tax) * 100) / 100
   return { subtotal, discount: 0, fuelSurcharge: fuel, noPostSurcharge: 0, expediteFee: 0, tax, total }
+}
+
+/**
+ * The flat rate an existing flat-fee order was placed at.
+ *
+ * Read from Order.flatFeeBase, which is stored outright. It can't be read off
+ * the subtotal any more — that carries the out-of-area fee too (so the order
+ * reads like any other: subtotal includes the surcharge line, tax excludes
+ * it). And it can't be derived as subtotal − serviceAreaSurchargeCents: on an
+ * INVOICED order an address edit rewrites that fee column but leaves subtotal
+ * frozen, so the difference drifts, the next edit re-prices from a wrong rate,
+ * and a phantom adjustment lands on the broker's next invoice.
+ *
+ * Anything that re-prices or displays a flat order — the edit route, the edit
+ * screens, invoices — must use this, never the raw subtotal, or it treats the
+ * fee as part of the rate: taxing it and then adding it a second time.
+ *
+ * Null flatFeeBase means the order predates the column, when the fee was
+ * always swallowed, so its subtotal IS the rate — and stays so: such an order
+ * never re-prices its fee on edit (lib/orders/service-area-lock.ts), so nothing
+ * can ever put a fee into its subtotal. That null is also how the lock tells an
+ * old-policy order apart, which is why the edit route must not back-fill it.
+ */
+export function lockedFlatBase(order: {
+  subtotal: unknown
+  flatFeeBase?: unknown
+}): number {
+  const stored = order.flatFeeBase
+  const rate = stored !== null && stored !== undefined ? Number(stored) : Number(order.subtotal)
+  return Math.round(rate * 100) / 100
 }
 
 export interface OrderItemForPricing {

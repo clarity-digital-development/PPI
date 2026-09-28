@@ -1938,7 +1938,7 @@ export default function CustomerDetailPage() {
               <span className="text-sm">
                 <span className="font-medium text-gray-700">Flat-fee billing (${FLAT_FEE_PRICING.total.toFixed(2)} per order)</span>
                 <span className="block text-xs text-gray-500">
-                  Every order for this account is charged a flat <strong>${FLAT_FEE_PRICING.total.toFixed(2)}</strong> (${FLAT_FEE_PRICING.subtotal.toFixed(2)} base + ${FLAT_FEE_PRICING.fuelSurcharge.toFixed(2)} gas + 6% tax) regardless of what&apos;s selected — expedite, no-post, promo, and out-of-area fees are suppressed. Items still flow to fulfillment and service requests as normal.
+                  Every order for this account is charged a flat <strong>${FLAT_FEE_PRICING.total.toFixed(2)}</strong> (${FLAT_FEE_PRICING.subtotal.toFixed(2)} base + ${FLAT_FEE_PRICING.fuelSurcharge.toFixed(2)} gas + 6% tax) regardless of what&apos;s selected — expedite, no-post, and promo are suppressed. An out-of-area fee is still added on top when the property is outside the free radius; tick &ldquo;Exempt from out-of-area service fee&rdquo; above to waive it for this account. Items still flow to fulfillment and service requests as normal.
                 </span>
               </span>
             </label>
