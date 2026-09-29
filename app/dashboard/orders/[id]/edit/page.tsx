@@ -101,9 +101,13 @@ export default function EditOrderPage() {
           }
         }
 
+        // unassigned=1 on the unscoped read, as the order page does: a
+        // team_admin editing her OWN order must not be offered the items she
+        // has handed to her agents as if they were hers. Honoured for
+        // team_admins only, so it's a no-op for everyone else.
         const inventoryUrl = memberIdScope
           ? `/api/inventory?member_id=${encodeURIComponent(memberIdScope)}`
-          : '/api/inventory'
+          : '/api/inventory?unassigned=1'
         const inventoryRes = await fetch(inventoryUrl)
         const rawInventory: WizardInventory | undefined = inventoryRes.ok
           ? await inventoryRes.json()

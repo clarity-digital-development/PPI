@@ -29,6 +29,13 @@ export interface BrokeragePool {
   ownerUserId: string
   /** Brokerage name, for labelling items in the picker. */
   name: string
+  /**
+   * The agent's OWN roster row on that team. Pool rows assigned to it are the
+   * agent's to use — a brokerage hands an agent items by assigning them to
+   * that agent's roster row. Only rows assigned to OTHER agents are off
+   * limits (design doc: assignedToMemberId IN (null, myMemberId)).
+   */
+  memberId: string
 }
 
 /**
@@ -43,7 +50,7 @@ export async function resolveBrokeragePool(userId: string): Promise<BrokeragePoo
   // revokes pool access, so a soft-removed row must not resolve.
   const link = await prisma.teamMember.findFirst({
     where: { userId, removedAt: null },
-    select: { teamId: true, team: { select: { id: true, name: true } } },
+    select: { id: true, teamId: true, team: { select: { id: true, name: true } } },
   })
   if (!link?.team) return null
 
@@ -61,7 +68,7 @@ export async function resolveBrokeragePool(userId: string): Promise<BrokeragePoo
   // inventory listed twice, once per source.
   if (owner.id === userId) return null
 
-  return { teamId: link.teamId, ownerUserId: owner.id, name: link.team.name }
+  return { teamId: link.teamId, ownerUserId: owner.id, name: link.team.name, memberId: link.id }
 }
 
 /**

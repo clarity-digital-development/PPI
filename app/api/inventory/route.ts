@@ -66,21 +66,43 @@ export async function GET(request: NextRequest) {
     // the rows are theirs already.
     const pool = memberFilter ? null : await resolveBrokeragePool(targetUserId)
 
-    // SIGNS ONLY for now, deliberately.
+    // SIGNS AND LOCKBOXES are pooled; riders and brochure boxes are not.
     //
-    // Ryan's concrete description is "select 1 brokerage sign from the admin
-    // inventory and one name riders" -- the sign is the pooled item; the rider
-    // is the agent's own. Riders and lockboxes are pooled in a follow-up,
-    // because their pickers cannot yet express source: RiderSelector keys
-    // selection by rider TYPE (RiderSelector.tsx:174), so an own and a
-    // brokerage rider of the same type render as two chips that share one
-    // selection state, and the wizard then resolves the id by type and picks
-    // whichever sorted first -- consuming the wrong physical rider. Shipping
-    // pooled riders before that refactor would send the wrong item to a
-    // property. Brochure boxes stay own-only too: they are a bare count with no
-    // id, so pooling them would only inflate the number.
-    const signOwnerIds = pool ? [targetUserId, pool.ownerUserId] : [targetUserId]
-    const signOwnerFilter = { userId: { in: signOwnerIds } }
+    // Ryan asked for the whole admin inventory — "signs, riders, and lockboxes"
+    // (2026-09-08). Signs shipped first. Lockboxes followed (2026-09-28, when
+    // the first linked agent — Kelli Hunt on Daphne's team — found Daphne's
+    // four boxes missing): the lockbox picker selects ONE specific box by id
+    // (lockbox-step.tsx handlePickStored), so an own and a brokerage box can
+    // sit side by side safely, and inventory ownership already allows the
+    // pool owner for every item type (lib/orders/inventory-ownership.ts).
+    //
+    // Riders still wait on a picker refactor: RiderSelector keys selection by
+    // rider TYPE (RiderSelector.tsx:174), so an own and a brokerage rider of
+    // the same type render as two chips that share one selection state, and the
+    // wizard then resolves the id by type and picks whichever sorted first --
+    // consuming the wrong physical rider. Brochure boxes stay own-only: they are
+    // a bare count with no id, so pooling them would only inflate the number.
+    //
+    // From the pool: what the brokerage hasn't handed to anyone, plus what it
+    // has handed to THIS agent. Rows assigned to OTHER agents stay off limits
+    // (Ryan, 2026-09-28: "just the admin 'unassigned' items ... so agents
+    // aren't moving things around they shouldn't be"; design doc:
+    // assignedToMemberId IN (null, myMemberId)). Assigning an item to an
+    // agent's roster row is how a brokerage gives it to them, so excluding
+    // those too would hide the agent's own items from them.
+    //
+    // The agent's own rows are theirs outright. Applied with AND below, never
+    // spread: the hold-visibility filter also uses an `OR` key, and a spread
+    // would silently drop this one and return rows regardless of owner.
+    const pooledOwnerFilter = pool
+      ? {
+          OR: [
+            { userId: targetUserId },
+            { userId: pool.ownerUserId, assignedToMemberId: null },
+            { userId: pool.ownerUserId, assignedToMemberId: pool.memberId },
+          ],
+        }
+      : { userId: targetUserId }
     const ownerFilter = { userId: targetUserId }
     const sourceOf = (rowUserId: string) =>
       pool && rowUserId === pool.ownerUserId
@@ -119,7 +141,7 @@ export async function GET(request: NextRequest) {
     // Fetch all inventory types in parallel
     const [rawSigns, rawRiders, rawLockboxes, rawBrochureBoxes] = await Promise.all([
       prisma.customerSign.findMany({
-        where: { ...signOwnerFilter, inStorage: true, ...memberFilter, ...holdVisibilityFilter },
+        where: { AND: [pooledOwnerFilter, holdVisibilityFilter], inStorage: true, ...memberFilter },
         orderBy: { createdAt: 'desc' },
       }),
       prisma.customerRider.findMany({
@@ -127,7 +149,7 @@ export async function GET(request: NextRequest) {
         include: { rider: true },
       }),
       prisma.customerLockbox.findMany({
-        where: { ...ownerFilter, inStorage: true, ...memberFilter, ...holdVisibilityFilter },
+        where: { AND: [pooledOwnerFilter, holdVisibilityFilter], inStorage: true, ...memberFilter },
         include: { lockboxType: true },
       }),
       prisma.customerBrochureBox.findMany({
@@ -260,7 +282,7 @@ export async function GET(request: NextRequest) {
       // majority -- the UI shows no source labelling at all in that case.
       // `pooled` names what is actually drawn from the pool today, so the UI
       // cannot imply riders or lockboxes are shared when they are not.
-      brokeragePool: pool ? { name: pool.name, pooled: ['signs'] } : null,
+      brokeragePool: pool ? { name: pool.name, pooled: ['signs', 'lockboxes'] } : null,
     })
   } catch (error) {
     console.error('Error fetching inventory:', error)

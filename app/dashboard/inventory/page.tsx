@@ -150,6 +150,16 @@ function HowInventoryWorks() {
 
 export default function InventoryPage() {
   const [inventory, setInventory] = useState<InventoryData | null>(null)
+  // What a linked agent can draw from their brokerage (signs + lockboxes are
+  // shared — see app/api/inventory/route.ts). Kept OUT of `inventory`, which is
+  // what the agent personally owns, and shown in its own read-only card: the
+  // first linked agent (Kelli Hunt, on Daphne's team) looked here, saw nothing
+  // from the brokerage, and it read as broken (Ryan, 2026-09-28).
+  const [brokerageShared, setBrokerageShared] = useState<{
+    name: string
+    signs: Array<{ description: string; count: number }>
+    lockboxes: Array<{ id: string; label: string }>
+  } | null>(null)
   const [loading, setLoading] = useState(true)
   const [isTeamAdmin, setIsTeamAdmin] = useState(false)
   // Resolved once we know the role, so we render the correct view without a flash.
@@ -197,13 +207,37 @@ export default function InventoryPage() {
           // signs for the order wizard, which would otherwise show here as
           // hundreds of signs the agent does not own. Drop them; the wizard is
           // where the pool belongs.
+          type Sourced = { source?: string }
+          const own = <T extends Sourced>(rows: T[] | undefined) =>
+            Array.isArray(rows) ? rows.filter((r) => r.source !== 'brokerage') : rows
+          const pooled = <T extends Sourced>(rows: T[] | undefined) =>
+            Array.isArray(rows) ? rows.filter((r) => r.source === 'brokerage') : []
           setInventory({
             ...data,
-            signs: Array.isArray(data.signs)
-              ? data.signs.filter((s: { source?: string }) => s.source !== 'brokerage')
-              : data.signs,
+            signs: own(data.signs),
+            lockboxes: own(data.lockboxes),
             brokeragePool: null,
           })
+          if (data.brokeragePool?.name) {
+            // Signs grouped by description — a brokerage can hold hundreds of
+            // the same sign, and a count reads better than a wall of rows.
+            const counts = new Map<string, number>()
+            for (const s of pooled<{ description: string; source?: string }>(data.signs)) {
+              counts.set(s.description, (counts.get(s.description) ?? 0) + 1)
+            }
+            setBrokerageShared({
+              name: data.brokeragePool.name,
+              signs: Array.from(counts, ([description, count]) => ({ description, count }))
+                .sort((a, b) => b.count - a.count || a.description.localeCompare(b.description)),
+              lockboxes: pooled<{ id: string; lockbox_type: string; lockbox_type_name?: string; lockbox_code: string | null; source?: string }>(data.lockboxes)
+                .map((lb) => ({
+                  id: lb.id,
+                  label: `${lb.lockbox_type === 'sentrilock' ? 'Sentrilock/Supra' : (lb.lockbox_type_name || 'Mechanical Lockbox')}${lb.lockbox_code ? ` — ${lb.lockbox_code}` : ''}`,
+                })),
+            })
+          } else {
+            setBrokerageShared(null)
+          }
         }
       } catch (error) {
         console.error('Error fetching inventory:', error)
@@ -759,6 +793,49 @@ export default function InventoryPage() {
           </CardContent>
         </Card>
 
+        {!loading && brokerageShared && (brokerageShared.signs.length > 0 || brokerageShared.lockboxes.length > 0) && (
+          <Card variant="bordered" className="mb-6 border-pink-200">
+            <CardContent className="p-6">
+              <div className="flex items-center gap-3 mb-1">
+                <div className="w-10 h-10 rounded-lg bg-pink-100 flex items-center justify-center">
+                  <Package className="w-5 h-5 text-pink-600" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-gray-900">Available to you from {brokerageShared.name}</h3>
+                  <p className="text-sm text-gray-500">
+                    These belong to your brokerage. Pick any of them when you place an order.
+                  </p>
+                </div>
+              </div>
+              <div className="grid md:grid-cols-2 gap-4 mt-4">
+                {brokerageShared.signs.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Signs</p>
+                    <ul className="space-y-1">
+                      {brokerageShared.signs.map((s) => (
+                        <li key={s.description} className="flex justify-between text-sm p-2 bg-gray-50 rounded-lg">
+                          <span className="text-gray-900">{s.description}</span>
+                          <span className="text-pink-600 font-medium">x{s.count}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {brokerageShared.lockboxes.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Lockboxes</p>
+                    <ul className="space-y-1">
+                      {brokerageShared.lockboxes.map((lb) => (
+                        <li key={lb.id} className="text-sm p-2 bg-gray-50 rounded-lg text-gray-900">{lb.label}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <div className="w-8 h-8 border-4 border-pink-500 border-t-transparent rounded-full animate-spin" />
@@ -767,10 +844,15 @@ export default function InventoryPage() {
           <Card variant="bordered">
             <CardContent className="p-12 text-center">
               <Archive className="w-12 h-12 text-gray-300 mx-auto mb-4" />
-              <h3 className="text-lg font-medium text-gray-900 mb-2">No Items in Storage</h3>
+              {/* With a brokerage card above, "nothing available" would contradict
+                  it — this card is only about the agent's OWN items. */}
+              <h3 className="text-lg font-medium text-gray-900 mb-2">
+                {brokerageShared ? 'None of Your Own Items in Storage' : 'No Items in Storage'}
+              </h3>
               <p className="text-gray-500 max-w-md mx-auto">
-                You don&apos;t have any items stored with us yet. When you have signs, riders, lockboxes,
-                or brochure boxes in our storage, they&apos;ll appear here and be available to use in your orders.
+                {brokerageShared
+                  ? `You don't have any signs, riders, lockboxes or brochure boxes of your own stored with us — you can still use the ${brokerageShared.name} items above.`
+                  : `You don't have any items stored with us yet. When you have signs, riders, lockboxes, or brochure boxes in our storage, they'll appear here and be available to use in your orders.`}
               </p>
             </CardContent>
           </Card>

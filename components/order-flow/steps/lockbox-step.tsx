@@ -102,7 +102,11 @@ export function LockboxStep({ formData, updateFormData, inventory, lockboxInstal
             <div className="flex-1">
               <h3 className="font-semibold text-gray-900">Use a lockbox from my inventory</h3>
               <p className="text-sm text-gray-600">
-                Pick one of the {storedLockboxes.length} lockbox{storedLockboxes.length === 1 ? '' : 'es'} we have in storage for you
+                {/* A linked agent sees the brokerage's boxes here too (shared
+                    pool, Ryan 2026-09-08) — say so, as the sign step does. */}
+                {inventory?.brokeragePool?.pooled?.includes('lockboxes')
+                  ? `Pick one of the ${storedLockboxes.length} lockbox${storedLockboxes.length === 1 ? '' : 'es'} available — yours plus ${inventory.brokeragePool.name}`
+                  : `Pick one of the ${storedLockboxes.length} lockbox${storedLockboxes.length === 1 ? '' : 'es'} we have in storage for you`}
               </p>
               <p className="text-sm font-medium text-pink-600 mt-1">Install fee: {installFeeLabel}</p>
             </div>
@@ -120,7 +124,9 @@ export function LockboxStep({ formData, updateFormData, inventory, lockboxInstal
               const isSentri = lb.lockbox_type === 'sentrilock'
               const typeLabel = isSentri ? 'Sentrilock/Supra' : (lb.lockbox_type_name || 'Mechanical Lockbox')
               const codeLabel = lb.lockbox_code ? `Code ${lb.lockbox_code}` : 'No code on file'
-              return { value: lb.id, label: `${typeLabel} — ${codeLabel}` }
+              // Name the brokerage on its boxes so an agent knows it isn't theirs.
+              const fromLabel = lb.source === 'brokerage' ? ` — ${lb.source_label || 'Brokerage'}` : ''
+              return { value: lb.id, label: `${typeLabel} — ${codeLabel}${fromLabel}` }
             })}
             placeholder={`Select a lockbox from your inventory (${storedLockboxes.length} available)…`}
             searchPlaceholder="Filter by type or code…"
@@ -144,6 +150,9 @@ export function LockboxStep({ formData, updateFormData, inventory, lockboxInstal
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="font-semibold text-gray-900">{typeLabel}</p>
+                  {picked.source === 'brokerage' && (
+                    <p className="text-xs text-pink-700">From {picked.source_label || 'your brokerage'}</p>
+                  )}
                   {picked.lockbox_code ? (
                     <p className="text-sm text-gray-600">
                       Code / serial: <span className="font-mono font-medium text-gray-900">{picked.lockbox_code}</span>
