@@ -108,19 +108,40 @@ interface Order {
   lastEditPaymentIntentId: string | null
   lastEditChargedAt: string | null
   pendingCreditCents: number
-  // Split out-of-area fee — second half, auto-charged on removal-scheduling
+  // Split out-of-area fee — second half, collected on removal-scheduling:
+  // charged to a card payer's card, or queued ('pending_invoice') for an
+  // invoice payer's next invoice (Ryan, 2026-09-28).
   serviceAreaSecondChargeCents: number | null
-  serviceAreaSecondChargeStatus: 'pending' | 'paid' | 'failed' | null
+  serviceAreaSecondChargeStatus: 'pending' | 'paid' | 'failed' | 'pending_invoice' | null
   serviceAreaSecondChargeError: string | null
   serviceAreaSecondChargePaymentIntentId: string | null
   serviceAreaSecondChargedAt: string | null
+  // The invoice the pickup half was billed on — usually a later one than
+  // the order's own `invoiceId`.
+  serviceAreaSecondChargeInvoiceId: string | null
+  invoiceId: string | null
+  invoice?: { id: string; invoiceNumber: string; status: 'sent' | 'paid' | 'void' } | null
+  ooaPickupInvoice?: {
+    id: string
+    invoiceNumber: string
+    status: 'sent' | 'paid' | 'void'
+    paidAt: string | null
+  } | null
   user: {
     id: string
     fullName: string | null
     email: string
     phone: string | null
     stripeCustomerId: string | null
+    invoiceBilling?: boolean
   }
+  // Team admin who placed (and paid for) the order on an agent's behalf.
+  placedBy?: {
+    id: string
+    fullName: string | null
+    email: string
+    invoiceBilling: boolean
+  } | null
   postType: {
     name: string
     description: string | null
@@ -916,18 +937,102 @@ export default function AdminOrderDetailPage() {
                   </div>
                 )}
 
-                {/* Out-of-area second charge — the $25 auto-charged when
-                    removal gets scheduled (Ryan, 2026-07-09/12). Only
-                    renders for orders that actually carry a split fee. */}
-                {order.serviceAreaSecondChargeStatus && (
+                {/* Out-of-area pickup fee — the second half of a split
+                    out-of-area fee, collected when removal gets scheduled
+                    (Ryan, 2026-07-09/12). Card payers are charged then;
+                    invoice payers get it as its own line on their next
+                    invoice (Ryan, 2026-09-28). Only renders for orders that
+                    actually carry a split fee. */}
+                {order.serviceAreaSecondChargeStatus && (() => {
+                  const ooaStatus = order.serviceAreaSecondChargeStatus
+                  const ooaAmount = `$${((order.serviceAreaSecondChargeCents ?? 0) / 100).toFixed(2)}`
+                  // lib/orders/out-of-area-charge.ts routes on the PAYER's
+                  // current invoiceBilling flag (placedBy ?? user), so that
+                  // flag predicts where a still-pending half will go. Fall
+                  // back to the order's own billing path when it's missing.
+                  const payer = order.placedBy ?? order.user
+                  const payerInvoiceBilling =
+                    typeof payer?.invoiceBilling === 'boolean' ? payer.invoiceBilling : null
+                  const orderOnInvoicePath = !!order.invoiceId || order.paymentStatus === 'pending_invoice'
+                  const billedByInvoice =
+                    !!order.serviceAreaSecondChargeInvoiceId ||
+                    ooaStatus === 'pending_invoice' ||
+                    (ooaStatus === 'pending' && (payerInvoiceBilling ?? orderOnInvoicePath))
+                  const pickupInvoice = order.ooaPickupInvoice ?? null
+                  // A cancelled (or refunded) order owes no pickup fee: nothing
+                  // charges it, retries refuse it and bundles skip it. Say so
+                  // rather than "charges at removal" / "queued" / a retry
+                  // button. Only a half already ON an invoice stays shown as
+                  // such — that invoice's total includes it.
+                  const shownStatus =
+                    order.status === 'cancelled' && !order.serviceAreaSecondChargeInvoiceId &&
+                    (ooaStatus === 'pending' || ooaStatus === 'pending_invoice' || ooaStatus === 'failed')
+                      ? 'not_owed'
+                      : ooaStatus
+                  return (
                   <div className="pt-4 border-t border-gray-100">
-                    <p className="text-sm font-medium text-gray-900 mb-2">Out-of-area pickup charge</p>
-                    {order.serviceAreaSecondChargeStatus === 'pending' && (
+                    <p className="text-sm font-medium text-gray-900 mb-2">Out-of-area pickup fee</p>
+                    {shownStatus === 'not_owed' && (
+                      <Badge variant="neutral">Not collected — order cancelled ({ooaAmount})</Badge>
+                    )}
+                    {shownStatus === 'pending' && (
                       <Badge variant="neutral">
-                        Pending — ${((order.serviceAreaSecondChargeCents ?? 0) / 100).toFixed(2)} charges when removal is scheduled
+                        {billedByInvoice
+                          ? `Pending — ${ooaAmount} goes on their next invoice when removal is scheduled`
+                          : `Pending — ${ooaAmount} charges when removal is scheduled`}
                       </Badge>
                     )}
-                    {order.serviceAreaSecondChargeStatus === 'paid' && (
+                    {/* Queued for (or already on) an invoice. Nothing to do
+                        here — the next bundle from /admin/invoices picks it
+                        up as an "Out-of-area pickup" line. */}
+                    {shownStatus === 'pending_invoice' && (
+                      <div className="text-sm">
+                        {pickupInvoice ? (
+                          <>
+                            <Badge variant="info">
+                              On invoice {pickupInvoice.invoiceNumber} — {ooaAmount}
+                            </Badge>
+                            <Link
+                              href={`/dashboard/invoices/${pickupInvoice.id}`}
+                              target="_blank"
+                              className="block mt-2 text-pink-600 hover:text-pink-700 underline text-xs"
+                            >
+                              View invoice {pickupInvoice.invoiceNumber}
+                            </Link>
+                          </>
+                        ) : (
+                          <>
+                            <Badge variant="info">Queued — {ooaAmount} on this customer&apos;s next invoice</Badge>
+                            <Link
+                              href="/admin/invoices"
+                              className="block mt-2 text-pink-600 hover:text-pink-700 underline text-xs"
+                            >
+                              Bundle &amp; send invoices →
+                            </Link>
+                          </>
+                        )}
+                      </div>
+                    )}
+                    {/* Paid through its invoice — the webhook / Mark Paid flip
+                        it; there is no Stripe payment intent of its own. */}
+                    {shownStatus === 'paid' && pickupInvoice && (
+                      <div className="text-sm">
+                        <Badge variant="success">Paid on invoice {pickupInvoice.invoiceNumber}</Badge>
+                        <Link
+                          href={`/dashboard/invoices/${pickupInvoice.id}`}
+                          target="_blank"
+                          className="block mt-2 text-pink-600 hover:text-pink-700 underline text-xs"
+                        >
+                          View invoice {pickupInvoice.invoiceNumber}
+                        </Link>
+                        {(order.serviceAreaSecondChargedAt ?? pickupInvoice.paidAt) && (
+                          <p className="mt-1 text-xs text-gray-500">
+                            {new Date((order.serviceAreaSecondChargedAt ?? pickupInvoice.paidAt) as string).toLocaleString()}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {shownStatus === 'paid' && !pickupInvoice && (
                       <div className="text-sm">
                         <Badge variant="success">Charged</Badge>
                         {order.serviceAreaSecondChargePaymentIntentId && (
@@ -947,7 +1052,7 @@ export default function AdminOrderDetailPage() {
                         )}
                       </div>
                     )}
-                    {order.serviceAreaSecondChargeStatus === 'failed' && (
+                    {shownStatus === 'failed' && (
                       <div className="text-sm">
                         <Badge variant="error">Charge failed</Badge>
                         {order.serviceAreaSecondChargeError && (
@@ -960,6 +1065,9 @@ export default function AdminOrderDetailPage() {
                             {ooaChargeError}
                           </p>
                         )}
+                        {/* Retry re-runs the same routing: a payer who is on
+                            invoice billing NOW gets the half queued for their
+                            next invoice instead of a card charge. */}
                         <Button
                           size="sm"
                           variant="secondary"
@@ -967,12 +1075,15 @@ export default function AdminOrderDetailPage() {
                           onClick={handleRetryOutOfAreaCharge}
                           disabled={retryingOOACharge}
                         >
-                          {retryingOOACharge ? 'Charging…' : `Charge $${((order.serviceAreaSecondChargeCents ?? 0) / 100).toFixed(2)}`}
+                          {payerInvoiceBilling
+                            ? (retryingOOACharge ? 'Adding…' : `Add ${ooaAmount} to invoice`)
+                            : (retryingOOACharge ? 'Charging…' : `Charge ${ooaAmount}`)}
                         </Button>
                       </div>
                     )}
                   </div>
-                )}
+                  )
+                })()}
 
                 {/* Pending credit balance (non-zero) — separate from
                     editChargeStatus so it surfaces even when the most-recent
@@ -989,8 +1100,41 @@ export default function AdminOrderDetailPage() {
                   </div>
                 )}
 
-                {/* Show charge card option if payment is not succeeded */}
-                {order.paymentStatus !== 'succeeded' && (
+                {/* Invoice-path order: it's collected by its invoice, so there
+                    is no card to charge here. The charge route only refuses
+                    when the ORDER's user is on invoice billing — a team-admin
+                    order (payer = placedBy) or an account flipped back to card
+                    would have charged a card for an order that is also on an
+                    invoice (found 2026-09-28). */}
+                {order.paymentStatus === 'pending_invoice' && (
+                  <div className="pt-4 border-t border-gray-100 text-sm">
+                    <p className="font-medium text-gray-900 mb-2">Billed by invoice</p>
+                    {order.invoice ? (
+                      <p className="text-gray-600">
+                        On invoice{' '}
+                        <Link
+                          href={`/dashboard/invoices/${order.invoice.id}`}
+                          target="_blank"
+                          className="text-pink-600 hover:text-pink-700 underline"
+                        >
+                          {order.invoice.invoiceNumber}
+                        </Link>
+                        {' '}— collected when the customer pays that invoice.
+                      </p>
+                    ) : (
+                      <p className="text-gray-600">
+                        Waiting to be bundled onto this customer&apos;s next invoice.{' '}
+                        <Link href="/admin/invoices" className="text-pink-600 hover:text-pink-700 underline">
+                          Bundle &amp; send invoices →
+                        </Link>
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Show charge card option if payment is not succeeded (and
+                    the order isn't on the invoice path — see above) */}
+                {order.paymentStatus !== 'succeeded' && order.paymentStatus !== 'pending_invoice' && (
                   <div className="pt-4 border-t border-gray-100">
                     <p className="text-sm font-medium text-gray-900 mb-3">
                       Charge Customer Card

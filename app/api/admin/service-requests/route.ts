@@ -76,7 +76,18 @@ export async function GET(request: NextRequest) {
               // being picked up
               order: {
                 select: {
+                  id: true,
                   orderNumber: true,
+                  // Out-of-area pickup half (Ryan, 2026-09-28: "pending out
+                  // of area pickup" visibility). Removal requests show where
+                  // it stands, and the Invoice action warns before billing
+                  // the same trip again by hand.
+                  // A cancelled order's half is never collected.
+                  status: true,
+                  serviceAreaSecondChargeCents: true,
+                  serviceAreaSecondChargeStatus: true,
+                  serviceAreaSecondChargeInvoiceId: true,
+                  ooaPickupInvoice: { select: { invoiceNumber: true, status: true } },
                   // Broker accounts (Semonin/Redfin): the agent the original
                   // order was placed for — Ryan 2026-09-01, removals showed
                   // only the broker account name.

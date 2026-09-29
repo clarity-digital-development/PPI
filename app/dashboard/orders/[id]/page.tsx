@@ -171,11 +171,14 @@ export default function OrderDetailsPage() {
   // and Stripe Payment Link are frozen — cancelling it here would leave it
   // looking free to the customer while the invoice still bills for it. Every
   // other non-succeeded paymentStatus (pending/processing/failed/refunded)
-  // is a stuck/error state that stays admin-only (Ryan, 2026-07-17).
+  // is a stuck/error state that stays admin-only (Ryan, 2026-07-17). The
+  // invoice rule holds once that invoice is PAID too (paymentStatus flips to
+  // succeeded): the payment is the whole invoice's, so it can't be refunded
+  // per order from here.
   const canCancel = (o: Order): boolean => {
     if (['in_progress', 'completed', 'cancelled'].includes(o.status)) return false
+    if (o.invoiceId) return false
     if (o.paymentStatus === 'pending_invoice') {
-      if (o.invoiceId) return false
       return !o.scheduledDate || easternMidnightMs(new Date(o.scheduledDate)) - 24 * 60 * 60 * 1000 > Date.now()
     }
     if (o.paymentStatus !== 'succeeded') return false

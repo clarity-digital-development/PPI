@@ -18,6 +18,9 @@ interface BundleResponse {
     total: number
     order_count: number
     service_request_count: number
+    // Out-of-area pickup halves billed on this invoice (Ryan, 2026-09-28).
+    // Optional so a response from before the deploy still reads.
+    pickup_count?: number
     pdf_url: string
     pay_url: string | null
   }
@@ -177,9 +180,13 @@ export default function OrderHistoryPage() {
         throw new Error(('error' in data && data.error) || 'Generate failed')
       }
       const ok = data as BundleResponse
+      // A pickup-only invoice would otherwise read "0 order(s) + 0 service trip(s)".
+      const pickupPart = (ok.invoice.pickup_count ?? 0) > 0
+        ? ` + ${ok.invoice.pickup_count} out-of-area pickup(s)`
+        : ''
       if (mode === 'send') {
         setGenerateSuccess(
-          `Invoice ${ok.invoice.invoice_number} sent to ${ok.sent_to_email} — ${ok.invoice.order_count} order(s) + ${ok.invoice.service_request_count} service trip(s), $${ok.invoice.total.toFixed(2)}.`,
+          `Invoice ${ok.invoice.invoice_number} sent to ${ok.sent_to_email} — ${ok.invoice.order_count} order(s) + ${ok.invoice.service_request_count} service trip(s)${pickupPart}, $${ok.invoice.total.toFixed(2)}.`,
         )
         if (rememberEmail && accountantEmail) setSavedBillingEmail(accountantEmail)
       } else {
@@ -197,7 +204,7 @@ export default function OrderHistoryPage() {
         document.body.removeChild(a)
         URL.revokeObjectURL(url)
         setGenerateSuccess(
-          `Invoice ${ok.invoice.invoice_number} created and downloaded — ${ok.invoice.order_count} order(s) + ${ok.invoice.service_request_count} service trip(s), $${ok.invoice.total.toFixed(2)}.`,
+          `Invoice ${ok.invoice.invoice_number} created and downloaded — ${ok.invoice.order_count} order(s) + ${ok.invoice.service_request_count} service trip(s)${pickupPart}, $${ok.invoice.total.toFixed(2)}.`,
         )
       }
     } catch (err) {

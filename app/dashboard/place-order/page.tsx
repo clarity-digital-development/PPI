@@ -103,9 +103,9 @@ function PlaceOrderPageInner() {
   // CR4: flat-fee account — the review screen shows the flat $66.07 instead of
   // itemized pricing (the server clamps the charge regardless).
   const [flatFee, setFlatFee] = useState(false)
-  // Invoice-billing account — review step keeps the full (unsplit)
-  // out-of-area fee and skips the split-fee consent checkbox, matching the
-  // server (nothing is charged to a card at order time for this payer class).
+  // Invoice-billing account — the out-of-area fee splits for them like
+  // everyone else; this words the agreement box for the invoice (pickup half
+  // added to their next invoice instead of charged to a card).
   const [invoiceBilling, setInvoiceBilling] = useState(false)
   const [selectedMember, setSelectedMember] = useState<TeamMember | null>(null)
   const [memberInventory, setMemberInventory] = useState<Inventory | undefined>()

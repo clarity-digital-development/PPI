@@ -37,18 +37,41 @@ export async function GET(request: NextRequest) {
           ? { role: narrowRole }
           : { role: { in: ['customer', 'team_admin'] as ('customer' | 'team_admin')[] } }
 
+    // The /admin/invoices picker. Besides accounts on invoice billing now, it
+    // lists any account that still has invoice work waiting — orders placed
+    // on invoice terms, service trips, or out-of-area pickup halves queued for
+    // an invoice. Those stay on the invoice path when an account is switched
+    // back to card (their card is never charged for them), so without this the
+    // switch stranded them with nowhere to bundle them.
+    const unbundledOrder = { paymentStatus: 'pending_invoice' as const, invoiceId: null, status: { not: 'cancelled' as const } }
+    const queuedPickup = {
+      serviceAreaSecondChargeStatus: 'pending_invoice' as const,
+      serviceAreaSecondChargeInvoiceId: null,
+      serviceAreaSecondChargeCents: { gt: 0 },
+      status: { not: 'cancelled' as const },
+    }
+    const invoiceBillingScope = {
+      OR: [
+        { invoiceBilling: true },
+        // Own orders only when nobody else placed them — an on-behalf order's
+        // invoice work belongs to the team_admin who placed it (next line).
+        { orders: { some: { placedByUserId: null, OR: [unbundledOrder, queuedPickup] } } },
+        { ordersPlacedFor: { some: { OR: [unbundledOrder, queuedPickup] } } },
+        { serviceRequests: { some: { invoiceStatus: 'pending_invoice', invoiceId: null } } },
+      ],
+    }
+    const searchScope = {
+      OR: [
+        { fullName: { contains: search ?? '', mode: 'insensitive' as const } },
+        { email: { contains: search ?? '', mode: 'insensitive' as const } },
+        { company: { contains: search ?? '', mode: 'insensitive' as const } },
+      ],
+    }
+    // Composed with AND: spreading two objects that each carry an OR key
+    // would silently drop one of them.
     const where = {
       ...roleScope,
-      ...(invoiceBillingOnly ? { invoiceBilling: true } : {}),
-      ...(search
-        ? {
-            OR: [
-              { fullName: { contains: search, mode: 'insensitive' as const } },
-              { email: { contains: search, mode: 'insensitive' as const } },
-              { company: { contains: search, mode: 'insensitive' as const } },
-            ],
-          }
-        : {}),
+      AND: [...(invoiceBillingOnly ? [invoiceBillingScope] : []), ...(search ? [searchScope] : [])],
     }
 
     const [customers, total] = await Promise.all([

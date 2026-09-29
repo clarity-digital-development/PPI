@@ -44,6 +44,7 @@ export async function POST(
         include: { installation: { select: { propertyAddress: true, propertyCity: true, propertyState: true, propertyZip: true } } },
         orderBy: { completedAt: 'asc' },
       },
+      _count: { select: { ooaPickupOrders: true } },
     },
   })
   if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
@@ -85,16 +86,20 @@ export async function POST(
   // Counter pulled from update_at timestamp + invocation time to guarantee
   // uniqueness across rapid retries.
   const bump = `${invoice.updatedAt.getTime()}-${Date.now()}`
+  const pickupCount = invoice._count.ooaPickupOrders
   let newLink: { id: string; url: string | null }
   try {
     newLink = await createInvoiceCheckoutSession({
-      invoiceId: `${invoice.id}#${bump}`, // affects idempotency key only
+      // The REAL id — the webhook finds the invoice by it. The bump goes in
+      // the idempotency keys only (it used to ride here as "<id>#<bump>").
+      invoiceId: invoice.id,
+      idempotencySuffix: bump,
       invoiceNumber: invoice.invoiceNumber,
       amountInCents: Math.round(Number(invoice.total) * 100),
       customerEmail: recipientEmail,
       successUrl: `${baseUrl}/invoice-paid?invoice=${invoice.invoiceNumber}`,
       cancelUrl: `${baseUrl}/invoice-cancelled?invoice=${invoice.invoiceNumber}`,
-      description: `${invoice.orders.length} order(s) + ${invoice.serviceRequests.length} service trip(s)`,
+      description: `${invoice.orders.length} order(s) + ${invoice.serviceRequests.length} service trip(s)${pickupCount > 0 ? ` + ${pickupCount} out-of-area pickup(s)` : ''}`,
     })
   } catch (err) {
     console.error('Regenerate: Stripe Payment Link create failed:', err)
@@ -133,6 +138,7 @@ export async function POST(
       total: detail.total,
       orderCount: invoice.orders.length,
       serviceRequestCount: invoice.serviceRequests.length,
+      pickupCount,
       pdfBytes,
       pdfUrl: invoice.publicPdfToken
         ? `${baseUrl}/api/invoices/${invoice.id}/pdf?token=${invoice.publicPdfToken}`

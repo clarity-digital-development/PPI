@@ -350,8 +350,15 @@ export async function createInvoiceCheckoutSession(opts: {
   successUrl: string
   cancelUrl: string // accepted for API compatibility, unused for Payment Links
   description?: string
+  // Makes the idempotency keys unique for a REGENERATED link, whose original
+  // keys point at the deactivated one. It must never ride in invoiceId: that
+  // lands in the PaymentIntent metadata the webhook looks the invoice up by,
+  // and "<id>#<bump>" matched no invoice — so paying through a regenerated
+  // link 500'd on every Stripe retry and the invoice never flipped to paid.
+  idempotencySuffix?: string
 }) {
   const stripe = getStripe()
+  const keySuffix = opts.idempotencySuffix ? `#${opts.idempotencySuffix}` : ''
 
   // Payment Links require a pre-existing Price (the SDK rejects inline
   // price_data even though the REST API accepts it on Checkout Sessions).
@@ -365,7 +372,7 @@ export async function createInvoiceCheckoutSession(opts: {
         name: `Pink Posts Invoice ${opts.invoiceNumber}`,
       },
     },
-    { idempotencyKey: `invoice-price:${opts.invoiceId}` },
+    { idempotencyKey: `invoice-price:${opts.invoiceId}${keySuffix}` },
   )
 
   return stripe.paymentLinks.create(
@@ -395,7 +402,7 @@ export async function createInvoiceCheckoutSession(opts: {
       metadata: { invoiceId: opts.invoiceId, invoiceNumber: opts.invoiceNumber, kind: 'invoice' },
     },
     {
-      idempotencyKey: `invoice-payment-link:${opts.invoiceId}`,
+      idempotencyKey: `invoice-payment-link:${opts.invoiceId}${keySuffix}`,
     },
   )
 }

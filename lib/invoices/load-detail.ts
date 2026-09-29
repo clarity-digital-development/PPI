@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import type { InvoiceDetail } from './invoice-pdf'
+import { ooaPickupCents, ooaPickupSelect, toInvoicePickup } from './ooa-pickups'
 
 /**
  * Load an invoice in the exact shape the PDF builder + customer page expect.
@@ -17,6 +18,7 @@ export async function loadInvoiceDetailForPdf(invoiceId: string): Promise<Invoic
         include: { installation: { select: { propertyAddress: true, propertyCity: true, propertyState: true, propertyZip: true } } },
         orderBy: { completedAt: 'asc' },
       },
+      ooaPickupOrders: { select: ooaPickupSelect, orderBy: { createdAt: 'asc' } },
     },
   })
   if (!invoice) return null
@@ -29,6 +31,8 @@ export async function loadInvoiceDetailForPdf(invoiceId: string): Promise<Invoic
   // customer see why total tax isn't 6% of the grand subtotal.
   const orders_subtotal = invoice.orders.reduce((s, o) => s + Number(o.subtotal ?? 0), 0)
   const service_requests_subtotal = invoice.serviceRequests.reduce((s, sr) => s + Number(sr.invoiceAmount ?? 0), 0)
+  // Out-of-area pickup halves billed here — untaxed, like service trips.
+  const pickups_subtotal = ooaPickupCents(invoice.ooaPickupOrders) / 100
   return {
     id: invoice.id,
     invoice_number: invoice.invoiceNumber,
@@ -38,6 +42,7 @@ export async function loadInvoiceDetailForPdf(invoiceId: string): Promise<Invoic
     subtotal: Number(invoice.subtotal),
     orders_subtotal,
     service_requests_subtotal,
+    pickups_subtotal,
     adjustments: (invoice.adjustments as InvoiceDetail['adjustments']) ?? [],
     total: Number(invoice.total),
     fuel_total: orderSum('fuelSurcharge'),
@@ -90,5 +95,6 @@ export async function loadInvoiceDetailForPdf(invoiceId: string): Promise<Invoic
       property_zip: sr.installation?.propertyZip ?? sr.unlistedZip ?? null,
       amount: Number(sr.invoiceAmount || 0),
     })),
+    pickups: invoice.ooaPickupOrders.map(toInvoicePickup),
   }
 }

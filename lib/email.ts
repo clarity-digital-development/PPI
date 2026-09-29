@@ -568,6 +568,10 @@ interface InvoiceEmailProps {
   // Bundled service-trip count alongside orders. Optional so older call sites
   // continue to compile; defaults to 0 in the body copy when absent.
   serviceRequestCount?: number
+  // Out-of-area pickup lines (Ryan, 2026-09-28). Optional for the same reason.
+  // Without it a pickup-only invoice (install billed last month, sign came
+  // down this month) read as "this invoice".
+  pickupCount?: number
   // Optional rendered PDF (from buildInvoicePdfBytes). When present, attached
   // to the email so the customer has the document in their inbox for records.
   pdfBytes?: Uint8Array | null
@@ -607,6 +611,7 @@ export async function sendInvoiceEmail({
   total,
   orderCount,
   serviceRequestCount = 0,
+  pickupCount = 0,
   pdfBytes,
   pdfUrl,
   payUrl,
@@ -627,6 +632,7 @@ export async function sendInvoiceEmail({
   const countLineParts: string[] = []
   if (orderCount > 0) countLineParts.push(`${orderCount} order${orderCount === 1 ? '' : 's'}`)
   if (serviceRequestCount > 0) countLineParts.push(`${serviceRequestCount} service trip${serviceRequestCount === 1 ? '' : 's'}`)
+  if (pickupCount > 0) countLineParts.push(`${pickupCount} out-of-area pickup${pickupCount === 1 ? '' : 's'}`)
   const countLine = countLineParts.join(' + ') || 'this invoice'
 
   // The two CTAs the email body offers. Both point AWAY from pinkposts.com

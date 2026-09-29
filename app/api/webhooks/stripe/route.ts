@@ -98,7 +98,7 @@ export async function POST(request: NextRequest) {
           }
 
           const paidAt = new Date()
-          await prisma.$transaction([
+          const [, , , pickupsPaid] = await prisma.$transaction([
             prisma.invoice.update({
               where: { id: invoice.id },
               data: { status: 'paid', paidAt, paymentIntentId: paymentIntent.id },
@@ -115,6 +115,16 @@ export async function POST(request: NextRequest) {
               where: { id: { in: invoice.serviceRequests.map((sr) => sr.id) } },
               data: { invoiceStatus: 'paid', invoicePaidAt: paidAt, invoicePaymentIntentId: paymentIntent.id },
             }),
+            // Out-of-area pickup halves billed on this invoice. Keyed on the
+            // pickup's own invoice id, never invoice.orders: the pickup's order
+            // usually sits on an earlier invoice. The PI is deliberately NOT
+            // stamped on serviceAreaSecondChargePaymentIntentId — that column
+            // means "the charge that collected exactly this half", and refunding
+            // by it would refund the whole invoice.
+            prisma.order.updateMany({
+              where: { serviceAreaSecondChargeInvoiceId: invoice.id, serviceAreaSecondChargeStatus: 'pending_invoice' },
+              data: { serviceAreaSecondChargeStatus: 'paid', serviceAreaSecondChargedAt: paidAt },
+            }),
           ])
 
           await audit({
@@ -127,12 +137,13 @@ export async function POST(request: NextRequest) {
               paymentIntentId: paymentIntent.id,
               orderCount: invoice.orders.length,
               serviceRequestCount: invoice.serviceRequests.length,
+              ooaPickupCount: pickupsPaid.count,
               total: Number(invoice.total),
             },
             request,
           })
 
-          console.log(`Webhook: invoice ${invoice.invoiceNumber} marked paid (${invoice.orders.length} orders + ${invoice.serviceRequests.length} SRs flipped)`)
+          console.log(`Webhook: invoice ${invoice.invoiceNumber} marked paid (${invoice.orders.length} orders + ${invoice.serviceRequests.length} SRs + ${pickupsPaid.count} OOA pickups flipped)`)
           return NextResponse.json({ received: true })
         }
 

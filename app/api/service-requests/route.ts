@@ -319,6 +319,11 @@ export async function GET(request: NextRequest) {
         completedAt: sr.completedAt?.toISOString() || null,
         createdAt: sr.createdAt.toISOString(),
         updatedAt: sr.updatedAt.toISOString(),
+        // Trip-charge state for the dashboard's "Pending invoice $X" / "Paid
+        // $X" badges. This mapping used to drop both fields, so those badges
+        // never rendered (found 2026-09-28 alongside Ryan's OOA pickup ask).
+        invoiceStatus: sr.invoiceStatus ?? null,
+        invoiceAmount: sr.invoiceAmount != null ? Number(sr.invoiceAmount) : null,
         // Who the request belongs to (used by the team_admin team view/filter)
         userId: sr.userId,
         userName: sr.user?.fullName || sr.user?.name || sr.user?.email || null,

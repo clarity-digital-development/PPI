@@ -137,6 +137,11 @@ export async function GET(request: NextRequest) {
         // cards may only be charged via the customer-initiated Stripe
         // Payment Link on a bundled invoice — never on a cron.
         user: { invoiceBilling: false },
+        // ...and the same for the PAYER. On a team_admin's on-behalf order
+        // the owner above is the agent, while resolveBillingPayer charges the
+        // team_admin's card first — which for an invoice-billing brokerage is
+        // exactly the card this guard exists to protect.
+        OR: [{ placedByUserId: null }, { placedBy: { is: { invoiceBilling: false } } }],
       },
       include: { user: true, installation: true },
     })
@@ -261,8 +266,9 @@ export async function GET(request: NextRequest) {
         // owner is on invoice billing. Catches PostRentalCharge rows that
         // were scheduled BEFORE this guard shipped (rows that already exist
         // in 'due' state for invoice-billing customers — mark them failed
-        // with a clear reason instead of charging).
-        if (row.order.user.invoiceBilling) {
+        // with a clear reason instead of charging). The payer counts too, as
+        // in Pass 1 — placedBy is the first card resolveBillingPayer tries.
+        if (row.order.user.invoiceBilling || row.order.placedBy?.invoiceBilling) {
           await markFailed(
             row.id,
             'invoice_billing',
@@ -550,10 +556,12 @@ async function resolveBillingPayer(order: OrderForPayer): Promise<BillingPayer |
   if (owner?.teamId && owner.role !== 'team_admin') {
     const teamAdmin = await prisma.user.findFirst({
       where: { teamId: owner.teamId, role: 'team_admin' },
-      select: { id: true, stripeCustomerId: true },
+      select: { id: true, stripeCustomerId: true, invoiceBilling: true },
       orderBy: { createdAt: 'asc' },
     })
-    if (teamAdmin?.stripeCustomerId) {
+    // An invoice-billing brokerage's card is never charged automatically —
+    // the same rule as the guards in both passes above.
+    if (teamAdmin?.stripeCustomerId && !teamAdmin.invoiceBilling) {
       const pm =
         (await prisma.paymentMethod.findFirst({ where: { userId: teamAdmin.id, isDefault: true } })) ||
         (await prisma.paymentMethod.findFirst({ where: { userId: teamAdmin.id } }))

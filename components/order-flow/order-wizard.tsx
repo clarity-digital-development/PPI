@@ -136,6 +136,9 @@ export interface OrderWizardProps {
     /** Server's rule (lib/orders/service-area-lock.ts): an address edit keeps
      *  the locked fee instead of re-pricing it. */
     keepsLockedFee?: boolean
+    /** Server's rule (keepsUnsplitServiceAreaFee): an invoice-account order
+     *  placed before those split carries — and re-prices to — the WHOLE fee. */
+    keepsUnsplitFee?: boolean
   }
   // Per-broker owned-lockbox install fee override ($0 for free-install teams).
   lockboxInstallFee?: number
@@ -143,8 +146,8 @@ export interface OrderWizardProps {
   pickupFee?: number
   // CR4: flat-fee account — review step shows the flat $66.07 breakdown.
   flatFee?: boolean
-  // Payer is invoice-billing — review step keeps the full (unsplit)
-  // out-of-area fee line and skips the consent checkbox for this payer class.
+  // Payer is invoice-billing — words the out-of-area agreement for the
+  // invoice (pickup half added to their next invoice instead of charged).
   invoiceBilling?: boolean
   // When true, ReviewStep shows internal service-area breadcrumb info next
   // to the out-of-area fee (center name + drive minutes). Customer view

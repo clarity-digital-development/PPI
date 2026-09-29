@@ -4,7 +4,7 @@
  * never see. Mirrors the exact cascade app/api/webhooks/stripe/route.ts runs
  * for a Stripe-collected invoice payment: Invoice -> paid, every bundled
  * Order -> paymentStatus succeeded, every bundled ServiceRequest -> invoiceStatus
- * paid. No paymentIntentId is stamped anywhere (there is no real Stripe PI
+ * paid, every out-of-area pickup half billed on it -> paid. No paymentIntentId is stamped anywhere (there is no real Stripe PI
  * behind a manual payment) — refundOrder() already rejects a succeeded order
  * with no paymentIntentId rather than crashing, so this is safe to leave null.
  *
@@ -78,6 +78,7 @@ export async function POST(
   }
 
   const paidAt = new Date()
+  let ooaPickupCount = 0
   try {
     await prisma.$transaction(async (tx) => {
       // Conditional claim — only proceeds if the invoice is still 'sent'.
@@ -100,6 +101,12 @@ export async function POST(
         where: { id: { in: invoice.serviceRequests.map((sr) => sr.id) } },
         data: { invoiceStatus: 'paid', invoicePaidAt: paidAt },
       })
+      // Same pickup flip as the webhook, keyed on the pickup's own invoice id.
+      const pickups = await tx.order.updateMany({
+        where: { serviceAreaSecondChargeInvoiceId: invoice.id, serviceAreaSecondChargeStatus: 'pending_invoice' },
+        data: { serviceAreaSecondChargeStatus: 'paid', serviceAreaSecondChargedAt: paidAt },
+      })
+      ooaPickupCount = pickups.count
     })
   } catch (err) {
     if (err instanceof Error && err.message === 'INVOICE_ALREADY_PAID_RACE') {
@@ -123,6 +130,7 @@ export async function POST(
       deactivatedLinkId: linkId ?? null,
       orderCount: invoice.orders.length,
       serviceRequestCount: invoice.serviceRequests.length,
+      ooaPickupCount,
       total: Number(invoice.total),
     },
     request,

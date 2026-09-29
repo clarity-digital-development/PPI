@@ -68,8 +68,15 @@ interface ServiceRequest {
     propertyZip: string
     status: string
     order?: {
+      id: string
       orderNumber: string
+      status?: string
       placedForAgentName?: string | null
+      // Out-of-area pickup half (see ooaPickupOf below).
+      serviceAreaSecondChargeCents?: number | null
+      serviceAreaSecondChargeStatus?: 'pending' | 'paid' | 'failed' | 'pending_invoice' | null
+      serviceAreaSecondChargeInvoiceId?: string | null
+      ooaPickupInvoice?: { invoiceNumber: string; status: 'sent' | 'paid' | 'void' } | null
       orderItems: Array<{ description: string; quantity: number; itemType: string }>
     }
   } | null
@@ -107,6 +114,105 @@ const typeConfig: Record<string, { label: string; icon: typeof Wrench }> = {
   service: { label: 'Service', icon: Wrench },
   repair: { label: 'Repair', icon: Wrench },
   replacement: { label: 'Replacement', icon: Wrench },
+}
+
+// Out-of-area pickup half on a removal's order (Ryan, 2026-09-28: "pending
+// out of area pickup" visibility). Scheduling the removal collects it on its
+// own — card payers are charged, invoice payers get it queued as its own line
+// on their next invoice (lib/orders/out-of-area-charge.ts) — so the removal
+// request shows where it stands, and the Invoice action warns before the
+// same trip is billed again by hand.
+type OOAPickupState = 'pending' | 'queued' | 'on_invoice' | 'paid_invoice' | 'paid_card' | 'failed' | 'not_owed'
+
+interface OOAPickup {
+  state: OOAPickupState
+  cents: number
+  orderId: string
+  orderNumber: string
+  invoiceNumber: string | null
+  // Mirrors the double-billing guard in
+  // app/api/admin/service-requests/[id]/invoice/route.ts: queued, on an
+  // invoice, or paid. 'pending' isn't collected yet; 'failed' never was.
+  alreadyBilled: boolean
+}
+
+function ooaPickupOf(request: ServiceRequest): OOAPickup | null {
+  if (request.type !== 'removal') return null
+  const o = request.installation?.order
+  const status = o?.serviceAreaSecondChargeStatus
+  const cents = o?.serviceAreaSecondChargeCents ?? 0
+  if (!o || !status || cents <= 0) return null
+  const invoiceNumber = o.ooaPickupInvoice?.invoiceNumber ?? null
+  // A cancelled (or refunded) order owes no pickup fee — nothing charges or
+  // bundles it — unless the half already sits on an invoice.
+  const notOwed =
+    o.status === 'cancelled' && !o.serviceAreaSecondChargeInvoiceId && status !== 'paid'
+  const state: OOAPickupState = notOwed
+    ? 'not_owed'
+    : status === 'pending_invoice'
+      ? invoiceNumber ? 'on_invoice' : 'queued'
+      : status === 'paid'
+        ? invoiceNumber ? 'paid_invoice' : 'paid_card'
+        : status
+  return {
+    state,
+    cents,
+    orderId: o.id,
+    orderNumber: o.orderNumber,
+    invoiceNumber,
+    alreadyBilled: !notOwed && (status === 'pending_invoice' || status === 'paid' || !!o.serviceAreaSecondChargeInvoiceId),
+  }
+}
+
+function ooaPickupLabel(p: OOAPickup): string {
+  switch (p.state) {
+    case 'queued': return 'Queued for next invoice'
+    case 'on_invoice': return `On invoice ${p.invoiceNumber}`
+    case 'paid_invoice': return `Paid on invoice ${p.invoiceNumber}`
+    case 'paid_card': return 'Charged to card'
+    case 'failed': return 'Charge failed — retry on the order page'
+    case 'pending': return 'Collected when removal is scheduled'
+    case 'not_owed': return 'Not collected — order cancelled'
+  }
+}
+
+const ooaPickupBadgeVariant: Record<OOAPickupState, 'success' | 'warning' | 'error' | 'info' | 'neutral'> = {
+  pending: 'neutral',
+  queued: 'info',
+  on_invoice: 'info',
+  paid_invoice: 'success',
+  paid_card: 'success',
+  failed: 'error',
+  not_owed: 'neutral',
+}
+
+// "is already on invoice INV-…" / "was already charged to their card" — the
+// tail of the Invoice action's warning + confirm, matching the route's 409.
+function ooaPickupAlreadyWhere(p: OOAPickup): string {
+  switch (p.state) {
+    case 'paid_invoice': return `was already paid on invoice ${p.invoiceNumber}`
+    case 'paid_card': return 'was already charged to their card automatically'
+    case 'on_invoice': return `is already on invoice ${p.invoiceNumber}`
+    default: return 'is already added to their next invoice automatically'
+  }
+}
+
+const formatCents = (cents: number) => `$${(cents / 100).toFixed(2)}`
+
+// The status PUT returns a slimmer user/installation than the list GET (no
+// invoiceBilling, phone, company, or order). A plain spread swapped those in
+// wholesale, which silently killed the completed-without-amount nudge
+// (user.invoiceBilling read as undefined) and would blank the out-of-area
+// pickup panel on a modal kept open. Merge the nested objects instead.
+function mergeServiceRequest(prev: ServiceRequest, patch: Partial<ServiceRequest>): ServiceRequest {
+  return {
+    ...prev,
+    ...patch,
+    user: { ...prev.user, ...(patch.user ?? {}) },
+    installation: prev.installation
+      ? { ...prev.installation, ...(patch.installation ?? {}) }
+      : (patch.installation ?? null),
+  }
 }
 
 const typeFilterOptions = [
@@ -219,23 +325,46 @@ export default function ServiceRequestsPage() {
       setInvoiceError('Enter a valid amount greater than $0.')
       return
     }
+    // Removal whose out-of-area pickup is already queued / billed / charged:
+    // the route refuses (409) unless allow_extra is sent, and we only send it
+    // once the admin confirms this is a genuinely separate charge.
+    const pickup = ooaPickupOf(selectedRequest)
+    let allowExtra = false
+    if (pickup?.alreadyBilled) {
+      const ok = window.confirm(
+        `The out-of-area pickup (${formatCents(pickup.cents)}) for this removal ${ooaPickupAlreadyWhere(pickup)}.\n\n` +
+          `Only add $${amt.toFixed(2)} here if it's a separate charge. Add it anyway?`
+      )
+      if (!ok) return
+      allowExtra = true
+    }
+    const srId = selectedRequest.id
+    const postInvoice = (extra: boolean) =>
+      fetch(`/api/admin/service-requests/${srId}/invoice`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount: amt, ...(extra ? { allow_extra: true } : {}) }),
+      })
     setInvoicing(true)
     setInvoiceError(null)
     try {
-      const res = await fetch(`/api/admin/service-requests/${selectedRequest.id}/invoice`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amount: amt }),
-      })
-      const data = await res.json()
+      let res = await postInvoice(allowExtra)
+      let data = await res.json()
+      // This list was loaded before the pickup got queued/charged — the
+      // route caught it. Same confirm, then resend.
+      if (res.status === 409 && data.code === 'ooa_pickup_already_billed' && !allowExtra) {
+        if (!window.confirm(`${data.error}\n\nAdd $${amt.toFixed(2)} anyway?`)) return
+        res = await postInvoice(true)
+        data = await res.json()
+      }
       if (!res.ok) {
         throw new Error(data.error || 'Charge failed')
       }
       // Merge the updated invoice fields into both the list and the open modal
       setRequests((prev) =>
-        prev.map((r) => (r.id === selectedRequest.id ? { ...r, ...data.serviceRequest } : r))
+        prev.map((r) => (r.id === srId ? mergeServiceRequest(r, data.serviceRequest) : r))
       )
-      setSelectedRequest((prev) => (prev ? { ...prev, ...data.serviceRequest } : prev))
+      setSelectedRequest((prev) => (prev ? mergeServiceRequest(prev, data.serviceRequest) : prev))
       // Auto-prompt fulfilled — clear the nudge so the yellow banner goes
       // away and the "pending_invoice" / "paid" success banner takes over.
       setNeedsInvoiceAmount(false)
@@ -263,9 +392,9 @@ export default function ServiceRequestsPage() {
 
       if (res.ok) {
         const data = await res.json()
-        const updated = { ...selectedRequest, ...data.serviceRequest }
+        const updated = mergeServiceRequest(selectedRequest, data.serviceRequest)
         setRequests((prev) =>
-          prev.map((r) => (r.id === selectedRequest.id ? { ...r, ...data.serviceRequest } : r))
+          prev.map((r) => (r.id === selectedRequest.id ? mergeServiceRequest(r, data.serviceRequest) : r))
         )
 
         // Auto-prompt: if admin just marked an invoice-billing SR completed
@@ -273,9 +402,14 @@ export default function ServiceRequestsPage() {
         // them to enter the billing amount instead of closing and leaving
         // the SR completed-but-unbilled. Effect hook above handles the
         // focus + scroll once needsInvoiceAmount flips true.
+        // Removals of one of our installs are skipped: the pickup is paid
+        // through the order (and its out-of-area half collects itself), so
+        // nudging for an amount there invites billing the trip twice. Only
+        // unlisted-address removals carry a trip fee of their own.
         const shouldPrompt =
           newStatus === 'completed' &&
           updated.user?.invoiceBilling &&
+          !(updated.type === 'removal' && updated.installation) &&
           (updated.invoiceAmount == null || Number(updated.invoiceAmount) <= 0) &&
           updated.invoiceStatus !== 'paid' &&
           updated.invoiceStatus !== 'pending_invoice'
@@ -489,6 +623,16 @@ export default function ServiceRequestsPage() {
                       {request.invoiceStatus === 'failed' && (
                         <Badge variant="warning">Charge failed</Badge>
                       )}
+                      {/* Out-of-area pickup half on a removal — its state is
+                          in the hover title and the request modal. */}
+                      {(() => {
+                        const pickup = ooaPickupOf(request)
+                        return pickup ? (
+                          <Badge variant={ooaPickupBadgeVariant[pickup.state]} title={ooaPickupLabel(pickup)}>
+                            OOA pickup {formatCents(pickup.cents)}
+                          </Badge>
+                        ) : null
+                      })()}
                       <span className="text-sm font-medium text-gray-900 capitalize">
                         {typeConfig[request.type]?.label || request.type}
                       </span>
@@ -674,6 +818,45 @@ export default function ServiceRequestsPage() {
               </div>
             )}
 
+            {/* Out-of-area pickup — the second half of the order's
+                out-of-area fee, collected on its own when this removal was
+                scheduled (Ryan, 2026-09-28: "pending out of area pickup"). */}
+            {(() => {
+              const pickup = ooaPickupOf(selectedRequest)
+              if (!pickup) return null
+              return (
+                <div className="p-4 bg-gray-50 rounded-lg">
+                  <h4 className="font-medium text-gray-900 mb-2">Out-of-area pickup</h4>
+                  <div className="flex items-center justify-between gap-2 text-sm">
+                    <Badge variant={ooaPickupBadgeVariant[pickup.state]}>
+                      {pickup.state === 'failed' ? 'Charge failed' : ooaPickupLabel(pickup)}
+                    </Badge>
+                    <span className="font-medium text-gray-900">{formatCents(pickup.cents)}</span>
+                  </div>
+                  {pickup.state === 'failed' && (
+                    <p className="mt-2 text-sm text-red-700">
+                      Charge failed —{' '}
+                      <Link href={`/admin/orders/${pickup.orderId}`} className="underline font-medium">
+                        retry on the order page
+                      </Link>
+                    </p>
+                  )}
+                  {pickup.state === 'queued' && (
+                    <p className="mt-2 text-xs text-gray-500">
+                      Added as its own line when this customer&apos;s next invoice is bundled.{' '}
+                      <Link href="/admin/invoices" className="underline">Bundle &amp; send invoices →</Link>
+                    </p>
+                  )}
+                  <p className="mt-2 text-xs text-gray-500">
+                    Order{' '}
+                    <Link href={`/admin/orders/${pickup.orderId}`} className="underline">
+                      {pickup.orderNumber}
+                    </Link>
+                  </p>
+                </div>
+              )
+            })()}
+
             {/* Admin Actions */}
             <div className="border-t pt-4">
               {/* Direct status control — set any status without stepping through
@@ -726,6 +909,20 @@ export default function ServiceRequestsPage() {
             {(() => {
               const isInvoiceBilling = !!selectedRequest.user.invoiceBilling
               const amt = Number(selectedRequest.invoiceAmount ?? 0)
+              const pickup = ooaPickupOf(selectedRequest)
+              // Removal whose out-of-area pickup already went on an invoice /
+              // was charged by itself — warn before the same trip is billed
+              // twice. handleSendInvoice confirms and sends allow_extra.
+              const pickupWarning =
+                pickup?.alreadyBilled && selectedRequest.invoiceStatus !== 'paid' ? (
+                  <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
+                    <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                    <p>
+                      The out-of-area pickup (<strong>{formatCents(pickup.cents)}</strong>) {ooaPickupAlreadyWhere(pickup)}.
+                      Only add an amount here for a genuinely separate charge.
+                    </p>
+                  </div>
+                ) : null
               return (
             <div className="border-t pt-4">
               <h4 className="font-medium text-gray-900 mb-2 flex items-center gap-2">
@@ -751,6 +948,7 @@ export default function ServiceRequestsPage() {
                   <p className="text-xs text-gray-500">
                     Need to update the amount before bundling? Re-enter below and click again — the SR will stay in the pending pile.
                   </p>
+                  {pickupWarning}
                   <div className="flex items-end gap-2">
                     <div className="flex-1">
                       <Input
@@ -801,6 +999,7 @@ export default function ServiceRequestsPage() {
                       ? 'This customer pays by invoice. The amount will be added to their next bundled invoice — no card will be charged now.'
                       : 'Enter the amount to charge the customer’s saved default card. They’ll be charged immediately.'}
                   </p>
+                  {pickupWarning}
                   <div className="flex items-end gap-2">
                     <div className="flex-1">
                       <Input

@@ -92,6 +92,12 @@ export async function refundOrder(
       refundInitiatedAt: null,
       refundId: null,
       paymentStatus: 'succeeded',
+      // An order paid through a bundled invoice carries the INVOICE's PI (the
+      // webhook stamps it on every order it settles), and Step 2 refunds a PI
+      // in full — so refunding one order here refunded every order, service
+      // trip and pickup on that invoice. Those are refunded by hand in Stripe
+      // for the order's amount instead.
+      invoiceId: null,
     },
     data: {
       refundInitiatedAt: new Date(),
@@ -105,11 +111,18 @@ export async function refundOrder(
     // a follow-up read so the caller can render a useful message.
     const existing = await prisma.order.findUnique({
       where: { id: orderId },
-      select: { id: true, paymentStatus: true, refundId: true, refundInitiatedAt: true, paymentIntentId: true },
+      select: { id: true, paymentStatus: true, refundId: true, refundInitiatedAt: true, paymentIntentId: true, invoiceId: true },
     })
     if (!existing) return { ok: false, error: 'Order not found', code: 'NOT_REFUNDABLE' }
     if (existing.refundId || existing.refundInitiatedAt) {
       return { ok: false, error: 'Order already refunded', code: 'ALREADY_REFUNDED' }
+    }
+    if (existing.invoiceId) {
+      return {
+        ok: false,
+        error: "This order was paid on an invoice — refunding it here would refund the whole invoice. Refund the order's amount by hand instead: a partial refund of the invoice's payment in Stripe, or outside Stripe if the invoice was marked paid manually.",
+        code: 'NOT_REFUNDABLE',
+      }
     }
     if (existing.paymentStatus !== 'succeeded') {
       return { ok: false, error: 'Order is not in a refundable state', code: 'NOT_REFUNDABLE' }

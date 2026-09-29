@@ -34,6 +34,21 @@ export async function POST(
         user: {
           select: { id: true, email: true, fullName: true, name: true, stripeCustomerId: true, invoiceBilling: true },
         },
+        // The removal's order — for the out-of-area pickup double-billing
+        // guard below.
+        installation: {
+          select: {
+            order: {
+              select: {
+                status: true,
+                serviceAreaSecondChargeCents: true,
+                serviceAreaSecondChargeStatus: true,
+                serviceAreaSecondChargeInvoiceId: true,
+                ooaPickupInvoice: { select: { invoiceNumber: true } },
+              },
+            },
+          },
+        },
       },
     })
 
@@ -50,6 +65,50 @@ export async function POST(
       return NextResponse.json(
         { error: 'This request is already bundled on an invoice. Edit the invoice instead.' },
         { status: 400 }
+      )
+    }
+
+    // Out-of-area pickup double-billing guard (Ryan, 2026-09-28). Scheduling
+    // a removal now collects the order's out-of-area pickup half on its own —
+    // charged to the card, or queued for the payer's next invoice as an
+    // "Out-of-area pickup" line — so billing the same removal trip here by
+    // hand would charge the pickup twice. Refuse unless the admin confirmed
+    // this is a genuinely separate charge (the page sends allow_extra after
+    // a confirm). A 'pending' half isn't collected yet and a 'failed' one
+    // never was ("I'll send invoice worst case"), so neither is blocked.
+    // No removal SR had ever been billed by hand when this landed.
+    const pickupOrder = serviceRequest.type === 'removal' ? serviceRequest.installation?.order : null
+    // A cancelled order's queued half is never bundled (and a cancelled order
+    // owes no pickup fee), so it doesn't count as billed — unless it's already
+    // on an invoice or was paid.
+    const pickupVoided =
+      pickupOrder?.status === 'cancelled' &&
+      !pickupOrder.serviceAreaSecondChargeInvoiceId &&
+      pickupOrder.serviceAreaSecondChargeStatus !== 'paid'
+    if (
+      pickupOrder &&
+      !pickupVoided &&
+      body.allow_extra !== true &&
+      (pickupOrder.serviceAreaSecondChargeStatus === 'pending_invoice' ||
+        pickupOrder.serviceAreaSecondChargeStatus === 'paid' ||
+        !!pickupOrder.serviceAreaSecondChargeInvoiceId)
+    ) {
+      const pickupAmount = `$${((pickupOrder.serviceAreaSecondChargeCents ?? 0) / 100).toFixed(2)}`
+      const invoiceNumber = pickupOrder.ooaPickupInvoice?.invoiceNumber
+      const where =
+        pickupOrder.serviceAreaSecondChargeStatus === 'paid'
+          ? invoiceNumber
+            ? `was already paid on invoice ${invoiceNumber}`
+            : 'was already charged to their card'
+          : invoiceNumber
+            ? `is already on invoice ${invoiceNumber}`
+            : 'is already added to their next invoice'
+      return NextResponse.json(
+        {
+          error: `The out-of-area pickup (${pickupAmount}) for this order ${where}. Only add an amount here for a separate charge.`,
+          code: 'ooa_pickup_already_billed',
+        },
+        { status: 409 }
       )
     }
 

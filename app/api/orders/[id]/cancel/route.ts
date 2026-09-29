@@ -64,6 +64,18 @@ export async function POST(
       )
     }
 
+    // An order on an invoice — sent or already paid — can't be cancelled from
+    // here. Unpaid, the invoice already bills it; paid, the payment is the
+    // whole invoice's, and refundOrder refuses to refund it (doing so would
+    // refund every order on it). The dashboard hides Cancel for these; this
+    // gives a direct call the customer's wording, not the admin's Stripe one.
+    if (order.invoiceId) {
+      return NextResponse.json(
+        { error: "This order is on an invoice, so it can't be cancelled here. Contact Pink Posts to cancel it.", code: 'ALREADY_INVOICED' },
+        { status: 409 }
+      )
+    }
+
     // Eastern midnight (NOT UTC midnight) — the crew dispatches in Eastern
     // time, so the customer's "24 hours before the install day" is measured
     // against ET, not UTC. Previously this used UTC midnight and customers

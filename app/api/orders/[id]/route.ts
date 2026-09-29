@@ -4,7 +4,7 @@ import { getCurrentUser } from '@/lib/auth-utils'
 import { sendInstallationCompleteEmail } from '@/lib/email'
 import { createOrderNotification } from '@/lib/notifications'
 import { chargePaymentMethod } from '@/lib/stripe'
-import { keepsLockedServiceAreaFee } from '@/lib/orders/service-area-lock'
+import { isInvoicePathOrder, keepsLockedServiceAreaFee, keepsUnsplitServiceAreaFee } from '@/lib/orders/service-area-lock'
 
 export async function GET(
   request: NextRequest,
@@ -56,9 +56,9 @@ export async function GET(
       where: { id: order.placedByUserId ?? order.userId },
       select: {
         freeLockboxInstall: true,
-        // Whether the out-of-area fee is split (half now, half at pickup) or
-        // billed whole — the edit route decides it from the same payer, and
-        // the edit screen must agree or it previews half of what's saved.
+        // Picks the out-of-area consent wording on the edit screen (pickup
+        // half added to the invoice vs charged to the card). Whether the fee
+        // splits at all is keepsUnsplitServiceAreaFee below, from the order.
         invoiceBilling: true,
         // For the shared keep-the-locked-fee rule below.
         isServiceAreaExempt: true,
@@ -77,6 +77,9 @@ export async function GET(
       // than re-pricing it — the SAME rule the edit route applies, so the edit
       // screen previews what gets saved. See lib/orders/service-area-lock.ts.
       keepsLockedServiceAreaFee: keepsLockedServiceAreaFee(order, payer),
+      // Whether a re-priced fee stays ONE unsplit amount — an invoice-account
+      // order placed before those split too. Same rule as the edit route.
+      keepsUnsplitServiceAreaFee: keepsUnsplitServiceAreaFee(order),
       paid_at: order.paidAt ? order.paidAt.toISOString() : null,
       scheduled_date: order.scheduledDate ? order.scheduledDate.toISOString() : null,
       refund_id: order.refundId ?? null,
@@ -172,10 +175,22 @@ export async function PUT(
       // customers when admin clicked Complete. Double-billed them once the
       // order also appeared on their invoice + enrolled them in the
       // post-rental cron's daily auto-charges.
-      if (order.user.invoiceBilling) {
+      //
+      // Read off the ORDER and its PAYER, not order.user: on a team_admin's
+      // on-behalf order, order.user is the agent while the broker is the
+      // payer. Gating on the agent's flag charged the agent's card for an
+      // order sitting on the broker's invoice and knocked it off the invoice
+      // path — its out-of-area pickup half would then go to a card too.
+      const payerInvoiceBilling = order.placedByUserId
+        ? !!(await prisma.user.findUnique({
+            where: { id: order.placedByUserId },
+            select: { invoiceBilling: true },
+          }))?.invoiceBilling
+        : order.user.invoiceBilling
+      if (isInvoicePathOrder(order) || payerInvoiceBilling) {
         console.log(
-          `Order ${order.orderNumber}: skipping auto-charge — user.invoiceBilling=true. ` +
-          `Order will be bundled onto the next invoice (paymentStatus stays as 'pending_invoice').`
+          `Order ${order.orderNumber}: skipping auto-charge — billed by invoice. ` +
+          `Order will be bundled onto the next invoice (paymentStatus stays as '${order.paymentStatus}').`
         )
       } else if (order.paymentStatus !== 'succeeded') {
         try {

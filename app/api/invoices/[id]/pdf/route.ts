@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { buildInvoicePdfBytes, type InvoiceDetail } from '@/lib/invoices/invoice-pdf'
+import { buildInvoicePdfBytes } from '@/lib/invoices/invoice-pdf'
+import { loadInvoiceDetailForPdf } from '@/lib/invoices/load-detail'
 
 /**
  * PUBLIC invoice PDF — no auth, token-gated.
@@ -28,86 +29,23 @@ export async function GET(
     return NextResponse.json({ error: 'Missing token' }, { status: 401 })
   }
 
-  const invoice = await prisma.invoice.findUnique({
+  // Token check first, off a narrow read — nothing about the invoice is
+  // loaded until the caller has proven they hold the link.
+  const gate = await prisma.invoice.findUnique({
     where: { id },
-    include: {
-      user: { select: { id: true, fullName: true, name: true, email: true, company: true } },
-      orders: { include: { orderItems: true }, orderBy: { createdAt: 'asc' } },
-      serviceRequests: {
-        include: { installation: { select: { propertyAddress: true, propertyCity: true, propertyState: true, propertyZip: true } } },
-        orderBy: { completedAt: 'asc' },
-      },
-    },
+    select: { publicPdfToken: true },
   })
-  if (!invoice) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  if (!invoice.publicPdfToken || invoice.publicPdfToken !== token) {
+  if (!gate) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  if (!gate.publicPdfToken || gate.publicPdfToken !== token) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
-  const detail: InvoiceDetail = {
-    id: invoice.id,
-    invoice_number: invoice.invoiceNumber,
-    status: invoice.status as 'sent' | 'paid' | 'void',
-    range_start: invoice.rangeStart.toISOString(),
-    range_end: invoice.rangeEnd.toISOString(),
-    subtotal: Number(invoice.subtotal),
-    // Subtotal split — orders are the taxable base, service trips are flat-
-    // billed with no tax. Sum to `subtotal`. See lib/invoices/load-detail.ts
-    // for the rationale and the canonical computation.
-    orders_subtotal: invoice.orders.reduce((s, o) => s + Number(o.subtotal ?? 0), 0),
-    service_requests_subtotal: invoice.serviceRequests.reduce((s, sr) => s + Number(sr.invoiceAmount ?? 0), 0),
-    adjustments: (invoice.adjustments as InvoiceDetail['adjustments']) ?? [],
-    total: Number(invoice.total),
-    fuel_total: invoice.orders.reduce((s, o) => s + Number(o.fuelSurcharge ?? 0), 0),
-    tax_total: invoice.orders.reduce((s, o) => s + Number(o.tax ?? 0), 0),
-    expedite_total: invoice.orders.reduce((s, o) => s + Number(o.expediteFee ?? 0), 0),
-    no_post_total: invoice.orders.reduce((s, o) => s + Number(o.noPostSurcharge ?? 0), 0),
-    discount_total: invoice.orders.reduce((s, o) => s + Number(o.discount ?? 0), 0),
-    // Snapshot off the invoice row — same as lib/invoices/load-detail.ts, so
-    // the public PDF and the admin-generated one show identical numbers.
-    broker_discount_percent: invoice.discountPercent !== null ? Number(invoice.discountPercent) : null,
-    broker_discount_amount: invoice.discountAmount !== null ? Number(invoice.discountAmount) : null,
-    sent_at: invoice.sentAt?.toISOString() ?? null,
-    paid_at: invoice.paidAt?.toISOString() ?? null,
-    customer: {
-      id: invoice.user.id,
-      name: invoice.user.fullName || invoice.user.name || invoice.user.email,
-      email: invoice.user.email,
-      company: invoice.user.company,
-    },
-    orders: invoice.orders.map((o) => ({
-      id: o.id,
-      order_number: o.orderNumber,
-      created_at: o.createdAt.toISOString(),
-      property_address: o.propertyAddress,
-      property_city: o.propertyCity,
-      property_state: o.propertyState,
-      property_zip: o.propertyZip,
-      subtotal: Number(o.subtotal),
-      total: Number(o.total),
-      flat_fee_applied: o.flatFeeApplied,
-      flat_fee_base: o.flatFeeBase !== null ? Number(o.flatFeeBase) : null,
-      placed_for_agent_name: o.placedForAgentName,
-      items: o.orderItems.map((it) => ({
-        description: it.description,
-        quantity: it.quantity,
-        unit_price: Number(it.unitPrice),
-        total_price: Number(it.totalPrice),
-      })),
-    })),
-    service_requests: invoice.serviceRequests.map((sr) => ({
-      id: sr.id,
-      type: sr.type,
-      description: sr.description,
-      completed_at: sr.completedAt?.toISOString() ?? null,
-      created_at: sr.createdAt.toISOString(),
-      property_address: sr.installation?.propertyAddress ?? sr.unlistedAddress ?? null,
-      property_city: sr.installation?.propertyCity ?? sr.unlistedCity ?? null,
-      property_state: sr.installation?.propertyState ?? sr.unlistedState ?? null,
-      property_zip: sr.installation?.propertyZip ?? sr.unlistedZip ?? null,
-      amount: Number(sr.invoiceAmount || 0),
-    })),
-  }
+  // Same loader as the emailed attachment and the pay page (this route used
+  // to hand-copy its mapping), so the public PDF can't drift from them — it
+  // picks up the out-of-area pickup lines (Ryan, 2026-09-28) with no copy
+  // to keep in step.
+  const detail = await loadInvoiceDetailForPdf(id)
+  if (!detail) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
   const pdfBytes = buildInvoicePdfBytes(detail)
   // Buffer wraps the bytes for Next's Response body; matches what Resend does
@@ -116,7 +54,7 @@ export async function GET(
     status: 200,
     headers: {
       'Content-Type': 'application/pdf',
-      'Content-Disposition': `inline; filename="invoice-${invoice.invoiceNumber}.pdf"`,
+      'Content-Disposition': `inline; filename="invoice-${detail.invoice_number}.pdf"`,
       'Cache-Control': 'no-store, max-age=0',
     },
   })

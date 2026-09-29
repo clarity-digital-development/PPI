@@ -63,6 +63,21 @@ export interface InvoiceServiceRequest {
   amount: number
 }
 
+// The pickup half of an order's out-of-area fee, billed on the invoice for the
+// month the sign came down (Ryan, 2026-09-28). Its order usually sits on an
+// EARLIER invoice, so it is its own line, not part of an InvoiceOrder.
+export interface InvoicePickup {
+  order_id: string
+  order_number: string
+  property_address: string
+  property_city: string
+  property_state: string
+  property_zip: string
+  placed_for_agent_name: string | null
+  removal_date: string | null
+  amount: number
+}
+
 export interface InvoiceDetail {
   id: string
   invoice_number: string
@@ -75,10 +90,14 @@ export interface InvoiceDetail {
   // a flat amount with no tax field (standalone labor sans post rental isn't
   // sales-taxable in KY per Ryan 2026-06-28). Showing the split makes the math
   // legible to brokers (otherwise the displayed Sales Tax line looks too low
-  // versus subtotal × 6%). Always: orders_subtotal + service_requests_subtotal
+  // versus subtotal × 6%). Out-of-area pickups are the same kind of line —
+  // untaxed, no fuel — and sit in the subtotal too, so the broker discount
+  // covers them exactly as it covers the install half inside the order.
+  // Always: orders_subtotal + service_requests_subtotal + pickups_subtotal
   // === subtotal.
   orders_subtotal: number
   service_requests_subtotal: number
+  pickups_subtotal: number
   // Post-invoice edit adjustments swept onto THIS invoice (snapshot taken at
   // bundle time; the per-order source column is zeroed by the sweep). Amounts
   // can be negative — an order edited cheaper after its invoice went out.
@@ -107,6 +126,7 @@ export interface InvoiceDetail {
   }
   orders: InvoiceOrder[]
   service_requests: InvoiceServiceRequest[]
+  pickups: InvoicePickup[]
 }
 
 function fmtCurrency(n: number): string {
@@ -174,11 +194,20 @@ export function buildInvoicePdfDoc(invoice: InvoiceDetail): jsPDF {
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(9)
   doc.setTextColor(MUTED.r, MUTED.g, MUTED.b)
+  // Read defensively: the dashboard page hands this function the raw
+  // /api/invoices/[id] response, which a stale tab may have fetched before
+  // out-of-area pickups existed.
+  const pickups = invoice.pickups ?? []
+  const pickupsSubtotal = invoice.pickups_subtotal ?? 0
   const orderCount = invoice.orders.length
   const srCount = invoice.service_requests.length
+  const pickupCount = pickups.length
+  // Inlined rather than imported from ./ooa-pickups (ooaPickupCountLabel):
+  // that module pulls in Prisma, and this file also ships to the browser.
   const countLine = [
     orderCount ? `${orderCount} order${orderCount === 1 ? '' : 's'}` : null,
     srCount ? `${srCount} service trip${srCount === 1 ? '' : 's'}` : null,
+    pickupCount ? `${pickupCount} out-of-area pickup${pickupCount === 1 ? '' : 's'}` : null,
   ].filter(Boolean).join(' + ')
   if (countLine) {
     doc.text(countLine, pageWidth - margin, 76, { align: 'right' })
@@ -254,8 +283,8 @@ export function buildInvoicePdfDoc(invoice: InvoiceDetail): jsPDF {
   // --- Build the table rows ---
   // One row per line item — order rows repeat the order # / date / address /
   // agent on each item row (autoTable doesn't merge cells; the visual
-  // repetition is fine and makes per-item unit prices first-class). SRs are
-  // a single line each.
+  // repetition is fine and makes per-item unit prices first-class). SRs and
+  // out-of-area pickups are a single line each.
   type Row = [string, string, string, string, string, string, string, string]
   const rows: Row[] = []
 
@@ -303,6 +332,22 @@ export function buildInvoicePdfDoc(invoice: InvoiceDetail): jsPDF {
       '1',
       fmtCurrency(sr.amount),
       fmtCurrency(sr.amount),
+    ])
+  }
+
+  // The pickup half of an out-of-area fee (Ryan, 2026-09-28). Dated by the
+  // removal, since that's what triggered the charge; its order usually sits
+  // on an earlier invoice. Item text kept short — the column is 100pt.
+  for (const p of pickups) {
+    rows.push([
+      p.order_number,
+      fmtDate(p.removal_date),
+      formatAddress(p.property_address, p.property_city, p.property_state, p.property_zip),
+      p.placed_for_agent_name || '—',
+      'Out-of-area pickup',
+      '1',
+      fmtCurrency(p.amount),
+      fmtCurrency(p.amount),
     ])
   }
 
@@ -361,42 +406,33 @@ export function buildInvoicePdfDoc(invoice: InvoiceDetail): jsPDF {
   // jspdf-autotable hangs the final Y position off the doc as lastAutoTable.
   const finalY = (doc as any).lastAutoTable?.finalY ?? metaTop + 70
   let tY = finalY + 24
-  // Reserve room for the subtotal + breakdown rows + total so the box never
-  // splits awkwardly across the page break.
-  if (tY > pageHeight - 200) {
-    doc.addPage()
-    tY = 80
-  }
 
   // Subtotal + breakdown rows. Listing fuel/tax/fees here explains the gap
   // between Subtotal and Total (previously the jump had no line items).
-  const labelX = pageWidth - margin - 90
-  const amtX = pageWidth - margin
-  let rowY = tY
+  // Collected first and drawn after the page-break check, so the reserve
+  // below is sized to the rows this invoice actually has.
+  const detailLines: Array<{ label: string; value: number; negative: boolean }> = []
   const detailRow = (label: string, value: number, negative = false) => {
-    doc.setFont('helvetica', 'normal')
-    doc.setFontSize(10)
-    doc.setTextColor(MUTED.r, MUTED.g, MUTED.b)
-    doc.text(label, labelX, rowY, { align: 'right' })
-    doc.setTextColor(INK.r, INK.g, INK.b)
-    doc.text((negative ? '-' : '') + fmtCurrency(value), amtX, rowY, { align: 'right' })
-    rowY += 16
+    detailLines.push({ label, value, negative })
   }
 
-  // Subtotal split — render two rows when service trips exist so the broker
-  // can see WHY the Sales Tax line below isn't 6% × Subtotal (service trips
-  // aren't taxable). Each row is independently > 0-gated so an SR-only invoice
-  // doesn't render a confusing "Orders subtotal $0.00" line, and an order-only
-  // invoice falls through to the single Subtotal line below — preserving the
-  // exact prior layout for invoices without service trips. Note: don't append
-  // "(taxable)" to the Orders row — when a discount/expedite/no-post-surcharge
-  // is present, 6% × orders_subtotal ≠ tax_total (the real taxable base nets
-  // discounts and adds fees). The "(non-taxable)" parenthetical on the service-
-  // trips row is what carries the explanation; leaving the orders row neutral
-  // keeps it honest across all invoice shapes.
-  if (invoice.service_requests_subtotal > 0) {
+  // Subtotal split — render per-kind rows when service trips or out-of-area
+  // pickups exist so the broker can see WHY the Sales Tax line below isn't
+  // 6% × Subtotal (neither is taxable). Each row is independently > 0-gated
+  // so an SR-only or pickup-only invoice doesn't render a confusing "Orders
+  // subtotal $0.00" line, and an order-only invoice falls through to the
+  // single Subtotal line below — preserving the exact prior layout for
+  // invoices without either. The rows must sum to Subtotal, which is why the
+  // pickup row can't be left out of the split (Ryan, 2026-09-28). Note: don't
+  // append "(taxable)" to the Orders row — when a discount/expedite/no-post-
+  // surcharge is present, 6% × orders_subtotal ≠ tax_total (the real taxable
+  // base nets discounts and adds fees). The "(non-taxable)" parentheticals
+  // carry the explanation; leaving the orders row neutral keeps it honest
+  // across all invoice shapes.
+  if (invoice.service_requests_subtotal > 0 || pickupsSubtotal > 0) {
     if (invoice.orders_subtotal > 0) detailRow('Orders subtotal', invoice.orders_subtotal)
-    detailRow('Service trips (non-taxable)', invoice.service_requests_subtotal)
+    if (invoice.service_requests_subtotal > 0) detailRow('Service trips (non-taxable)', invoice.service_requests_subtotal)
+    if (pickupsSubtotal > 0) detailRow('Out-of-area pickups (non-taxable)', pickupsSubtotal)
   } else {
     detailRow('Subtotal', invoice.subtotal)
   }
@@ -423,6 +459,34 @@ export function buildInvoicePdfDoc(invoice: InvoiceDetail): jsPDF {
   if (invoice.expedite_total > 0) detailRow('Expedite Fee', invoice.expedite_total)
   if (invoice.fuel_total > 0) detailRow('Fuel Surcharge', invoice.fuel_total)
   if (invoice.tax_total > 0) detailRow('Sales Tax', invoice.tax_total)
+
+  // Reserve room for the breakdown rows + total (+ pay link) so the box never
+  // splits awkwardly across the page break or runs into the footer. The flat
+  // 200pt reserve this used to be only fit ~8 rows; with every fee row, the
+  // three-way subtotal split and any adjustment rows an invoice can need
+  // more. Never less than 200 so invoices that already fit keep their layout.
+  // 16/row, +18 divider→Total baseline, +36 pay link, +36 footer clearance.
+  const totalsReserve = Math.max(
+    200,
+    detailLines.length * 16 + 18 + (invoice.status === 'sent' ? 36 : 0) + 36,
+  )
+  if (tY > pageHeight - totalsReserve) {
+    doc.addPage()
+    tY = 80
+  }
+
+  const labelX = pageWidth - margin - 90
+  const amtX = pageWidth - margin
+  let rowY = tY
+  for (const line of detailLines) {
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(10)
+    doc.setTextColor(MUTED.r, MUTED.g, MUTED.b)
+    doc.text(line.label, labelX, rowY, { align: 'right' })
+    doc.setTextColor(INK.r, INK.g, INK.b)
+    doc.text((line.negative ? '-' : '') + fmtCurrency(line.value), amtX, rowY, { align: 'right' })
+    rowY += 16
+  }
 
   // Divider, then the bold Total.
   const lineY = rowY - 4

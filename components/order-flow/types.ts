@@ -183,6 +183,9 @@ export interface StepProps {
     /** Server's rule (lib/orders/service-area-lock.ts): an address edit keeps
      *  the locked fee instead of re-pricing it. */
     keepsLockedFee?: boolean
+    /** Server's rule (keepsUnsplitServiceAreaFee): an invoice-account order
+     *  placed before those split carries — and re-prices to — the WHOLE fee. */
+    keepsUnsplitFee?: boolean
   }
   // Per-broker override for the OWNED-lockbox install fee (sentri/supra,
   // mechanical-owned, at-property). Defaults to PRICING.lockbox_install ($5).
@@ -196,9 +199,9 @@ export interface StepProps {
   // of itemized pricing (server clamps the charge regardless).
   flatFee?: boolean
   // Payer is invoice-billing (accumulates into a bundled Invoice, nothing
-  // charged to a card at order time). Review step shows the FULL out-of-area
-  // fee as a single line — no split, no consent checkbox — matching the
-  // server, which skips the split for this payer class too.
+  // charged to a card). The out-of-area fee splits for them like everyone
+  // else (2026-09-28); this only words the agreement box for the invoice —
+  // the pickup half is added to their next invoice, not charged.
   invoiceBilling?: boolean
   // When true, the review step shows internal distance-check breadcrumb info
   // alongside the out-of-area fee (which service center triggered it + the

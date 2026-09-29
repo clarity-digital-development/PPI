@@ -10,7 +10,7 @@ import { audit, AuditAction } from '@/lib/audit'
 import { chargePaymentMethod, isDetachedPaymentMethodError } from '@/lib/stripe'
 import { resolveEffectivePayer } from '@/lib/orders/effective-payer'
 import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, lockedFlatBase, NO_POST_SURCHARGE, postRentalApplies, type OrderItemForPricing } from '@/lib/orders/pricing'
-import { keepsLockedServiceAreaFee } from '@/lib/orders/service-area-lock'
+import { keepsLockedServiceAreaFee, keepsUnsplitServiceAreaFee } from '@/lib/orders/service-area-lock'
 import { applyPickupFeePolicy, lockedPickupFeeDecision } from '@/lib/orders/pickup-fee'
 import { isPickupFeeWaivedForPayer } from '@/lib/orders/pickup-fee-waiver'
 import { allowedInventoryOwnerIds, checkInventoryOwnership, describeInventoryFailures } from '@/lib/orders/inventory-ownership'
@@ -338,9 +338,9 @@ export async function PATCH(
     // still belongs to the WALLET, not the acting admin.
     const payerForOOA = await prisma.user.findUnique({
       where: { id: existingOrder.placedByUserId ?? existingOrder.userId },
-      // invoiceBilling decides whether the fee splits 50/50, exactly as it
-      // does at create time.
-      select: { id: true, role: true, isServiceAreaExempt: true, invoiceBilling: true, flatFeeBilling: true },
+      // Whether the fee splits is decided from the order itself (see
+      // keepsUnsplitServiceAreaFee below), not from the payer's flag.
+      select: { id: true, role: true, isServiceAreaExempt: true, flatFeeBilling: true },
     })
 
     // Exempt-promotion guard (adversarial review 2026-07-06): if the payer
@@ -405,17 +405,28 @@ export async function PATCH(
       // diff, once when removal was scheduled). Harmless-looking while every
       // fee was a flat $50/$25; with per-mile pricing the doubled amount
       // scales with distance.
-      // Invoice-billing only, matching create — flat fee is no longer a reason.
-      const oooSkipsSplit = !!payerForOOA && payerForOOA.invoiceBilling
+      // Every payer splits, matching create — invoice payers too since
+      // 2026-09-28. The one exception is decided from the ORDER, not the
+      // payer's current flag: an invoice-account order placed before then
+      // carries the whole fee with no pickup half, and keeps being priced that
+      // way (lib/orders/service-area-lock.ts keepsUnsplitServiceAreaFee).
+      const oooSkipsSplit = keepsUnsplitServiceAreaFee(existingOrder)
       const resolvedFullCents = sa.tier === 'surcharge' ? sa.surchargeCents : 0
       resolvedSurchargeCents = oooSkipsSplit
         ? resolvedFullCents
         : Math.round(resolvedFullCents / 2)
       // Re-arm the pickup half for the NEW address too — it used to keep the
-      // old address's amount forever. Never touched once it has already been
-      // collected ('paid') or hard-failed: re-arming a settled charge would
-      // bill the customer a second time.
-      if (existingOrder.serviceAreaSecondChargeStatus !== 'paid' && existingOrder.serviceAreaSecondChargeStatus !== 'failed') {
+      // old address's amount forever. Only while it is still waiting for
+      // removal (null or 'pending'): once it has been collected, hard-failed,
+      // or queued for / billed on an invoice, it's settled at the amount the
+      // customer agreed to. Re-arming it would bill a second time, and a sent
+      // invoice reads the queued amount live. Consequence, accepted: an
+      // address edit after pickup was scheduled re-prices only the install half.
+      const secondChargeStillArmable =
+        (existingOrder.serviceAreaSecondChargeStatus === null ||
+          existingOrder.serviceAreaSecondChargeStatus === 'pending') &&
+        existingOrder.serviceAreaSecondChargeInvoiceId === null
+      if (secondChargeStillArmable) {
         const secondHalf = oooSkipsSplit ? 0 : resolvedFullCents - resolvedSurchargeCents
         resolvedSecondChargeCents = secondHalf > 0 ? secondHalf : null
         resolvedSecondChargeStatus = secondHalf > 0 ? 'pending' : null
@@ -874,6 +885,12 @@ export async function PATCH(
           ...(wasInvoiced
             ? { postInvoiceBaselineCents: existingOrder.postInvoiceBaselineCents }
             : {}),
+          // Re-arming the pickup half was decided from the status read above;
+          // if removal got scheduled in between (pending -> charged or queued
+          // for the invoice), writing 'pending' back would bill it twice.
+          ...(resolvedSecondChargeCents !== undefined
+            ? { serviceAreaSecondChargeStatus: existingOrder.serviceAreaSecondChargeStatus }
+            : {}),
         },
         data: {
           postTypeId: newPostTypeId,
@@ -968,14 +985,16 @@ export async function PATCH(
     })
 
     if (!updatedOrder) {
-      // Two ways to get here: the bundler stamped invoiceId mid-edit (the
-      // pre-existing race), or a concurrent edit of an already-invoiced order
-      // moved the baseline anchor. Either way the caller's view is stale.
+      // Three ways to get here: the bundler stamped invoiceId mid-edit (the
+      // pre-existing race), a concurrent edit of an already-invoiced order
+      // moved the baseline anchor, or removal got scheduled and moved the
+      // pickup half this edit was about to re-arm. Either way the caller's
+      // view is stale.
       return NextResponse.json(
         {
           error: wasInvoiced
             ? 'This order was changed by someone else while you were editing. Refresh to see the latest version and try again.'
-            : 'This order was just added to an invoice while you were editing. Refresh to see the latest version.',
+            : 'This order changed while you were editing (it may have just been added to an invoice). Refresh to see the latest version.',
           code: 'concurrent_edit',
         },
         { status: 409 }

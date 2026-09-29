@@ -23,10 +23,19 @@ export async function POST(
     const { id: orderId } = await params
     const order = await prisma.order.findUnique({
       where: { id: orderId },
-      select: { id: true, serviceAreaSecondChargeStatus: true, serviceAreaSecondChargeError: true },
+      select: { id: true, status: true, serviceAreaSecondChargeStatus: true, serviceAreaSecondChargeError: true },
     })
     if (!order) {
       return NextResponse.json({ error: 'Order not found' }, { status: 404 })
+    }
+    // A cancelled (or refunded — refunds cancel) order owes no pickup fee, and
+    // chargeSecondOutOfAreaFee skips it. Flipping to 'pending' first would
+    // wipe the failure and leave a "charges at removal" promise nothing keeps.
+    if (order.status === 'cancelled') {
+      return NextResponse.json(
+        { error: 'This order was cancelled or refunded, so no pickup fee is owed. Nothing to retry.' },
+        { status: 409 }
+      )
     }
     if (order.serviceAreaSecondChargeStatus !== 'failed') {
       return NextResponse.json(
@@ -38,7 +47,7 @@ export async function POST(
     // Conditional flip back to 'pending' — guards against a double-click
     // racing two retries. chargeSecondOutOfAreaFee only acts on 'pending'.
     const flipped = await prisma.order.updateMany({
-      where: { id: orderId, serviceAreaSecondChargeStatus: 'failed' },
+      where: { id: orderId, serviceAreaSecondChargeStatus: 'failed', status: { not: 'cancelled' } },
       data: { serviceAreaSecondChargeStatus: 'pending', serviceAreaSecondChargeError: null },
     })
     if (flipped.count === 0) {

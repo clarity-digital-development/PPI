@@ -34,3 +34,38 @@ export function keepsLockedServiceAreaFee(
     order.flatFeeApplied && (order.flatFeeBase === null || order.flatFeeBase === undefined)
   return exemptWithFee || flatUnderOldPolicy
 }
+
+/** The order is billed through a bundled Invoice rather than a card charge. */
+export function isInvoicePathOrder(order: { invoiceId?: string | null; paymentStatus?: string | null }): boolean {
+  return !!order.invoiceId || order.paymentStatus === 'pending_invoice'
+}
+
+/**
+ * Whether an address edit re-prices this order's out-of-area fee as ONE
+ * unsplit amount instead of half now + half at pickup.
+ *
+ * Invoice accounts used to carry the whole both-trips fee on the order, with
+ * no pickup half. They split like card accounts now (Ryan, 2026-09-28): half
+ * on the order, the pickup half added to their invoice when removal is
+ * scheduled. An order placed before that keeps the policy it was placed under
+ * — splitting it on a later edit would drop half the fee off an invoice the
+ * customer may already have, then bill it again at pickup. Recognised by being
+ * on the invoice path with a fee and no pickup half ever armed.
+ *
+ * Read by both the edit route and the edit screen (via GET /api/orders/[id]),
+ * so the preview matches the save — same contract as keepsLockedServiceAreaFee.
+ */
+export function keepsUnsplitServiceAreaFee(order: {
+  invoiceId?: string | null
+  paymentStatus?: string | null
+  serviceAreaSurchargeCents?: number | null
+  serviceAreaSecondChargeCents?: number | null
+  serviceAreaSecondChargeStatus?: string | null
+}): boolean {
+  return (
+    isInvoicePathOrder(order) &&
+    (order.serviceAreaSurchargeCents ?? 0) > 0 &&
+    order.serviceAreaSecondChargeStatus == null &&
+    order.serviceAreaSecondChargeCents == null
+  )
+}

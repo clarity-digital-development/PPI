@@ -279,20 +279,16 @@ export function ReviewStep({
   // honours that exemption.
   //
   // Split fee (Ryan, 2026-07-09/12): the quote endpoint always returns the
-  // FULL surcharge — invoice-billing payers see/pay that full amount as one
-  // line (server keeps their old behavior). Everyone else (the split case)
-  // sees/pays only HALF now; mirror the server's Math.round(cents / 2) exactly
-  // so the confirmed total on this screen matches what Stripe actually charges.
+  // FULL surcharge, and every payer sees/pays only HALF now; mirror the
+  // server's Math.round(cents / 2) exactly so the confirmed total on this
+  // screen matches what is actually charged. The pickup half goes to the card
+  // at removal — or, for an invoice-billing payer, onto their next invoice
+  // (Ryan, 2026-09-28), which only changes the agreement wording below.
   const isInvoiceBillingPayer = !!invoiceBilling
-  // ONLY invoice-billing payers skip the split — they pay the full both-trips
-  // fee as one line because nothing is collected at checkout for them anyway.
-  // The cart/batch path USED to skip it too (full amount, one line, no second
-  // charge, no consent box), which meant a broker carting a 150-mile property
-  // was quoted $127.50 and charged $255.00. Ryan chose to split it there as
-  // well — "split like everyone else... Semonin eventually will have out of
-  // area fees so this will be for everyone at some point" (2026-09-19) — so
-  // the cart now matches a single order exactly.
-  const skipsOOASplit = isInvoiceBillingPayer
+  // The one exception is an EDIT of an invoice-account order placed before
+  // those split: it carries the whole fee and the server re-prices it whole
+  // (keepsUnsplitServiceAreaFee, lib/orders/service-area-lock.ts).
+  const skipsOOASplit = isEdit && !!editMeta?.keepsUnsplitFee
   const liveServiceAreaFee = serviceAreaQuote?.tier === 'surcharge'
     ? skipsOOASplit
       ? serviceAreaQuote.surchargeCents / 100
@@ -321,10 +317,10 @@ export function ReviewStep({
   const useLockedFee = isEdit && editMeta?.lockedServiceAreaFee !== undefined && !feeRepricesOnAddressChange
   const serviceAreaSurcharge = useLockedFee ? editMeta!.lockedServiceAreaFee! : liveServiceAreaFee
   // Consent is required wherever money will actually move in two parts: the
-  // direct checkout AND the cart. Never in edit mode (no re-charge there) and
-  // never for invoice-billing payers (nothing splits for them).
+  // direct checkout AND the cart — invoice-billing payers included now that
+  // their fee splits too. Never in edit mode (no re-charge there).
   const requiresOOAConsent =
-    !isEdit && !isInvoiceBillingPayer && serviceAreaSurcharge > 0 && serviceAreaQuote?.tier === 'surcharge'
+    !isEdit && serviceAreaSurcharge > 0 && serviceAreaQuote?.tier === 'surcharge'
   // When the quote failed we cannot know whether this address carries a
   // splittable fee. Proceeding is a dead end either way: requiresOOAConsent is
   // false so no agreement box renders, yet the server refuses the order if a
@@ -333,14 +329,17 @@ export function ReviewStep({
   // is worse: the bad row is persisted and then kills the whole batch at
   // checkout. Block instead, and say why. Edit mode and payers who can never
   // be charged a split fee are unaffected.
-  // Flat fee no longer exempts: a flat-fee card payer can owe a split fee too.
+  // Flat fee no longer exempts: a flat-fee card payer can owe a split fee too,
+  // and since 2026-09-28 neither does invoice billing — the server requires
+  // their agreement as well, so letting them through on a $0 preview is the
+  // same dead end.
   // In EDIT mode it blocks only when the save will re-price the fee from this
   // address (and then for every payer, invoice-billed included — the server
   // re-resolves for them too): previewing $0 and saving the real fee is the
   // same dead end in a different place.
   const blockedOnQuoteFailure = isEdit
     ? serviceAreaQuoteFailed && feeRepricesOnAddressChange
-    : serviceAreaQuoteFailed && !isInvoiceBillingPayer
+    : serviceAreaQuoteFailed
   const itemsSubtotal = orderItems.reduce((sum, item) => sum + item.price, 0)
   // Promo codes (and the fuel waiver, which only a promo sets) apply to the
   // single-order checkout only. The cart checkout — every team_admin and
@@ -441,10 +440,11 @@ export function ReviewStep({
   const ooaGate = (
     <>
     {/* Required consent for the split out-of-area fee (Ryan,
-        2026-07-09/12): $25 charged now (the line above), $25 more
-        auto-charged when removal gets scheduled. Full details live in
-        the "What's this?" expander on the fee line right above —
-        deliberately not duplicated here. */}
+        2026-07-09/12): half charged now (the line above), half more when
+        removal gets scheduled — auto-charged to the card, or for an
+        invoice-billing payer added to their next invoice (2026-09-28).
+        Full details live in the "What's this?" expander on the fee line
+        right above — deliberately not duplicated here. */}
     {/* A disabled button with no stated reason reads as a broken page. */}
     {blockedOnQuoteFailure && (
       <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
@@ -474,11 +474,14 @@ export function ReviewStep({
               untouched — this per-order consent line is separate and has
               to state the real number. */}
           <span className="text-xs text-gray-700 leading-relaxed">
-            By selecting I Agree, there is a ${serviceAreaSurcharge.toFixed(2)} out of area fee to install. When removal is scheduled, ${(
+            {/* Invoice-billing payers are never charged at checkout or at
+                pickup — both halves land on their invoices, so "will be
+                charged" would read as a card charge they didn't expect. */}
+            By selecting I Agree, there is a ${serviceAreaSurcharge.toFixed(2)} out of area fee to install{isInvoiceBillingPayer ? ', billed on your invoice' : ''}. When removal is scheduled, ${(
               serviceAreaQuote && serviceAreaQuote.tier === 'surcharge'
                 ? (serviceAreaQuote.surchargeCents - Math.round(serviceAreaQuote.surchargeCents / 2)) / 100
                 : serviceAreaSurcharge
-            ).toFixed(2)} to pickup will be charged.
+            ).toFixed(2)} to pickup will be {isInvoiceBillingPayer ? 'added to your next invoice' : 'charged'}.
           </span>
         </label>
       </div>

@@ -42,12 +42,24 @@ interface PreviewAdjustment {
   amount: number
 }
 
+// The pickup half of an out-of-area fee, queued when removal was scheduled and
+// billed on the next invoice as its own line (Ryan, 2026-09-28).
+interface PreviewPickup {
+  order_id: string
+  order_number: string
+  property: string
+  removal_date: string | null
+  amount: number
+}
+
 interface PreviewResponse {
   orders: PreviewOrder[]
   service_requests: PreviewServiceRequest[]
   // Post-invoice edit adjustments the next bundle will sweep. Optional for
   // back-compat with cached pre-feature responses.
   adjustments?: PreviewAdjustment[]
+  // Out-of-area pickups the next bundle will bill. Optional, same reason.
+  pickups?: PreviewPickup[]
   /** Broker discount already netted out of `total` — shown so the headline
    *  number is explainable against the rows listed beneath it. */
   discount_percent?: number | null
@@ -58,6 +70,7 @@ interface PreviewResponse {
   order_count: number
   service_request_count: number
   adjustment_count?: number
+  pickup_count?: number
 }
 
 type EmailStatus = 'queued' | 'sending' | 'sent' | 'failed' | 'skipped'
@@ -81,6 +94,8 @@ interface InvoiceListRow {
   // (Invoice._count.serviceRequests). Optional for back-compat with cached
   // responses that don't include it yet.
   service_request_count?: number
+  // Out-of-area pickup lines billed on the invoice (Invoice._count.ooaPickupOrders).
+  pickup_count?: number
   created_at: string
   // Background email-worker state (Round 21). Optional for back-compat with
   // any in-flight responses that haven't picked up the new fields yet.
@@ -292,9 +307,11 @@ export default function AdminInvoicesPage() {
       {
         const oc = data.invoice.order_count ?? 0
         const sc = data.invoice.service_request_count ?? 0
+        const pc = data.invoice.pickup_count ?? 0
         const parts: string[] = []
         if (oc > 0) parts.push(`${oc} order${oc === 1 ? '' : 's'}`)
         if (sc > 0) parts.push(`${sc} service trip${sc === 1 ? '' : 's'}`)
+        if (pc > 0) parts.push(`${pc} out-of-area pickup${pc === 1 ? '' : 's'}`)
         const bundleLine = parts.join(' + ') || 'this invoice'
         // Worded as "queued for" — Round 21 moved the actual send to a
         // background worker so the response returns in <500ms. The list
@@ -522,6 +539,9 @@ export default function AdminInvoicesPage() {
                   {(preview.service_request_count ?? preview.service_requests?.length ?? 0) > 0 && (
                     <>{' + '}{preview.service_request_count ?? preview.service_requests?.length ?? 0} service trip{(preview.service_request_count ?? preview.service_requests?.length ?? 0) === 1 ? '' : 's'}</>
                   )}
+                  {(preview.pickup_count ?? preview.pickups?.length ?? 0) > 0 && (
+                    <>{' + '}{preview.pickup_count ?? preview.pickups?.length ?? 0} out-of-area pickup{(preview.pickup_count ?? preview.pickups?.length ?? 0) === 1 ? '' : 's'}</>
+                  )}
                 </p>
                 {/* Without this the headline total is quietly short by the
                     discount and disagrees with the order rows listed below. */}
@@ -535,8 +555,13 @@ export default function AdminInvoicesPage() {
                 <p className="text-lg font-bold text-pink-600">{formatCurrency(preview.total)}</p>
               </div>
             </div>
-            {preview.orders.length === 0 && (preview.service_requests?.length ?? 0) === 0 && (preview.adjustments?.length ?? 0) === 0 ? (
-              <p className="text-sm text-gray-500 py-4 text-center">No pending-invoice orders, service trips, or adjustments in this range.</p>
+            {preview.orders.length === 0 &&
+            (preview.service_requests?.length ?? 0) === 0 &&
+            (preview.adjustments?.length ?? 0) === 0 &&
+            (preview.pickups?.length ?? 0) === 0 ? (
+              <p className="text-sm text-gray-500 py-4 text-center">
+                No pending-invoice orders or service trips in this range, and no adjustments or out-of-area pickups waiting to be billed.
+              </p>
             ) : (
               <div className="space-y-4">
                 {preview.orders.length > 0 && (
@@ -587,6 +612,34 @@ export default function AdminInvoicesPage() {
                             <td className="px-3 py-2 text-gray-600">{sr.completed_at ? formatDate(sr.completed_at) : '—'}</td>
                             <td className="px-3 py-2 text-gray-600">{sr.property}</td>
                             <td className="px-3 py-2 text-right font-medium">{formatCurrency(sr.amount)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {/* Pickup halves of out-of-area fees, queued when removal was
+                    scheduled. Not limited to the date range — like adjustments,
+                    they ride on whichever invoice comes next. */}
+                {(preview.pickups?.length ?? 0) > 0 && (
+                  <div className="overflow-x-auto">
+                    <p className="text-xs font-semibold text-gray-500 uppercase mb-1">Out-of-area pickups</p>
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+                        <tr>
+                          <th className="px-3 py-2 text-left">Order #</th>
+                          <th className="px-3 py-2 text-left">Property</th>
+                          <th className="px-3 py-2 text-left">Pickup date</th>
+                          <th className="px-3 py-2 text-right">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {preview.pickups!.map((p) => (
+                          <tr key={p.order_id}>
+                            <td className="px-3 py-2 font-medium text-gray-900">{p.order_number}</td>
+                            <td className="px-3 py-2 text-gray-600">{p.property}</td>
+                            <td className="px-3 py-2 text-gray-600">{p.removal_date ? formatDate(p.removal_date) : '—'}</td>
+                            <td className="px-3 py-2 text-right font-medium">{formatCurrency(p.amount)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -720,6 +773,13 @@ export default function AdminInvoicesPage() {
                               {' + '}
                               <span className="text-gray-900">{inv.service_request_count}</span>
                               <span className="text-xs text-gray-500"> SR{(inv.service_request_count ?? 0) === 1 ? '' : 's'}</span>
+                            </>
+                          )}
+                          {(inv.pickup_count ?? 0) > 0 && (
+                            <>
+                              {' + '}
+                              <span className="text-gray-900">{inv.pickup_count}</span>
+                              <span className="text-xs text-gray-500"> pickup{(inv.pickup_count ?? 0) === 1 ? '' : 's'}</span>
                             </>
                           )}
                         </td>

@@ -36,7 +36,24 @@ export async function GET(
             stripeCustomerId: true,
             role: true,
             isServiceAreaExempt: true,
+            invoiceBilling: true,
           },
+        },
+        // Whoever paid for the order (placedBy ?? user) decides how a failed
+        // out-of-area pickup half is retried: a card charge, or a line on
+        // their next invoice (lib/orders/out-of-area-charge.ts routes on the
+        // payer's CURRENT flag, so the admin page labels the button by it).
+        placedBy: {
+          select: { id: true, fullName: true, email: true, invoiceBilling: true },
+        },
+        // The invoice the order itself was bundled on, and the (usually
+        // later) invoice its out-of-area pickup half was billed on — Ryan,
+        // 2026-09-28, so the admin page can name the invoice a pickup is on.
+        invoice: {
+          select: { id: true, invoiceNumber: true, status: true },
+        },
+        ooaPickupInvoice: {
+          select: { id: true, invoiceNumber: true, status: true, paidAt: true },
         },
         installation: {
           select: {

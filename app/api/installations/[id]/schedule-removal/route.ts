@@ -57,9 +57,10 @@ export async function POST(
         where: { id: updated.orderId },
         data: { postRentalStoppedAt: new Date() },
       })
-      // Fire the second half of a split out-of-area fee, if this order has
-      // one pending. Never blocks removal — a failed charge just flags the
-      // order for admin (see lib/orders/out-of-area-charge.ts).
+      // Collect the second half of a split out-of-area fee, if this order has
+      // one pending: charged to the card, or queued for the next invoice for
+      // an invoice-billing payer. Never blocks removal — a failed charge just
+      // flags the order for admin (see lib/orders/out-of-area-charge.ts).
       await chargeSecondOutOfAreaFee(updated.orderId)
     }
 

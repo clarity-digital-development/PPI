@@ -27,8 +27,8 @@ export default function EditOrderPage() {
   const [formData, setFormData] = useState<OrderFormData | null>(null)
   const [inventory, setInventory] = useState<WizardInventory | undefined>()
   const [editMeta, setEditMeta] = useState<NonNullable<OrderWizardProps['editMeta']> | null>(null)
-  // The PAYER's invoice billing — decides whether the out-of-area fee shown
-  // here is split or whole, exactly as the edit route decides it.
+  // The PAYER's invoice billing — words the out-of-area agreement for the
+  // invoice. Whether the fee is split or whole is editMeta.keepsUnsplitFee.
   const [invoiceBilling, setInvoiceBilling] = useState(false)
   // Owned-lockbox install and sign-pickup fees for this edit: what the order
   // was placed at, else the PAYER's perks (e.g. Semonin). See editFeeOverrides.
@@ -73,6 +73,7 @@ export default function EditOrderPage() {
           propertyState?: string
           propertyZip?: string
           keepsLockedServiceAreaFee?: boolean
+          keepsUnsplitServiceAreaFee?: boolean
         }
 
         // Set flatFee BEFORE setFormData so first paint already has the flat-fee
@@ -134,6 +135,8 @@ export default function EditOrderPage() {
             zip: order.propertyZip ?? '',
           },
           keepsLockedFee: !!order.keepsLockedServiceAreaFee,
+          // Same rule the edit route applies to split vs whole.
+          keepsUnsplitFee: !!order.keepsUnsplitServiceAreaFee,
         })
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load order')

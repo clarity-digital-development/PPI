@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
+import { loadInvoiceDetailForPdf } from '@/lib/invoices/load-detail'
 
 /**
  * Customer-facing invoice detail. Returns enough to render the pay page and
- * generate a PDF: invoice metadata + every order AND service trip bundled on
- * the invoice + property summaries + per-item unit/total prices.
+ * generate a PDF: invoice metadata + every order, service trip AND
+ * out-of-area pickup billed on the invoice + property summaries + per-item
+ * unit/total prices.
+ *
+ * The body is loadInvoiceDetailForPdf — the same loader the emailed PDF and
+ * the public PDF route use. This route used to carry a hand-written copy of
+ * that mapping, typed as nothing, so when a field was added to InvoiceDetail
+ * (the out-of-area pickups, Ryan 2026-09-28) the compiler couldn't flag that
+ * this copy never sent it and the pay page's totals stopped adding up.
  *
  * Authz: invoice owner OR admin. Team admins can NOT view another team
  * admin's invoice — the field belongs to a single billable account.
@@ -18,100 +25,13 @@ export async function GET(
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const { id } = await params
 
-  const invoice = await prisma.invoice.findUnique({
-    where: { id },
-    include: {
-      user: { select: { id: true, fullName: true, name: true, email: true, company: true } },
-      orders: {
-        include: { orderItems: true },
-        orderBy: { createdAt: 'asc' },
-      },
-      serviceRequests: {
-        include: {
-          installation: { select: { propertyAddress: true, propertyCity: true, propertyState: true, propertyZip: true } },
-        },
-        orderBy: { completedAt: 'asc' },
-      },
-    },
-  })
+  const invoice = await loadInvoiceDetailForPdf(id)
 
   if (!invoice) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  if (invoice.userId !== user.id && user.role !== 'admin') {
+  // customer.id is the invoice's userId (the loader maps it from invoice.user).
+  if (invoice.customer.id !== user.id && user.role !== 'admin') {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
-  return NextResponse.json({
-    invoice: {
-      id: invoice.id,
-      invoice_number: invoice.invoiceNumber,
-      status: invoice.status,
-      range_start: invoice.rangeStart.toISOString(),
-      range_end: invoice.rangeEnd.toISOString(),
-      subtotal: Number(invoice.subtotal),
-      // Subtotal split for the dashboard totals box — orders are the taxable
-      // base, service trips bill flat with no tax. Sum to `subtotal`.
-      orders_subtotal: invoice.orders.reduce((s, o) => s + Number(o.subtotal ?? 0), 0),
-      service_requests_subtotal: invoice.serviceRequests.reduce((s, sr) => s + Number(sr.invoiceAmount ?? 0), 0),
-      total: Number(invoice.total),
-      // Post-invoice edit adjustments swept onto THIS invoice — snapshot JSON,
-      // [{ order_id, order_number, property, amount_cents }]. Null pre-feature.
-      adjustments: (invoice.adjustments as Array<{ order_id: string; order_number: string; property: string; amount_cents: number }> | null) ?? [],
-      fuel_total: invoice.orders.reduce((s, o) => s + Number(o.fuelSurcharge ?? 0), 0),
-      tax_total: invoice.orders.reduce((s, o) => s + Number(o.tax ?? 0), 0),
-      expedite_total: invoice.orders.reduce((s, o) => s + Number(o.expediteFee ?? 0), 0),
-      no_post_total: invoice.orders.reduce((s, o) => s + Number(o.noPostSurcharge ?? 0), 0),
-      discount_total: invoice.orders.reduce((s, o) => s + Number(o.discount ?? 0), 0),
-      // Broker discount snapshot. This is the page the customer pays from and
-      // the PDF button reads the same object, so leaving it out showed a total
-      // short by the discount with no line explaining the gap.
-      broker_discount_percent: invoice.discountPercent !== null ? Number(invoice.discountPercent) : null,
-      broker_discount_amount: invoice.discountAmount !== null ? Number(invoice.discountAmount) : null,
-      sent_at: invoice.sentAt?.toISOString() ?? null,
-      paid_at: invoice.paidAt?.toISOString() ?? null,
-      customer: {
-        id: invoice.user.id,
-        name: invoice.user.fullName || invoice.user.name || invoice.user.email,
-        email: invoice.user.email,
-        company: invoice.user.company,
-      },
-      orders: invoice.orders.map((o) => ({
-        id: o.id,
-        order_number: o.orderNumber,
-        created_at: o.createdAt.toISOString(),
-        property_address: o.propertyAddress,
-        property_city: o.propertyCity,
-        property_state: o.propertyState,
-        property_zip: o.propertyZip,
-        subtotal: Number(o.subtotal),
-        total: Number(o.total),
-        flat_fee_applied: o.flatFeeApplied,
-        flat_fee_base: o.flatFeeBase !== null ? Number(o.flatFeeBase) : null,
-        placed_for_agent_name: o.placedForAgentName,
-        items: o.orderItems.map((it) => ({
-          description: it.description,
-          quantity: it.quantity,
-          // Surface both unit_price and total_price so the invoice line shows
-          // "$25.00 ea — $50.00" instead of just the line total.
-          unit_price: Number(it.unitPrice),
-          total_price: Number(it.totalPrice),
-        })),
-      })),
-      // Service trips bundled on the same invoice (see admin bundler). Each
-      // is a single charge line for the admin-set invoice_amount with the
-      // property pulled from the linked installation or the unlisted-address
-      // fallback fields.
-      service_requests: invoice.serviceRequests.map((sr) => ({
-        id: sr.id,
-        type: sr.type,
-        description: sr.description,
-        completed_at: sr.completedAt?.toISOString() ?? null,
-        created_at: sr.createdAt.toISOString(),
-        property_address: sr.installation?.propertyAddress ?? sr.unlistedAddress ?? null,
-        property_city: sr.installation?.propertyCity ?? sr.unlistedCity ?? null,
-        property_state: sr.installation?.propertyState ?? sr.unlistedState ?? null,
-        property_zip: sr.installation?.propertyZip ?? sr.unlistedZip ?? null,
-        amount: Number(sr.invoiceAmount || 0),
-      })),
-    },
-  })
+  return NextResponse.json({ invoice })
 }

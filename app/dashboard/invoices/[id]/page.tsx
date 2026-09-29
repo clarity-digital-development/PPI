@@ -12,7 +12,7 @@ import {
 import { getStripe } from '@/lib/stripe-client'
 import { Card, CardContent, Button, Badge } from '@/components/ui'
 import { Header } from '@/components/dashboard'
-import { Loader2, CheckCircle, FileText, Download, Wrench } from 'lucide-react'
+import { Loader2, CheckCircle, FileText, Download, Wrench, Truck } from 'lucide-react'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { exportInvoicePdf, type InvoiceDetail } from '@/lib/invoices/invoice-pdf'
 
@@ -139,6 +139,10 @@ export default function InvoiceDetailPage() {
   }
 
   const isPaid = invoice.status === 'paid' || justPaid
+  // Out-of-area pickup halves billed on this invoice (Ryan, 2026-09-28). Read
+  // defensively — a tab opened before the deploy holds a response without them.
+  const pickups = invoice.pickups ?? []
+  const pickupsSubtotal = invoice.pickups_subtotal ?? 0
 
   return (
     <div>
@@ -197,6 +201,7 @@ export default function InvoiceDetailPage() {
                   const parts: string[] = []
                   if (invoice.orders.length) parts.push(`${invoice.orders.length} bundled order${invoice.orders.length === 1 ? '' : 's'}`)
                   if (invoice.service_requests.length) parts.push(`${invoice.service_requests.length} service trip${invoice.service_requests.length === 1 ? '' : 's'}`)
+                  if (pickups.length) parts.push(`${pickups.length} out-of-area pickup${pickups.length === 1 ? '' : 's'}`)
                   return parts.join(' + ') || 'this invoice'
                 })()}.
               </p>
@@ -353,20 +358,57 @@ export default function InvoiceDetailPage() {
           </Card>
         )}
 
+        {/* Out-of-area pickups — the second half of an out-of-area fee,
+            billed when the sign's removal was scheduled. Its order usually
+            sits on an earlier invoice, so each links back to the order. */}
+        {pickups.length > 0 && (
+          <Card className="mb-6">
+            <CardContent className="p-6">
+              <h2 className="text-base font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                <Truck className="w-4 h-4 text-pink-500" /> Out-of-area pickups
+              </h2>
+              <div className="space-y-3">
+                {pickups.map((p) => (
+                  <div key={p.order_id} className="border border-gray-200 rounded-lg p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-medium text-gray-900">
+                          Out-of-area pickup — {p.property_address}, {p.property_city}, {p.property_state} {p.property_zip}
+                        </p>
+                        <Link href={`/dashboard/orders/${p.order_id}`} className="text-xs font-medium text-pink-600 hover:text-pink-700">
+                          Order {p.order_number}
+                        </Link>
+                        <p className="text-xs text-gray-500">
+                          {p.removal_date ? `Pickup ${formatDate(p.removal_date)}` : 'Pickup date not set'}
+                        </p>
+                        {p.placed_for_agent_name && (
+                          <p className="text-xs text-pink-600 mt-1">Agent: {p.placed_for_agent_name}</p>
+                        )}
+                      </div>
+                      <p className="font-semibold text-gray-900">{formatCurrency(p.amount)}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Grand total — broken out so Subtotal → Total is fully explained */}
         <Card>
           <CardContent className="p-6">
             <div className="space-y-2 text-sm">
-              {/* Split when service trips exist so the broker sees why Sales
-                  Tax below isn't 6% × Subtotal — service trips aren't taxable.
-                  Each row independently > 0-gated so an SR-only invoice doesn't
-                  render a confusing "Orders subtotal $0.00" line. Order-only
-                  invoices fall through to the single Subtotal line, preserving
-                  the prior layout exactly. "(non-taxable)" carries the
-                  explanation; the orders row stays neutral because discounts/
-                  fees mean 6% × orders_subtotal ≠ tax_total in the general
-                  case. */}
-              {invoice.service_requests_subtotal > 0 ? (
+              {/* Split when service trips or out-of-area pickups exist so the
+                  broker sees why Sales Tax below isn't 6% × Subtotal — neither
+                  is taxable. Each row independently > 0-gated so an SR-only or
+                  pickup-only invoice doesn't render a confusing "Orders
+                  subtotal $0.00" line, and the rows always sum to Subtotal.
+                  Order-only invoices fall through to the single Subtotal line,
+                  preserving the prior layout exactly. "(non-taxable)" carries
+                  the explanation; the orders row stays neutral because
+                  discounts/fees mean 6% × orders_subtotal ≠ tax_total in the
+                  general case. Same rows as lib/invoices/invoice-pdf.ts. */}
+              {invoice.service_requests_subtotal > 0 || pickupsSubtotal > 0 ? (
                 <>
                   {invoice.orders_subtotal > 0 && (
                     <div className="flex justify-between">
@@ -374,10 +416,18 @@ export default function InvoiceDetailPage() {
                       <span className="text-gray-900">{formatCurrency(invoice.orders_subtotal)}</span>
                     </div>
                   )}
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">Service trips (non-taxable)</span>
-                    <span className="text-gray-900">{formatCurrency(invoice.service_requests_subtotal)}</span>
-                  </div>
+                  {invoice.service_requests_subtotal > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Service trips (non-taxable)</span>
+                      <span className="text-gray-900">{formatCurrency(invoice.service_requests_subtotal)}</span>
+                    </div>
+                  )}
+                  {pickupsSubtotal > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Out-of-area pickups (non-taxable)</span>
+                      <span className="text-gray-900">{formatCurrency(pickupsSubtotal)}</span>
+                    </div>
+                  )}
                 </>
               ) : (
                 <div className="flex justify-between">

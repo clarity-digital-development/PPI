@@ -228,13 +228,14 @@ export async function POST(request: NextRequest) {
     // persisted on the Order row (serviceAreaCenterId / DriveMinutes /
     // DriveTimeSource) so admin can audit without leaking to the customer.
     //
-    // Split fee (Ryan, 2026-07-09/12): the one exception is an invoice-billing
-    // payer. Their orders accumulate into a bundled Invoice and nothing is
-    // collected at checkout, while the pickup half is charged to a saved CARD
-    // when removal gets scheduled — there is no card to take it from. So they
-    // keep the single full-amount item, no consent, no second charge.
-    // Everyone else pays HALF now (this item) and half when removal gets
-    // scheduled — see lib/orders/out-of-area-charge.ts.
+    // Split fee (Ryan, 2026-07-09/12): every payer pays HALF now (this item)
+    // and half when removal gets scheduled — see lib/orders/out-of-area-charge.ts.
+    // A card payer's pickup half is charged to their saved card; an
+    // invoice-billing payer's is added to their next bundled invoice (Ryan,
+    // 2026-09-28: "add to invoice instead of charge card"). Invoice payers
+    // used to be the one exception — the whole both-trips fee as one item, no
+    // consent, no second charge — because the pickup half could only go to a
+    // card. Orders placed then keep that (lib/orders/service-area-lock.ts).
     //
     // Flat-fee used to be exempted from the split here too, on the grounds
     // that its total ignored item prices. It no longer does for this fee — the
@@ -242,7 +243,7 @@ export async function POST(request: NextRequest) {
     // flat fee by itself is no reason to skip the split (Ryan, 2026-09-27).
     //
     // orderItemSurchargeCents tracks exactly what dollar amount ends up in
-    // THIS item (half or full) — Order.serviceAreaSurchargeCents below is
+    // THIS item (the install half) — Order.serviceAreaSurchargeCents below is
     // set to this, not the always-full sa.surchargeCents, because the edit
     // route (app/api/orders/[id]/edit/route.ts) treats that column as the
     // ground truth for how much of the order's total is "the surcharge
@@ -253,24 +254,20 @@ export async function POST(request: NextRequest) {
     let orderItemSurchargeCents = 0
     if (sa.tier === 'surcharge' && sa.surchargeCents > 0) {
       const description = 'Out of Area Service Fee'
-      const skipsSplit = !!payer.invoiceBilling
-      orderItemSurchargeCents = sa.surchargeCents
-      if (!skipsSplit) {
-        // Required consent — server-side gate; the review-step checkbox is
-        // client-side only and can't be trusted alone for a billing decision.
-        if (orderData.service_area_fee_agreed !== true) {
-          return NextResponse.json(
-            {
-              error: 'Please agree to the out-of-area fee terms before placing your order.',
-              code: 'service_area_consent_required',
-            },
-            { status: 400 }
-          )
-        }
-        const firstChargeCents = Math.round(sa.surchargeCents / 2)
-        pendingSecondChargeCents = sa.surchargeCents - firstChargeCents
-        orderItemSurchargeCents = firstChargeCents
+      // Required consent — server-side gate; the review-step checkbox is
+      // client-side only and can't be trusted alone for a billing decision.
+      if (orderData.service_area_fee_agreed !== true) {
+        return NextResponse.json(
+          {
+            error: 'Please agree to the out-of-area fee terms before placing your order.',
+            code: 'service_area_consent_required',
+          },
+          { status: 400 }
+        )
       }
+      const firstChargeCents = Math.round(sa.surchargeCents / 2)
+      pendingSecondChargeCents = sa.surchargeCents - firstChargeCents
+      orderItemSurchargeCents = firstChargeCents
       const itemDollars = orderItemSurchargeCents / 100
       orderData.items.push({
         // Server-injected: 'surcharge' is intentionally NOT in the client Zod enum
@@ -431,7 +428,7 @@ export async function POST(request: NextRequest) {
     // flat-fee order billed the same as one next door; Ryan wants it charged
     // on top, in its own bucket, and exempts an account per-profile when he
     // doesn't (2026-09-27). The amount is the one already decided above —
-    // half for a split payer, full for invoice-billing.
+    // the install half.
     const isFlatFee = !!payer.flatFeeBilling
     const flat = isFlatFee
       ? computeFlatFeePricing(undefined, undefined, orderItemSurchargeCents / 100)
@@ -443,8 +440,8 @@ export async function POST(request: NextRequest) {
     const finalExpediteFee = flat ? 0 : pricing.expediteFee
     const finalTax = flat ? flat.tax : pricing.tax
     const total = flat ? flat.total : pricing.total
-    // Matches orderItemSurchargeCents (the actual OrderItem amount — half for
-    // a split order, full for invoice-billing) so the edit route's
+    // Matches orderItemSurchargeCents (the actual OrderItem amount — the
+    // install half) so the edit route's
     // reconciliation math stays correct. NOT the always-full sa.surchargeCents.
     // Flat-fee orders keep it too now: it is how the edit route recovers the
     // locked flat rate (subtotal − this; lib/orders/pricing.ts lockedFlatBase).

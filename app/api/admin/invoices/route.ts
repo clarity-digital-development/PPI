@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { randomBytes } from 'node:crypto'
+import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { audit, AuditAction } from '@/lib/audit'
 import { processInvoiceSendJob } from '@/lib/invoices/send-invoice-job'
 import { invoiceDiscount } from '@/lib/invoices/discount'
 import { uncollectableInvoice, uncollectableMessage } from '@/lib/invoices/bundle-errors'
+import {
+  attachOOAPickups,
+  findSweepableOOAPickups,
+  ooaPickupCents,
+  toInvoicePickup,
+} from '@/lib/invoices/ooa-pickups'
 
 /**
  * Admin invoice bundler.
@@ -18,6 +25,20 @@ import { uncollectableInvoice, uncollectableMessage } from '@/lib/invoices/bundl
  * 'pending_invoice' onto a new Invoice row, then emails the customer a link
  * to /dashboard/invoices/[id] where they can pay the whole bundle.
  */
+
+/**
+ * Which orders an invoice for this customer bundles — preview and POST share
+ * it so they can never disagree. A team_admin also pays for the orders they
+ * place on an agent's behalf (userId = the agent, placedByUserId = the
+ * team_admin), the same rule the broker self-serve bundler has always used
+ * (app/api/invoices/bundle/route.ts). Matching userId alone meant a
+ * brokerage's on-behalf orders could never be invoiced from /admin/invoices.
+ */
+function orderOwnershipWhere(customerId: string, role: string | null | undefined): Prisma.OrderWhereInput {
+  return role === 'team_admin'
+    ? { OR: [{ userId: customerId }, { placedByUserId: customerId }] }
+    : { userId: customerId }
+}
 
 function parseInclusiveRange(startRaw: string | null, endRaw: string | null) {
   const startDate = startRaw && !isNaN(Date.parse(startRaw)) ? new Date(startRaw) : null
@@ -57,10 +78,17 @@ export async function GET(request: NextRequest) {
     if (!customerId) {
       return NextResponse.json({ error: 'customerId is required for preview' }, { status: 400 })
     }
+    // Role picks the order-ownership rule; the discount rate is the same one
+    // the POST will apply, so the admin never previews one number and sends
+    // another.
+    const previewCustomer = await prisma.user.findUnique({
+      where: { id: customerId },
+      select: { role: true, invoiceDiscountPercent: true },
+    })
     const [orders, serviceRequests] = await Promise.all([
       prisma.order.findMany({
         where: {
-          userId: customerId,
+          ...orderOwnershipWhere(customerId, previewCustomer?.role),
           paymentStatus: 'pending_invoice',
           invoiceId: null,
           ...(startDate || endDate
@@ -117,22 +145,26 @@ export async function GET(request: NextRequest) {
     })
     const adjustmentCents = adjustmentOrders.reduce((s, o) => s + o.postInvoiceAdjustmentCents, 0)
 
+    // Out-of-area pickup halves queued for this account (Ryan, 2026-09-28) —
+    // the SAME helper the POST claims with, so the preview can't list a
+    // different set of lines from the invoice that gets sent. No date-range
+    // filter, like adjustments: a pickup belongs to whichever invoice is next.
+    const pickups = await findSweepableOOAPickups(prisma, customerId, orders.map((o) => o.id), { kind: 'all' })
+    const pickupCents = ooaPickupCents(pickups)
+
     const ordersSubtotal = orders.reduce((s, o) => s + Number(o.subtotal || 0), 0)
     const ordersTotal = orders.reduce((s, o) => s + Number(o.total || 0), 0)
     const srTotal = serviceRequests.reduce((s, sr) => s + Number(sr.invoiceAmount || 0), 0)
     // Adjustments ride into TOTAL only. Folding them into subtotal breaks the
     // display math everywhere subtotal is re-derived live from the bundled
     // orders (customer page, PDF) — the adjustment source orders belong to
-    // OLD invoices and are never in this invoice's orders relation.
-    const subtotal = ordersSubtotal + srTotal
-    // Same discount the POST will apply, so the admin never previews one
-    // number and sends another.
-    const previewCustomer = await prisma.user.findUnique({
-      where: { id: customerId },
-      select: { invoiceDiscountPercent: true },
-    })
+    // OLD invoices and are never in this invoice's orders relation. Pickups
+    // are different: they're real lines on THIS invoice (re-derived live via
+    // ooaPickupOrders), untaxed like service trips, so they sit in subtotal
+    // and the broker discount covers them.
+    const subtotal = ordersSubtotal + srTotal + pickupCents / 100
     const discount = invoiceDiscount(subtotal, previewCustomer?.invoiceDiscountPercent)
-    const total = ordersTotal + srTotal + adjustmentCents / 100 - discount.amount
+    const total = ordersTotal + srTotal + pickupCents / 100 + adjustmentCents / 100 - discount.amount
     return NextResponse.json({
       discount_percent: discount.amount > 0 ? discount.percent : null,
       discount_amount: discount.amount > 0 ? discount.amount : null,
@@ -162,12 +194,23 @@ export async function GET(request: NextRequest) {
             : '—',
         amount: Number(sr.invoiceAmount || 0),
       })),
+      pickups: pickups.map((p) => {
+        const line = toInvoicePickup(p)
+        return {
+          order_id: line.order_id,
+          order_number: line.order_number,
+          property: `${line.property_address}, ${line.property_city}, ${line.property_state} ${line.property_zip}`,
+          removal_date: line.removal_date,
+          amount: line.amount,
+        }
+      }),
       subtotal,
       total,
-      count: orders.length + serviceRequests.length + adjustmentOrders.length,
+      count: orders.length + serviceRequests.length + adjustmentOrders.length + pickups.length,
       order_count: orders.length,
       service_request_count: serviceRequests.length,
       adjustment_count: adjustmentOrders.length,
+      pickup_count: pickups.length,
     })
   }
 
@@ -181,8 +224,9 @@ export async function GET(request: NextRequest) {
     include: {
       user: { select: { id: true, fullName: true, email: true, company: true } },
       // serviceRequests count needed so the admin list shows "N orders + M
-      // service trips" alongside paid/sent dates instead of just orders.
-      _count: { select: { orders: true, serviceRequests: true } },
+      // service trips" alongside paid/sent dates instead of just orders;
+      // ooaPickupOrders so a pickup-only invoice doesn't read as "0 orders".
+      _count: { select: { orders: true, serviceRequests: true, ooaPickupOrders: true } },
     },
     orderBy: { createdAt: 'desc' },
     take: 100,
@@ -204,6 +248,7 @@ export async function GET(request: NextRequest) {
       paid_at: i.paidAt?.toISOString() ?? null,
       order_count: i._count.orders,
       service_request_count: i._count.serviceRequests,
+      pickup_count: i._count.ooaPickupOrders,
       created_at: i.createdAt.toISOString(),
       // Background-worker state for the email-status badge + Resend button.
       email_status: i.emailStatus,
@@ -256,6 +301,8 @@ export async function POST(request: NextRequest) {
       // Snapshotted onto the invoice below, so changing the account's rate
       // later never rewrites what an already-sent invoice said.
       invoiceDiscountPercent: true,
+      // Picks the order-ownership rule — see orderOwnershipWhere.
+      role: true,
     },
   })
   if (!customer) return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
@@ -284,7 +331,7 @@ export async function POST(request: NextRequest) {
     const [orders, serviceRequests] = await Promise.all([
       tx.order.findMany({
         where: {
-          userId: customerId,
+          ...orderOwnershipWhere(customerId, customer.role),
           paymentStatus: 'pending_invoice',
           invoiceId: null,
           createdAt: { gte: startDate, lte: endDate },
@@ -328,15 +375,24 @@ export async function POST(request: NextRequest) {
     })
     const adjustmentCents = adjustmentOrders.reduce((s, o) => s + o.postInvoiceAdjustmentCents, 0)
 
-    if (orders.length === 0 && serviceRequests.length === 0 && adjustmentOrders.length === 0) {
+    // Queued out-of-area pickup halves — same helper + scope as the preview.
+    // Read inside the transaction and claimed below with a per-row
+    // conditional update, so two parallel sends can't both bill one.
+    const pickups = await findSweepableOOAPickups(tx, customerId, orders.map((o) => o.id), { kind: 'all' })
+    const pickupCents = ooaPickupCents(pickups)
+
+    // A pickup-only invoice is a normal case: the install was billed last
+    // month and the sign came down this month.
+    if (orders.length === 0 && serviceRequests.length === 0 && adjustmentOrders.length === 0 && pickups.length === 0) {
       return { invoice: null, ordersCount: 0, serviceRequestsCount: 0, subtotal: 0, total: 0 }
     }
 
     const ordersSubtotal = orders.reduce((s, o) => s + Number(o.subtotal || 0), 0)
     const ordersTotal = orders.reduce((s, o) => s + Number(o.total || 0), 0)
     const srTotal = serviceRequests.reduce((s, sr) => s + Number(sr.invoiceAmount || 0), 0)
-    // Adjustments ride into TOTAL only — see the preview branch comment.
-    const subtotal = ordersSubtotal + srTotal
+    // Adjustments ride into TOTAL only; pickups sit in subtotal (discounted,
+    // untaxed) — see the preview branch comment.
+    const subtotal = ordersSubtotal + srTotal + pickupCents / 100
     // Broker discount off the pre-tax subtotal — see lib/invoices/discount.ts.
     // Deliberately NOT applied to `adjustmentCents`: an adjustment is a
     // tax-inclusive correction to an order that a PREVIOUS invoice already
@@ -347,13 +403,13 @@ export async function POST(request: NextRequest) {
     // this is a documented choice rather than an observed behaviour — revisit
     // with Ryan the first time an invoice actually carries one.
     const discount = invoiceDiscount(subtotal, customer.invoiceDiscountPercent)
-    const total = ordersTotal + srTotal + adjustmentCents / 100 - discount.amount
+    const total = ordersTotal + srTotal + pickupCents / 100 + adjustmentCents / 100 - discount.amount
 
     // Net-negative or zero invoices can't be collected via a Stripe Payment
     // Link. Rare (needs credits exceeding the period's new work) — surface it
     // to the admin instead of creating an uncollectable invoice.
     if (total <= 0) {
-      const charges = (ordersTotal + srTotal).toFixed(2)
+      const charges = (ordersTotal + srTotal + pickupCents / 100).toFixed(2)
       throw uncollectableInvoice(
         discount.amount > 0
           ? `This period's charges ($${charges}) don't cover the ${discount.percent}% discount (-$${discount.amount.toFixed(2)}) plus pending adjustments (-$${Math.abs(adjustmentCents / 100).toFixed(2)}). Handle it manually, or wait for more orders before invoicing.`
@@ -422,6 +478,9 @@ export async function POST(request: NextRequest) {
         throw new Error(`Concurrent bundle race: expected to attach ${serviceRequests.length} SRs, attached ${srUpdate.count}`)
       }
     }
+    // Claim each pickup half for this invoice; a row that changed or was
+    // claimed mid-bundle throws the race error and rolls everything back.
+    await attachOOAPickups(tx, pickups, invoice.id)
 
     // Sweep the adjustments: zero each source column ONLY if it still holds
     // the value we read (an edit saving mid-bundle would change it — count
@@ -447,10 +506,12 @@ export async function POST(request: NextRequest) {
       serviceRequestsCount: serviceRequests.length,
       adjustmentsCount: adjustmentOrders.length,
       adjustmentCents,
+      pickupsCount: pickups.length,
       subtotal,
       total,
       orderNumbers: orders.map((o) => o.orderNumber),
       serviceRequestIds: serviceRequests.map((sr) => sr.id),
+      pickupOrderNumbers: pickups.map((p) => p.orderNumber),
       publicPdfToken: invoice.publicPdfToken!,
     }
   })
@@ -477,7 +538,7 @@ export async function POST(request: NextRequest) {
 
   if (!result.invoice) {
     return NextResponse.json(
-      { error: 'No pending-invoice orders or service trips found in this date range.' },
+      { error: 'Nothing to bundle: no pending-invoice orders or service trips in this date range, and no adjustments or out-of-area pickups waiting to be billed.' },
       { status: 400 },
     )
   }
@@ -504,6 +565,8 @@ export async function POST(request: NextRequest) {
       orderNumbers: result.orderNumbers,
       serviceRequestCount: result.serviceRequestsCount,
       serviceRequestIds: result.serviceRequestIds,
+      pickupCount: result.pickupsCount,
+      pickupOrderNumbers: result.pickupOrderNumbers,
       total: result.total,
       rangeStart: startDate.toISOString(),
       rangeEnd: endDate.toISOString(),
@@ -548,6 +611,7 @@ export async function POST(request: NextRequest) {
       total: Number(result.invoice.total),
       order_count: result.ordersCount,
       service_request_count: result.serviceRequestsCount,
+      pickup_count: result.pickupsCount,
       email_status: 'queued',
       recipient_email: resolvedRecipientEmail,
     },

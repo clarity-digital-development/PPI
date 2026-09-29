@@ -216,12 +216,22 @@ export default function CartPage() {
         // out-of-area agreement, bad schedule). Flag THAT row rather than
         // stamping one message across all N — "Order 2: please agree…" on
         // every row gives the broker nothing to act on.
-        const badIndex = typeof data.order_index === 'number' ? data.order_index : null
+        // Some failures name several rows at once (every row missing its
+        // out-of-area agreement, every unserviceable ZIP) — flag each of them.
+        const badIndexes = new Set<number>(
+          Array.isArray(data.failed_orders)
+            ? data.failed_orders
+                .map((f: { order_index?: unknown }) => f.order_index)
+                .filter((n: unknown): n is number => typeof n === 'number')
+            : typeof data.order_index === 'number'
+              ? [data.order_index]
+              : []
+        )
         setResults(items.map((i, idx) => ({
           cartItemId: i.id,
           status: 'error' as const,
           error:
-            badIndex === null || idx === badIndex
+            badIndexes.size === 0 || badIndexes.has(idx)
               ? (data.error || 'Batch failed')
               : 'Not placed — fix the flagged order above, then check out again.',
         })))

@@ -8,6 +8,12 @@ import { buildInvoicePdfBytes } from '@/lib/invoices/invoice-pdf'
 import { loadInvoiceDetailForPdf } from '@/lib/invoices/load-detail'
 import { invoiceDiscount } from '@/lib/invoices/discount'
 import { uncollectableInvoice, uncollectableMessage } from '@/lib/invoices/bundle-errors'
+import {
+  attachOOAPickups,
+  findSweepableOOAPickups,
+  ooaPickupCents,
+  type PreviouslyBilledScope,
+} from '@/lib/invoices/ooa-pickups'
 import { createInvoiceCheckoutSession } from '@/lib/stripe/server'
 
 /**
@@ -113,6 +119,20 @@ export async function POST(request: NextRequest) {
   // for the next unfiltered (or admin) bundle.
   const sweepAdjustments = agent === null && minPrice === null && maxPrice === null
 
+  // Out-of-area pickup halves (Ryan, 2026-09-28) follow the same slicing
+  // logic, one notch finer. A pickup whose order is on THIS invoice always
+  // rides along (the helper includes it regardless of scope). Beyond that: an
+  // agent-filtered bundle takes only that agent's queued pickups, so agent A's
+  // pickup never lands on the invoice cut for agent B; a price-filtered bundle
+  // takes none (a pickup has no price the filter could honestly match); an
+  // unfiltered bundle takes everything queued.
+  const pickupScope: PreviouslyBilledScope =
+    minPrice !== null || maxPrice !== null
+      ? { kind: 'none' }
+      : agent
+        ? { kind: 'agent', agent }
+        : { kind: 'all' }
+
   // SRs have no placedByUserId column — broker only bundles SRs they own
   // directly. Their team members' SRs aren't bundled here (would need an
   // agent-level filter that doesn't exist on SR today).
@@ -181,7 +201,14 @@ export async function POST(request: NextRequest) {
       : []
     const adjustmentCents = adjustmentOrders.reduce((s, o) => s + o.postInvoiceAdjustmentCents, 0)
 
-    if (orders.length === 0 && serviceRequests.length === 0 && adjustmentOrders.length === 0) {
+    // Queued out-of-area pickup halves — same helper the admin bundler uses,
+    // scoped by pickupScope above. Claimed below per row, race-safe.
+    const pickups = await findSweepableOOAPickups(tx, user.id, orders.map((o) => o.id), pickupScope)
+    const pickupCents = ooaPickupCents(pickups)
+
+    // A pickup-only invoice is a normal case: the install was billed last
+    // month and the sign came down this month.
+    if (orders.length === 0 && serviceRequests.length === 0 && adjustmentOrders.length === 0 && pickups.length === 0) {
       return { invoice: null, ordersCount: 0, serviceRequestsCount: 0, subtotal: 0, total: 0 }
     }
 
@@ -189,14 +216,16 @@ export async function POST(request: NextRequest) {
     const ordersTotal = orders.reduce((s, o) => s + Number(o.total || 0), 0)
     const srTotal = serviceRequests.reduce((s, sr) => s + Number(sr.invoiceAmount || 0), 0)
     // Adjustments ride into TOTAL only — subtotal must keep matching the live
-    // sum of the bundled orders (customer page + PDF re-derive it from them).
-    const subtotal = ordersSubtotal + srTotal
+    // sum of the bundled lines (customer page + PDF re-derive it from them).
+    // Pickups ARE lines on this invoice (untaxed, like service trips), so they
+    // sit in subtotal and the broker discount covers them.
+    const subtotal = ordersSubtotal + srTotal + pickupCents / 100
     // Broker discount off the pre-tax subtotal — see lib/invoices/discount.ts.
     const discount = invoiceDiscount(subtotal, profile.invoiceDiscountPercent)
-    const total = ordersTotal + srTotal + adjustmentCents / 100 - discount.amount
+    const total = ordersTotal + srTotal + pickupCents / 100 + adjustmentCents / 100 - discount.amount
 
     if (total <= 0) {
-      const charges = (ordersTotal + srTotal).toFixed(2)
+      const charges = (ordersTotal + srTotal + pickupCents / 100).toFixed(2)
       throw uncollectableInvoice(
         discount.amount > 0
           ? `This period's charges ($${charges}) don't cover your ${discount.percent}% discount (-$${discount.amount.toFixed(2)}) plus pending adjustments (-$${Math.abs(adjustmentCents / 100).toFixed(2)}). Contact Pink Posts to settle it directly.`
@@ -251,6 +280,8 @@ export async function POST(request: NextRequest) {
         throw new Error(`Concurrent bundle race: expected ${serviceRequests.length} SRs, attached ${r.count}`)
       }
     }
+    // Claim each pickup half; a mismatch throws the race error → full rollback.
+    await attachOOAPickups(tx, pickups, invoice.id)
 
     // Sweep: zero each adjustment only if it still holds the value we read;
     // an edit racing this bundle changes it → count mismatch → full rollback.
@@ -272,10 +303,12 @@ export async function POST(request: NextRequest) {
       ordersCount: orders.length,
       serviceRequestsCount: serviceRequests.length,
       adjustmentsCount: adjustmentOrders.length,
+      pickupsCount: pickups.length,
       subtotal,
       total,
       orderNumbers: orders.map((o) => o.orderNumber),
       serviceRequestIds: serviceRequests.map((sr) => sr.id),
+      pickupOrderNumbers: pickups.map((p) => p.orderNumber),
       publicPdfToken: invoice.publicPdfToken!,
     }
   })
@@ -300,7 +333,7 @@ export async function POST(request: NextRequest) {
 
   if (!result.invoice) {
     return NextResponse.json(
-      { error: 'No pending-invoice orders or service trips matched your filters.' },
+      { error: 'Nothing to bundle: no pending-invoice orders, service trips, or out-of-area pickups matched your filters.' },
       { status: 400 },
     )
   }
@@ -326,7 +359,7 @@ export async function POST(request: NextRequest) {
       invoiceNumber: result.invoice.invoiceNumber,
       amountInCents: Math.round(Number(result.invoice.total) * 100),
       customerEmail: recipientEmail,
-      description: `${result.ordersCount} order(s) + ${result.serviceRequestsCount} service trip(s) — ${startDate.toISOString().slice(0, 10)} → ${endDate.toISOString().slice(0, 10)}`,
+      description: `${result.ordersCount} order(s) + ${result.serviceRequestsCount} service trip(s)${result.pickupsCount > 0 ? ` + ${result.pickupsCount} out-of-area pickup(s)` : ''} — ${startDate.toISOString().slice(0, 10)} → ${endDate.toISOString().slice(0, 10)}`,
       successUrl: `${baseUrl}/invoice-paid?invoice=${result.invoice.invoiceNumber}`,
       cancelUrl: `${baseUrl}/invoice-cancelled?invoice=${result.invoice.invoiceNumber}`,
     })
@@ -367,6 +400,7 @@ export async function POST(request: NextRequest) {
           total: Number(result.invoice.total),
           orderCount: result.ordersCount,
           serviceRequestCount: result.serviceRequestsCount,
+          pickupCount: result.pickupsCount,
           pdfBytes,
           pdfUrl: `${baseUrl}/api/invoices/${result.invoice.id}/pdf?token=${result.publicPdfToken}`,
           payUrl: checkoutUrl,
@@ -400,6 +434,8 @@ export async function POST(request: NextRequest) {
       orderNumbers: result.orderNumbers,
       serviceRequestCount: result.serviceRequestsCount,
       serviceRequestIds: result.serviceRequestIds,
+      pickupCount: result.pickupsCount,
+      pickupOrderNumbers: result.pickupOrderNumbers,
       rangeStart: startDate.toISOString(),
       rangeEnd: endDate.toISOString(),
       filters: { minPrice, maxPrice, agent },
@@ -418,6 +454,7 @@ export async function POST(request: NextRequest) {
       total: Number(result.invoice.total),
       order_count: result.ordersCount,
       service_request_count: result.serviceRequestsCount,
+      pickup_count: result.pickupsCount,
       pdf_url: `${baseUrl}/api/invoices/${result.invoice.id}/pdf?token=${result.publicPdfToken}`,
       pay_url: checkoutUrl,
     },

@@ -153,9 +153,13 @@ export async function processInvoiceSendJob(args: SendInvoiceJobArgs): Promise<v
   // 6. Send. Use the recipient resolved at the route / resend-endpoint
   //    boundary — NOT re-derived here, so the address can't drift.
   try {
+    // Counted here rather than read off the PDF detail above: PDF generation
+    // is allowed to fail, and the email's count line must still be right.
+    // ooaPickupOrders so a pickup-only invoice (Ryan, 2026-09-28) doesn't
+    // read as "this invoice" in the email.
     const counts = await prisma.invoice.findUniqueOrThrow({
       where: { id: invoiceId },
-      select: { _count: { select: { orders: true, serviceRequests: true } } },
+      select: { _count: { select: { orders: true, serviceRequests: true, ooaPickupOrders: true } } },
     })
     const result = await sendInvoiceEmail({
       invoiceId: invoice.id,
@@ -168,6 +172,7 @@ export async function processInvoiceSendJob(args: SendInvoiceJobArgs): Promise<v
       total: Number(invoice.total),
       orderCount: counts._count.orders,
       serviceRequestCount: counts._count.serviceRequests,
+      pickupCount: counts._count.ooaPickupOrders,
       pdfBytes,
       pdfUrl: invoice.publicPdfToken
         ? `${baseUrl}/api/invoices/${invoice.id}/pdf?token=${invoice.publicPdfToken}`

@@ -4,6 +4,7 @@ import { getCurrentUser } from '@/lib/auth-utils'
 import { createPaymentIntent, confirmPaymentIntent, getStripeErrorMessage } from '@/lib/stripe/server'
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
+import { isInvoicePathOrder } from '@/lib/orders/service-area-lock'
 
 export async function POST(
   request: NextRequest,
@@ -48,8 +49,16 @@ export async function POST(
     // Invoice-billing customers' cards must never be charged via an admin
     // button. Their orders bundle onto an invoice and only the customer's
     // accountant pays it via the Stripe Payment Link. Refuse with a clear
-    // explanation so admin knows to bundle instead.
-    if (order.user.invoiceBilling) {
+    // explanation so admin knows to bundle instead. Checked on the order and
+    // its payer (placedBy ?? user), not just order.user: a team_admin's
+    // on-behalf order belongs to the agent but sits on the broker's invoice.
+    const payerInvoiceBilling = order.placedByUserId
+      ? !!(await prisma.user.findUnique({
+          where: { id: order.placedByUserId },
+          select: { invoiceBilling: true },
+        }))?.invoiceBilling
+      : order.user.invoiceBilling
+    if (isInvoicePathOrder(order) || payerInvoiceBilling) {
       return NextResponse.json(
         {
           error: 'This customer is on invoice billing — cards cannot be charged directly. Bundle this order onto an invoice via /admin/invoices and the customer will pay the bundled invoice.',

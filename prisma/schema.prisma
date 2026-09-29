@@ -457,17 +457,27 @@ model Order {
   serviceAreaDriveTimeSource             String?                        @map("service_area_drive_time_source")
   // Split out-of-area fee (Ryan, 2026-07-09/12): the OOA surcharge splits
   // into half charged now (folded into `total` via the surcharge OrderItem)
-  // and half auto-charged when removal gets scheduled — see
+  // and half collected when removal gets scheduled — see
   // lib/orders/out-of-area-charge.ts. Null on every order that doesn't carry
-  // a pending/completed second charge (no surcharge, invoice-billing payer,
-  // or a pre-split legacy order). 'pending' until removal is scheduled, then
-  // 'paid' or 'failed' — a failure never blocks removal, it just flags the
-  // order for admin (Ryan: "I'll send invoice worst case").
+  // a pending/completed second charge (no surcharge, or a legacy order that
+  // carries the whole fee: pre-split card orders, and invoice-account orders
+  // placed before 2026-09-29, when those started splitting too).
+  // 'pending' until removal is scheduled. Then a card payer is charged
+  // ('paid' or 'failed' — a failure never blocks removal, it just flags the
+  // order for admin: "I'll send invoice worst case"), and an invoice payer's
+  // half is queued as 'pending_invoice' for their next bundled Invoice (Ryan,
+  // 2026-09-28: "add to invoice instead of charge card"), flipping to 'paid'
+  // when that invoice is paid.
   serviceAreaSecondChargeCents           Int?                           @map("service_area_second_charge_cents")
   serviceAreaSecondChargeStatus          ServiceAreaSecondChargeStatus? @map("service_area_second_charge_status")
   serviceAreaSecondChargePaymentIntentId String?                        @map("service_area_second_charge_payment_intent_id")
   serviceAreaSecondChargedAt             DateTime?                      @map("service_area_second_charged_at")
   serviceAreaSecondChargeError           String?                        @map("service_area_second_charge_error")
+  // The Invoice the queued pickup half was billed on — set by the bundlers.
+  // Usually a LATER invoice than `invoiceId` (the order was invoiced the month
+  // it was installed, the pickup the month it came down). Once set, the half
+  // is frozen: invoice pages read serviceAreaSecondChargeCents live.
+  serviceAreaSecondChargeInvoiceId       String?                        @map("service_area_second_charge_invoice_id")
   // CR4 (Round 22): true when this order was priced as a flat-fee order (payer
   // had flatFeeBilling at creation). Frozen on the order so edits recompute as
   // flat (no diff-charge) and invoices/reporting can identify clamped orders.
@@ -599,9 +609,13 @@ model Order {
   installation      Installation?
   consumedHolds     InventoryHold[]    @relation("InventoryHoldConsumer")
   postRentalCharges PostRentalCharge[]
-  invoice           Invoice?           @relation(fields: [invoiceId], references: [id])
+  // Named because Order has two links to Invoice: the order itself, and its
+  // out-of-area pickup half (which can land on a different invoice).
+  invoice           Invoice?           @relation("OrderInvoice", fields: [invoiceId], references: [id])
+  ooaPickupInvoice  Invoice?           @relation("OrderOOAPickupInvoice", fields: [serviceAreaSecondChargeInvoiceId], references: [id], onDelete: SetNull)
 
   @@index([placedByUserId])
+  @@index([serviceAreaSecondChargeInvoiceId])
   @@index([cancelledByUserId])
   @@index([invoiceId])
   // Admin worklist: find orders that need follow-up after a failed/skipped
@@ -690,8 +704,11 @@ model Invoice {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  orders          Order[]
+  orders          Order[]          @relation("OrderInvoice")
   serviceRequests ServiceRequest[]
+  // Out-of-area pickup halves billed on this invoice (their orders usually
+  // sit on an earlier one). Lines sit in `subtotal` like service trips.
+  ooaPickupOrders Order[]          @relation("OrderOOAPickupInvoice")
 
   @@index([userId])
   @@index([status])
@@ -808,6 +825,9 @@ enum ServiceAreaSecondChargeStatus {
   pending
   paid
   failed
+  // Invoice payer's pickup half, queued at removal scheduling for the next
+  // bundled Invoice (Order.serviceAreaSecondChargeInvoiceId set once bundled).
+  pending_invoice
 }
 
 // ============================================

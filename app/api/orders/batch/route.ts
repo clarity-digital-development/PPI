@@ -188,8 +188,7 @@ export async function POST(request: NextRequest) {
       // Service-area resolution for this order (surcharge winner is carried to OrderItem create).
       serviceArea: ResolveResult
       // Cents that actually land in THIS order's surcharge OrderItem (the
-      // install half, or the full amount for payers who don't split), and the
-      // remainder collected when removal is scheduled.
+      // install half), and the remainder collected when removal is scheduled.
       surchargeItemCents: number
       secondChargeCents: number
     }
@@ -198,6 +197,8 @@ export async function POST(request: NextRequest) {
     // Service-area gate runs per-order. ANY out_of_area aborts the whole batch
     // so the customer's card isn't charged for a partially-doomed cart.
     const saBlocks: Array<{ orderIndex: number; zip: string; reason?: string; contactPhone?: string }> = []
+    // Rows carrying an out-of-area fee whose agreement box was never ticked.
+    const consentMissing: number[] = []
 
     // Loop-invariant: the cart is always placed by the actor under their own
     // account, so the allow-list is the same for every row. Resolved once --
@@ -309,35 +310,28 @@ export async function POST(request: NextRequest) {
       // "Out of Area Service Fee" — no ZIP, no center name, no drive minutes.
       // Mirrors the single-order create route; adversarial review 2026-07-06
       // caught that this batch path was still emitting the old leaky text.
-      // SPLIT 50/50, exactly like the single-order route. This path used to
-      // push the full both-trips amount as one line with no second charge and
-      // no consent — which meant a broker was charged double what the cart
-      // screen quoted. Ryan: "split like everyone else... Semonin eventually
-      // will have out of area fees so this will be for everyone at some
-      // point" (2026-09-19).
+      // SPLIT 50/50, exactly like the single-order route — for every payer.
+      // This path used to push the full both-trips amount as one line with no
+      // second charge and no consent — which meant a broker was charged double
+      // what the cart screen quoted. Ryan: "split like everyone else... Semonin
+      // eventually will have out of area fees so this will be for everyone at
+      // some point" (2026-09-19). Invoice-billing carts kept the unsplit fee
+      // until 2026-09-28, when their pickup half started going onto the next
+      // invoice instead of a card (lib/orders/out-of-area-charge.ts).
       let surchargeItemCents = 0
       let secondChargeCents = 0
       if (sa.tier === 'surcharge' && sa.surchargeCents > 0) {
-        // Invoice-billing only — see app/api/orders/route.ts. Flat fee is no
-        // longer a reason: the fee now rides on top of the flat rate.
-        const skipsSplit = isInvoiceBilling
-        surchargeItemCents = sa.surchargeCents
-        if (!skipsSplit) {
-          // Server-side gate — the wizard's checkbox is client-side only and
-          // can't be trusted alone for a billing decision.
-          if (o.service_area_fee_agreed !== true) {
-            return NextResponse.json(
-              {
-                error: `Order ${i + 1}: please agree to the out-of-area fee terms before checking out. Open that order from the cart and tick the agreement.`,
-                code: 'service_area_consent_required',
-                order_index: i,
-              },
-              { status: 400 }
-            )
-          }
-          surchargeItemCents = Math.round(sa.surchargeCents / 2)
-          secondChargeCents = sa.surchargeCents - surchargeItemCents
+        // Server-side gate — the wizard's checkbox is client-side only and
+        // can't be trusted alone for a billing decision. Collected rather than
+        // returned on the first miss: a cart saved before invoice accounts
+        // split can hold several rows that were never asked, and flagging one
+        // per checkout attempt meant N round-trips to find them all.
+        if (o.service_area_fee_agreed !== true) {
+          consentMissing.push(i)
+          continue
         }
+        surchargeItemCents = Math.round(sa.surchargeCents / 2)
+        secondChargeCents = sa.surchargeCents - surchargeItemCents
         const surchargeDollars = surchargeItemCents / 100
         const description = 'Out of Area Service Fee'
         o.items.push({
@@ -410,6 +404,18 @@ export async function POST(request: NextRequest) {
             zip: b.zip,
             reason: b.reason,
           })),
+        },
+        { status: 400 }
+      )
+    }
+    if (consentMissing.length > 0) {
+      const list = consentMissing.map((idx) => `#${idx + 1}`).join(', ')
+      return NextResponse.json(
+        {
+          error: `Order${consentMissing.length === 1 ? '' : 's'} ${list}: please agree to the out-of-area fee terms before checking out. Open ${consentMissing.length === 1 ? 'that order' : 'each one'} from the cart and tick the agreement.`,
+          code: 'service_area_consent_required',
+          order_index: consentMissing[0],
+          failed_orders: consentMissing.map((idx) => ({ order_index: idx })),
         },
         { status: 400 }
       )
