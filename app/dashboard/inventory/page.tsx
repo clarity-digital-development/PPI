@@ -158,6 +158,7 @@ export default function InventoryPage() {
   const [brokerageShared, setBrokerageShared] = useState<{
     name: string
     signs: Array<{ description: string; count: number }>
+    riders: Array<{ label: string; count: number }>
     lockboxes: Array<{ id: string; label: string }>
   } | null>(null)
   const [loading, setLoading] = useState(true)
@@ -215,6 +216,7 @@ export default function InventoryPage() {
           setInventory({
             ...data,
             signs: own(data.signs),
+            riders: own(data.riders),
             lockboxes: own(data.lockboxes),
             brokeragePool: null,
           })
@@ -229,6 +231,11 @@ export default function InventoryPage() {
               name: data.brokeragePool.name,
               signs: Array.from(counts, ([description, count]) => ({ description, count }))
                 .sort((a, b) => b.count - a.count || a.description.localeCompare(b.description)),
+              riders: pooled<{ rider_type: string; quantity: number; source?: string }>(data.riders)
+                .map((r) => ({
+                  label: r.rider_type.split('-').map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w)).join(' '),
+                  count: r.quantity,
+                })),
               lockboxes: pooled<{ id: string; lockbox_type: string; lockbox_type_name?: string; lockbox_code: string | null; source?: string }>(data.lockboxes)
                 .map((lb) => ({
                   id: lb.id,
@@ -793,7 +800,7 @@ export default function InventoryPage() {
           </CardContent>
         </Card>
 
-        {!loading && brokerageShared && (brokerageShared.signs.length > 0 || brokerageShared.lockboxes.length > 0) && (
+        {!loading && brokerageShared && (brokerageShared.signs.length > 0 || brokerageShared.riders.length > 0 || brokerageShared.lockboxes.length > 0) && (
           <Card variant="bordered" className="mb-6 border-pink-200">
             <CardContent className="p-6">
               <div className="flex items-center gap-3 mb-1">
@@ -816,6 +823,19 @@ export default function InventoryPage() {
                         <li key={s.description} className="flex justify-between text-sm p-2 bg-gray-50 rounded-lg">
                           <span className="text-gray-900">{s.description}</span>
                           <span className="text-pink-600 font-medium">x{s.count}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {brokerageShared.riders.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Riders</p>
+                    <ul className="space-y-1">
+                      {brokerageShared.riders.map((r) => (
+                        <li key={r.label} className="flex justify-between text-sm p-2 bg-gray-50 rounded-lg">
+                          <span className="text-gray-900">{r.label}</span>
+                          <span className="text-pink-600 font-medium">x{r.count}</span>
                         </li>
                       ))}
                     </ul>

@@ -34,7 +34,13 @@ export async function GET(request: NextRequest) {
     // inventory, return items from the team_admin's own pool that are assigned
     // to that member. Name-only members have no userId, so we filter by
     // assignedToMemberId rather than ownership.
-    let memberFilter: { assignedToMemberId: string | null } | undefined
+    //
+    // Always combined with AND (see the queries below), never spread: it can be
+    // an OR, and so is the hold-visibility filter — a spread keeps only one.
+    let memberFilter:
+      | { assignedToMemberId: null }
+      | { OR: Array<{ assignedToMemberId: string | null }> }
+      | undefined
     if (unassignedOnly && user.role === 'team_admin' && !memberId && targetUserId === user.id) {
       // Own-account read only: never narrows someone else's inventory, and
       // member_id already scopes the roster path on its own. team_admin only —
@@ -54,7 +60,26 @@ export async function GET(request: NextRequest) {
       }
       // Items are physically held under the team_admin's account.
       targetUserId = user.id
-      memberFilter = { assignedToMemberId: memberId }
+      // A broker who puts HERSELF on her own roster and picks her own name is
+      // ordering for herself, so she also gets her unassigned stock — exactly
+      // what "Order for myself" shows. Assigned-only made her assign items to
+      // herself, order, then un-assign them so her agents could see them again
+      // (Ryan, 2026-09-29, Katie Kelley; Rebecca Steele is set up the same way).
+      //
+      // ONLY for her own row. Every other member stays assigned-only: adding
+      // unassigned stock to every agent's picker let one cart row be handed
+      // the copy another row had already reserved (a 409 with no way out),
+      // and merged an agent's own items with generic stock so the order could
+      // pull the wrong physical one. Items assigned to OTHER members stay
+      // hidden either way — the "every rider showed up for everyone" bug.
+      const norm = (v: string | null | undefined) => (v ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
+      const isOwnRow =
+        member.userId === user.id ||
+        (!!member.email && norm(member.email) === norm(user.email)) ||
+        (!!norm(member.name) && [user.fullName, user.name].some((n) => norm(n) === norm(member.name)))
+      memberFilter = isOwnRow
+        ? { OR: [{ assignedToMemberId: memberId }, { assignedToMemberId: null }] }
+        : { OR: [{ assignedToMemberId: memberId }] }
     }
 
     // Linked brokerage inventory (Ryan, 2026-09-08): an agent's pickers show
@@ -66,7 +91,7 @@ export async function GET(request: NextRequest) {
     // the rows are theirs already.
     const pool = memberFilter ? null : await resolveBrokeragePool(targetUserId)
 
-    // SIGNS AND LOCKBOXES are pooled; riders and brochure boxes are not.
+    // SIGNS, LOCKBOXES AND RIDERS are pooled; brochure boxes are not.
     //
     // Ryan asked for the whole admin inventory — "signs, riders, and lockboxes"
     // (2026-09-08). Signs shipped first. Lockboxes followed (2026-09-28, when
@@ -76,12 +101,16 @@ export async function GET(request: NextRequest) {
     // sit side by side safely, and inventory ownership already allows the
     // pool owner for every item type (lib/orders/inventory-ownership.ts).
     //
-    // Riders still wait on a picker refactor: RiderSelector keys selection by
-    // rider TYPE (RiderSelector.tsx:174), so an own and a brokerage rider of
-    // the same type render as two chips that share one selection state, and the
-    // wizard then resolves the id by type and picks whichever sorted first --
-    // consuming the wrong physical rider. Brochure boxes stay own-only: they are
-    // a bare count with no id, so pooling them would only inflate the number.
+    // Riders (2026-09-29, for Katie Kelley's brokerage, which has them) with
+    // one rule: a brokerage rider TYPE the agent also owns is left out.
+    // RiderSelector keys selection by rider type (RiderSelector.tsx:174), so an
+    // own and a brokerage rider of the same type would share one selection and
+    // the wizard, resolving the id by type, could consume the wrong physical
+    // rider. With that type dropped from the pool there is only ever one group
+    // per type, the lookup is unambiguous, and the agent uses their own — the
+    // brokerage's riders fill in the types they don't have. See the rider
+    // grouping below. Brochure boxes stay own-only: they are a bare count with
+    // no id, so pooling them would only inflate the number.
     //
     // From the pool: what the brokerage hasn't handed to anyone, plus what it
     // has handed to THIS agent. Rows assigned to OTHER agents stay off limits
@@ -139,21 +168,28 @@ export async function GET(request: NextRequest) {
     }
 
     // Fetch all inventory types in parallel
+    // Every filter goes through AND. Several are OR clauses (pool, member,
+    // hold visibility); spread into one object they overwrite each other's
+    // `OR` key and silently widen the result — e.g. returning rows of any owner.
+    const scoped = (...clauses: Array<object | undefined>) => ({
+      AND: clauses.filter((c): c is object => c !== undefined),
+      inStorage: true,
+    })
     const [rawSigns, rawRiders, rawLockboxes, rawBrochureBoxes] = await Promise.all([
       prisma.customerSign.findMany({
-        where: { AND: [pooledOwnerFilter, holdVisibilityFilter], inStorage: true, ...memberFilter },
+        where: scoped(pooledOwnerFilter, memberFilter, holdVisibilityFilter),
         orderBy: { createdAt: 'desc' },
       }),
       prisma.customerRider.findMany({
-        where: { ...ownerFilter, inStorage: true, ...memberFilter, ...holdVisibilityFilter },
+        where: scoped(pooledOwnerFilter, memberFilter, holdVisibilityFilter),
         include: { rider: true },
       }),
       prisma.customerLockbox.findMany({
-        where: { AND: [pooledOwnerFilter, holdVisibilityFilter], inStorage: true, ...memberFilter },
+        where: scoped(pooledOwnerFilter, memberFilter, holdVisibilityFilter),
         include: { lockboxType: true },
       }),
       prisma.customerBrochureBox.findMany({
-        where: { ...ownerFilter, inStorage: true, ...memberFilter },
+        where: scoped(ownerFilter, memberFilter),
       }),
     ])
 
@@ -239,9 +275,15 @@ export async function GET(request: NextRequest) {
     // Own groups first. The wizard resolves a rider by the first entry matching
     // the type, so this keeps "my own rider" the default when both exist --
     // exactly the split Ryan described.
-    const riders = Object.values(riderCounts).sort((a, b) =>
-      a.source === b.source ? 0 : a.source === 'own' ? -1 : 1
+    // A brokerage rider type the agent ALSO owns is dropped (see the pooling
+    // note above): one group per type keeps the by-type lookup unambiguous, so
+    // the physical rider consumed is always the one the agent meant.
+    const ownRiderTypes = new Set(
+      Object.values(riderCounts).filter((g) => g.source === 'own').map((g) => g.rider_type)
     )
+    const riders = Object.values(riderCounts)
+      .filter((g) => g.source === 'own' || !ownRiderTypes.has(g.rider_type))
+      .sort((a, b) => (a.source === b.source ? 0 : a.source === 'own' ? -1 : 1))
 
     // Transform lockboxes — include both raw name and a 'family' tag so the UI
     // can group "SentriLock" vs "Mechanical (Customer Owned)" vs "Mechanical
@@ -282,7 +324,7 @@ export async function GET(request: NextRequest) {
       // majority -- the UI shows no source labelling at all in that case.
       // `pooled` names what is actually drawn from the pool today, so the UI
       // cannot imply riders or lockboxes are shared when they are not.
-      brokeragePool: pool ? { name: pool.name, pooled: ['signs', 'lockboxes'] } : null,
+      brokeragePool: pool ? { name: pool.name, pooled: ['signs', 'lockboxes', 'riders'] } : null,
     })
   } catch (error) {
     console.error('Error fetching inventory:', error)

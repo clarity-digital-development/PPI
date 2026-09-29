@@ -113,6 +113,7 @@ export function RiderStep({ formData, updateFormData, inventory }: StepProps) {
       id: rider.id,
       riderType: rider.rider_type,
       quantity: rider.quantity,
+      sourceLabel: rider.source === 'brokerage' ? (rider.source_label || 'Brokerage') : null,
     })) || []
   }, [inventory?.riders])
 

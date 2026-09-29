@@ -60,6 +60,9 @@ export interface CustomerRiderInventory {
   id: string
   riderType: string
   quantity: number
+  /** Set when the rider comes from a linked brokerage's pool — shown on the
+   *  chip so the agent knows it isn't theirs. */
+  sourceLabel?: string | null
 }
 
 export interface RiderSelectorProps {

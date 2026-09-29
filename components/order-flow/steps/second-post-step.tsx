@@ -118,6 +118,7 @@ export function SecondPostStep({ formData, updateFormData, inventory, pickupFee,
       id: rider.id,
       riderType: rider.rider_type,
       quantity: rider.quantity,
+      sourceLabel: rider.source === 'brokerage' ? (rider.source_label || 'Brokerage') : null,
     })) || []
   }, [inventory?.riders])
 

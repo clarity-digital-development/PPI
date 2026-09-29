@@ -100,7 +100,9 @@ export function RiderSelector({
       {hasInventory ? (
         <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
           <p className="text-sm text-green-800 font-medium">
-            You have riders in your inventory ({customerInventory.map(inv => `${inv.quantity}x ${inv.riderType.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}`).join(', ')})
+            {/* A linked agent's list mixes their own riders with the brokerage's;
+                say whose each one is, matching the chip labels below. */}
+            Riders available to you ({customerInventory.map(inv => `${inv.quantity}x ${inv.riderType.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}${inv.sourceLabel ? ` from ${inv.sourceLabel}` : ''}`).join(', ')})
           </p>
           <p className="text-xs text-green-700 mt-0.5">Select &ldquo;My Riders&rdquo; below to install from your inventory at ${installPrice} each.</p>
         </div>
@@ -204,6 +206,10 @@ export function RiderSelector({
                     `}
                   >
                     <span>{displayName}</span>
+                    {/* A linked agent's brokerage riders sit alongside their own. */}
+                    {inv.sourceLabel && (
+                      <span className="text-xs text-pink-600">— {inv.sourceLabel}</span>
+                    )}
                     <span className="text-xs text-gray-500">(&times;{inv.quantity})</span>
                     <span className="text-xs font-semibold text-green-700">${installPrice}</span>
                   </button>
