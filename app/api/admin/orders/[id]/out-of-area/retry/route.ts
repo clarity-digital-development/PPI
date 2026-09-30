@@ -66,7 +66,9 @@ export async function POST(
       request,
     })
 
-    await chargeSecondOutOfAreaFee(orderId)
+    // A fresh idempotency key per retry: the removal-time key would replay the
+    // decline Stripe saved for it (see chargeSecondOutOfAreaFee).
+    await chargeSecondOutOfAreaFee(orderId, { retryAttempt: Date.now().toString(36) })
 
     const updated = await prisma.order.findUnique({
       where: { id: orderId },

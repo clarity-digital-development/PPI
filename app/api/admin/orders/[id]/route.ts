@@ -27,6 +27,11 @@ export async function GET(
       include: {
         orderItems: true,
         postType: true,
+        // The admin page previews "Remove out-of-area fee" with the order's
+        // promo rule (lib/orders/ooa-waive-rules.ts repriceWithoutFee).
+        promoCode: {
+          select: { code: true, isActive: true, discountType: true, discountValue: true },
+        },
         user: {
           select: {
             id: true,

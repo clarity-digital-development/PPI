@@ -460,9 +460,19 @@ export async function POST(request: NextRequest) {
     // grabbed any of these rows between the SELECT and the UPDATE, the
     // count won't match — we throw to roll back the whole transaction and
     // the second admin gets a 500 they can retry from a clean state.
+    //
+    // Each order is also matched on the subtotal/total this invoice summed: an
+    // edit or an out-of-area fee removal that commits between the read and
+    // here (invoiceId still null) would otherwise attach with the invoice and
+    // its payment link billing the old amount. Same count check, same 409.
     if (orders.length > 0) {
       const ordersUpdate = await tx.order.updateMany({
-        where: { id: { in: orders.map((o) => o.id) }, invoiceId: null },
+        where: {
+          invoiceId: null,
+          // Still billable: a cancel mid-bundle flips this to 'failed'.
+          paymentStatus: 'pending_invoice',
+          OR: orders.map((o) => ({ id: o.id, subtotal: o.subtotal, total: o.total })),
+        },
         data: { invoiceId: invoice.id },
       })
       if (ordersUpdate.count !== orders.length) {
@@ -471,7 +481,12 @@ export async function POST(request: NextRequest) {
     }
     if (serviceRequests.length > 0) {
       const srUpdate = await tx.serviceRequest.updateMany({
-        where: { id: { in: serviceRequests.map((sr) => sr.id) }, invoiceId: null },
+        // Only at the amount this invoice summed — an admin re-pricing the
+        // request mid-bundle rolls this back rather than billing the old one.
+        where: {
+          invoiceId: null,
+          OR: serviceRequests.map((sr) => ({ id: sr.id, invoiceAmount: sr.invoiceAmount })),
+        },
         data: { invoiceId: invoice.id },
       })
       if (srUpdate.count !== serviceRequests.length) {

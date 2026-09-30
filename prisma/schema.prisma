@@ -467,12 +467,23 @@ model Order {
   // order for admin: "I'll send invoice worst case"), and an invoice payer's
   // half is queued as 'pending_invoice' for their next bundled Invoice (Ryan,
   // 2026-09-28: "add to invoice instead of charge card"), flipping to 'paid'
-  // when that invoice is paid.
-  serviceAreaSecondChargeCents           Int?                           @map("service_area_second_charge_cents")
+  // when that invoice is paid. Cents 0 with a null status = an admin removed
+  // the fee before it was collected (lib/orders/waive-out-of-area.ts).
+  serviceAreaSecondChargeCents           Int?                         @map("service_area_second_charge_cents")
   serviceAreaSecondChargeStatus          ServiceAreaSecondChargeStatus? @map("service_area_second_charge_status")
   serviceAreaSecondChargePaymentIntentId String?                        @map("service_area_second_charge_payment_intent_id")
   serviceAreaSecondChargedAt             DateTime?                      @map("service_area_second_charged_at")
   serviceAreaSecondChargeError           String?                        @map("service_area_second_charge_error")
+  // Set while a card charge for the pickup half is in flight (the claim
+  // lib/orders/out-of-area-charge.ts takes before calling Stripe), cleared
+  // when it settles. Removing the fee refuses a half that is mid-charge, so
+  // the admin is never told it was cancelled while the card is being charged.
+  serviceAreaSecondChargeClaimedAt       DateTime?                      @map("service_area_second_charge_claimed_at")
+  // When an admin took the out-of-area fee off this order ("Remove
+  // out-of-area fee", lib/orders/waive-out-of-area.ts; Ryan, 2026-09-30).
+  // Locks the fee as removed: a later address edit keeps it off instead of
+  // re-pricing it back on (keepsLockedServiceAreaFee).
+  serviceAreaFeeWaivedAt                 DateTime?                      @map("service_area_fee_waived_at")
   // The Invoice the queued pickup half was billed on — set by the bundlers.
   // Usually a LATER invoice than `invoiceId` (the order was invoiced the month
   // it was installed, the pickup the month it came down). Once set, the half

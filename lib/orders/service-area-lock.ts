@@ -20,19 +20,31 @@
  *    not "in the free zone". Re-resolving would read a typo fix to the street
  *    as a move into a fee zone and bill the full fee after the fact. Orders keep
  *    the policy they were placed under, like every other rate change here.
+ *
+ * 3. An admin removed the fee (lib/orders/waive-out-of-area.ts; Ryan,
+ *    2026-09-30). Re-resolving the same edge-of-area property on a typo fix or
+ *    an added unit number would put back both halves he took off. Like the
+ *    other locked cases, this also means a real move to another property keeps
+ *    the fee off — accepted: moving a sign to a new address is rare, and the
+ *    fee was removed by hand for a reason. Only when the install half is
+ *    actually gone: when just the pickup half was cancelled (the install half
+ *    was already charged or invoiced) the install half re-prices on a move as
+ *    usual, and the edit route won't re-arm the cancelled pickup half.
  */
 export function keepsLockedServiceAreaFee(
   order: {
     flatFeeApplied: boolean
     flatFeeBase?: unknown
     serviceAreaSurchargeCents?: number | null
+    serviceAreaFeeWaivedAt?: Date | string | null
   },
   payer: { isServiceAreaExempt?: boolean | null } | null,
 ): boolean {
   const exemptWithFee = !!payer?.isServiceAreaExempt && (order.serviceAreaSurchargeCents ?? 0) > 0
   const flatUnderOldPolicy =
     order.flatFeeApplied && (order.flatFeeBase === null || order.flatFeeBase === undefined)
-  return exemptWithFee || flatUnderOldPolicy
+  const waivedByAdmin = order.serviceAreaFeeWaivedAt != null && (order.serviceAreaSurchargeCents ?? 0) === 0
+  return exemptWithFee || flatUnderOldPolicy || waivedByAdmin
 }
 
 /** The order is billed through a bundled Invoice rather than a card charge. */

@@ -9,7 +9,7 @@ import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
 import { audit, AuditAction } from '@/lib/audit'
 import { chargePaymentMethod, isDetachedPaymentMethodError } from '@/lib/stripe'
 import { resolveEffectivePayer } from '@/lib/orders/effective-payer'
-import { computeFlatFeePricing, computeOrderPricing, computeDiscountableSubtotal, lockedFlatBase, NO_POST_SURCHARGE, postRentalApplies, type OrderItemForPricing } from '@/lib/orders/pricing'
+import { computeFlatFeePricing, computeOrderPricing, discountForExistingOrder, lockedFlatBase, NO_POST_SURCHARGE, postRentalApplies, type OrderItemForPricing } from '@/lib/orders/pricing'
 import { keepsLockedServiceAreaFee, keepsUnsplitServiceAreaFee } from '@/lib/orders/service-area-lock'
 import { applyPickupFeePolicy, lockedPickupFeeDecision } from '@/lib/orders/pickup-fee'
 import { isPickupFeeWaivedForPayer } from '@/lib/orders/pickup-fee-waiver'
@@ -422,10 +422,14 @@ export async function PATCH(
       // customer agreed to. Re-arming it would bill a second time, and a sent
       // invoice reads the queued amount live. Consequence, accepted: an
       // address edit after pickup was scheduled re-prices only the install half.
+      // An admin-cancelled pickup half stays cancelled
+      // (lib/orders/waive-out-of-area.ts) — only reachable here when the
+      // install half was kept, since a fully removed fee never re-resolves.
       const secondChargeStillArmable =
         (existingOrder.serviceAreaSecondChargeStatus === null ||
           existingOrder.serviceAreaSecondChargeStatus === 'pending') &&
-        existingOrder.serviceAreaSecondChargeInvoiceId === null
+        existingOrder.serviceAreaSecondChargeInvoiceId === null &&
+        existingOrder.serviceAreaFeeWaivedAt === null
       if (secondChargeStillArmable) {
         const secondHalf = oooSkipsSplit ? 0 : resolvedFullCents - resolvedSurchargeCents
         resolvedSecondChargeCents = secondHalf > 0 ? secondHalf : null
@@ -532,26 +536,15 @@ export async function PATCH(
     // every time customer had a brochure-box-purchase line. Standardized
     // 2026-06-30 per the QA sweep.
     //
-    // Promo-deactivation policy: if the original promo is no longer active
-    // but the order has a saved discount, preserve the dollar amount (clamped
-    // to current eligible subtotal). Without this, a customer who edits after
-    // admin deactivates their code silently loses the discount and gets
-    // re-charged — Ryan's preference is "customer keeps the promo they got".
-    const discountForItems = (items: OrderItemForPricing[]): number => {
-      if (isFlatFee) return 0
-      const base = computeDiscountableSubtotal(items)
-      let d = 0
-      if (existingOrder.promoCode && existingOrder.promoCode.isActive) {
-        if (existingOrder.promoCode.discountType === 'percentage') {
-          d = base * (Number(existingOrder.promoCode.discountValue) / 100)
-        } else {
-          d = Math.min(Number(existingOrder.promoCode.discountValue), base)
-        }
-      } else if (existingOrder.promoCode && Number(existingOrder.discount) > 0) {
-        d = Math.min(Number(existingOrder.discount), base)
-      }
-      return Math.round(d * 100) / 100
-    }
+    // Promo-deactivation policy (keep the dollar amount of a deactivated
+    // promo) lives in the shared helper, which removing the out-of-area fee
+    // also prices with.
+    const discountForItems = (items: OrderItemForPricing[]): number =>
+      discountForExistingOrder(items, {
+        isFlatFee,
+        promoCode: existingOrder.promoCode,
+        savedDiscount: Number(existingOrder.discount),
+      })
     const discount = discountForItems(pricingItems)
 
     // Flat-fee short-circuits to the canonical flat breakdown. Non-flat-fee
@@ -917,6 +910,11 @@ export async function PATCH(
           ...(resolvedSecondChargeCents !== undefined
             ? { serviceAreaSecondChargeStatus: existingOrder.serviceAreaSecondChargeStatus }
             : {}),
+          // An admin removed the out-of-area fee since the read
+          // (lib/orders/waive-out-of-area.ts stamps this every time): this edit
+          // priced the old fee and would write it back into the total and
+          // recreate its line while the fee column says 0.
+          serviceAreaFeeWaivedAt: existingOrder.serviceAreaFeeWaivedAt,
         },
         data: {
           postTypeId: newPostTypeId,
@@ -1011,11 +1009,11 @@ export async function PATCH(
     })
 
     if (!updatedOrder) {
-      // Three ways to get here: the bundler stamped invoiceId mid-edit (the
+      // Four ways to get here: the bundler stamped invoiceId mid-edit (the
       // pre-existing race), a concurrent edit of an already-invoiced order
-      // moved the baseline anchor, or removal got scheduled and moved the
-      // pickup half this edit was about to re-arm. Either way the caller's
-      // view is stale.
+      // moved the baseline anchor, removal got scheduled and moved the
+      // pickup half this edit was about to re-arm, or an admin removed the
+      // out-of-area fee. Either way the caller's view is stale.
       return NextResponse.json(
         {
           error: wasInvoiced

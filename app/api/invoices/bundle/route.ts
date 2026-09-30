@@ -261,10 +261,18 @@ export async function POST(request: NextRequest) {
     })
 
     // Race guard: filter UPDATE on invoiceId:null + verify count to prevent
-    // two simultaneous broker clicks from double-bundling.
+    // two simultaneous broker clicks from double-bundling. Each order is also
+    // matched on the subtotal/total summed above, so an edit or an admin
+    // removing its out-of-area fee mid-bundle rolls this back (409) instead
+    // of billing the old amount.
     if (orders.length > 0) {
       const r = await tx.order.updateMany({
-        where: { id: { in: orders.map((o) => o.id) }, invoiceId: null },
+        where: {
+          invoiceId: null,
+          // Still billable: a cancel mid-bundle flips this to 'failed'.
+          paymentStatus: 'pending_invoice',
+          OR: orders.map((o) => ({ id: o.id, subtotal: o.subtotal, total: o.total })),
+        },
         data: { invoiceId: invoice.id },
       })
       if (r.count !== orders.length) {
@@ -273,7 +281,12 @@ export async function POST(request: NextRequest) {
     }
     if (serviceRequests.length > 0) {
       const r = await tx.serviceRequest.updateMany({
-        where: { id: { in: serviceRequests.map((sr) => sr.id) }, invoiceId: null },
+        // Only at the amount this invoice summed — an admin re-pricing the
+        // request mid-bundle rolls this back rather than billing the old one.
+        where: {
+          invoiceId: null,
+          OR: serviceRequests.map((sr) => ({ id: sr.id, invoiceAmount: sr.invoiceAmount })),
+        },
         data: { invoiceId: invoice.id },
       })
       if (r.count !== serviceRequests.length) {

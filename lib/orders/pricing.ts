@@ -169,6 +169,41 @@ export function computeDiscountableSubtotal(items: OrderItemForPricing[]): numbe
 }
 
 /**
+ * An EXISTING order's promo discount for a set of items — how the edit route
+ * re-derives it on every edit, and how removing an order's out-of-area fee
+ * re-prices it (lib/orders/ooa-waive-rules.ts). One rule, so a later edit
+ * lands on the same discount instead of quietly moving the total.
+ *
+ * Promo-deactivation policy: if the original promo is no longer active but
+ * the order has a saved discount, preserve the dollar amount (clamped to the
+ * current eligible subtotal). Without this, a customer who edits after admin
+ * deactivates their code silently loses the discount and gets re-charged —
+ * Ryan's preference is "customer keeps the promo they got".
+ */
+export function discountForExistingOrder(
+  items: OrderItemForPricing[],
+  order: {
+    isFlatFee: boolean
+    promoCode: { isActive: boolean; discountType: string; discountValue: unknown } | null
+    savedDiscount: number
+  },
+): number {
+  if (order.isFlatFee) return 0
+  const base = computeDiscountableSubtotal(items)
+  let d = 0
+  if (order.promoCode && order.promoCode.isActive) {
+    if (order.promoCode.discountType === 'percentage') {
+      d = base * (Number(order.promoCode.discountValue) / 100)
+    } else {
+      d = Math.min(Number(order.promoCode.discountValue), base)
+    }
+  } else if (order.promoCode && order.savedDiscount > 0) {
+    d = Math.min(order.savedDiscount, base)
+  }
+  return Math.round(d * 100) / 100
+}
+
+/**
  * Pure function — no DB or API calls. Given an order body's items + flags,
  * return the full pricing breakdown.
  *

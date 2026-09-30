@@ -23,6 +23,7 @@ import {
   CalendarClock,
 } from 'lucide-react'
 import { Button, Badge, Card, CardContent, Modal } from '@/components/ui'
+import { dollarsToCents, planOOAWaive, repriceWithoutFee, waiveRepriceProblem } from '@/lib/orders/ooa-waive-rules'
 
 interface PostRentalChargeRow {
   id: string
@@ -95,7 +96,15 @@ interface Order {
   createdAt: string
   promoCode?: {
     code: string
+    isActive: boolean
+    discountType: string
+    discountValue: number | string
   } | null
+  // Priced-state fields "Remove out-of-area fee" re-prices from.
+  noPostSurcharge: number | string
+  flatFeeApplied: boolean
+  flatFeeBase: number | string | null
+  serviceAreaFeeWaivedAt: string | null
   paymentIntentId: string | null
   refundId: string | null
   refundInitiatedAt: string | null
@@ -108,6 +117,8 @@ interface Order {
   lastEditPaymentIntentId: string | null
   lastEditChargedAt: string | null
   pendingCreditCents: number
+  // Install half of the out-of-area fee (the 'surcharge' line in the total).
+  serviceAreaSurchargeCents: number
   // Split out-of-area fee — second half, collected on removal-scheduling:
   // charged to a card payer's card, or queued ('pending_invoice') for an
   // invoice payer's next invoice (Ryan, 2026-09-28).
@@ -203,6 +214,9 @@ export default function AdminOrderDetailPage() {
   const [rescheduleError, setRescheduleError] = useState<string | null>(null)
   const [retryingOOACharge, setRetryingOOACharge] = useState(false)
   const [ooaChargeError, setOoaChargeError] = useState<string | null>(null)
+  const [waivingOOA, setWaivingOOA] = useState(false)
+  const [waiveOOAError, setWaiveOOAError] = useState<string | null>(null)
+  const [waiveOOABanner, setWaiveOOABanner] = useState<string | null>(null)
 
   async function loadOrder() {
     const res = await fetch(`/api/admin/orders/${orderId}`)
@@ -391,6 +405,57 @@ export default function AdminOrderDetailPage() {
       setOoaChargeError(err instanceof Error ? err.message : 'Retry failed')
     } finally {
       setRetryingOOACharge(false)
+    }
+  }
+
+  async function handleWaiveOutOfAreaFee() {
+    if (!order || waivingOOA) return
+    const plan = planOOAWaive(order)
+    if (!plan || (plan.installCents === 0 && plan.pickupCents === 0)) return
+    const money = (c: number) => `$${(c / 100).toFixed(2)}`
+    const lines: string[] = []
+    if (plan.installCents > 0) {
+      // Same re-pricing the server does, so the dialog quotes what it writes.
+      const after = repriceWithoutFee(
+        { ...order, promoCode: order.promoCode ?? null, orderItems: order.orderItems },
+        plan.installCents
+      )
+      const problem = waiveRepriceProblem(after)
+      if (problem) {
+        setWaiveOOAError(problem)
+        return
+      }
+      lines.push(
+        `• Takes the ${money(plan.installCents)} install fee off this order. Total goes from ${money(dollarsToCents(order.total))} to ${money(after.total)}.`
+      )
+    }
+    if (plan.pickupCents > 0) {
+      lines.push(`• Cancels the ${money(plan.pickupCents)} pickup fee, so it’s never charged or invoiced.`)
+    }
+    lines.push(
+      plan.installCents > 0 || !plan.installKept
+        ? '• Editing the address later won’t add the fee back.'
+        : '• Editing the address later won’t bring the pickup fee back.'
+    )
+    if (!confirm(`Remove the out-of-area fee from ${order.orderNumber}?\n\n${lines.join('\n')}`)) return
+
+    setWaivingOOA(true)
+    setWaiveOOAError(null)
+    setWaiveOOABanner(null)
+    try {
+      const res = await fetch(`/api/admin/orders/${orderId}/out-of-area/waive`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || 'Could not remove the fee')
+      const removed = (data.installCents ?? 0) + (data.pickupCents ?? 0)
+      setWaiveOOABanner(`Out-of-area fee removed (${money(removed)}).`)
+      await loadOrder()
+    } catch (err) {
+      setWaiveOOAError(err instanceof Error ? err.message : 'Could not remove the fee')
+    } finally {
+      setWaivingOOA(false)
     }
   }
 
@@ -818,6 +883,72 @@ export default function AdminOrderDetailPage() {
                   <span className="text-pink-600">${Number(order.total).toFixed(2)}</span>
                 </div>
               </div>
+
+              {/* Remove out-of-area fee (Ryan, 2026-09-30) — for an address
+                  that shouldn't have been charged. Takes off whatever hasn't
+                  been collected or billed yet; lib/orders/ooa-waive-rules.ts
+                  decides, and the route re-checks. */}
+              {(() => {
+                const plan = planOOAWaive(order)
+                const canWaive = !!plan && (plan.installCents > 0 || plan.pickupCents > 0)
+                const kept = plan?.installKept ?? null
+                const waivedAt = order.serviceAreaFeeWaivedAt
+                // The note outlives the fee: once it's all removed there's no plan left.
+                if (!canWaive && !kept && !waiveOOABanner && !waivedAt) return null
+                const money = (c: number) => `$${(c / 100).toFixed(2)}`
+                return (
+                  <div className="mt-4 pt-4 border-t border-gray-200">
+                    <p className="text-sm font-medium text-gray-900">Out-of-area fee</p>
+                    {waivedAt && !waiveOOABanner && (
+                      <p className="mt-1 text-xs text-gray-600">
+                        {kept
+                          ? `Pickup fee cancelled by Pink Posts on ${new Date(waivedAt).toLocaleDateString()}.`
+                          : `Removed by Pink Posts on ${new Date(waivedAt).toLocaleDateString()}. Address edits won’t add it back.`}
+                      </p>
+                    )}
+                    {kept?.reason === 'card_paid' && (
+                      <p className="mt-1 text-xs text-gray-600">
+                        The {money(kept.cents)} install fee was charged to their card at checkout. Refund it in Stripe if you want to give it back.
+                      </p>
+                    )}
+                    {kept?.reason === 'on_invoice' && (
+                      <p className="mt-1 text-xs text-gray-600">
+                        The {money(kept.cents)} install fee is on invoice {order.invoice?.invoiceNumber ?? 'already sent'}, so it can&apos;t be removed here.
+                      </p>
+                    )}
+                    {kept?.reason === 'not_billable_here' && (
+                      <p className="mt-1 text-xs text-gray-600">
+                        The {money(kept.cents)} install fee can&apos;t be removed here while this order&apos;s payment is {order.paymentStatus}.
+                      </p>
+                    )}
+                    {waiveOOABanner && (
+                      <p className="mt-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded p-2">
+                        {waiveOOABanner}
+                      </p>
+                    )}
+                    {waiveOOAError && (
+                      <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">
+                        {waiveOOAError}
+                      </p>
+                    )}
+                    {canWaive && plan && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        className="mt-2"
+                        onClick={handleWaiveOutOfAreaFee}
+                        disabled={waivingOOA}
+                      >
+                        {waivingOOA
+                          ? 'Removing…'
+                          : kept
+                            ? `Cancel the ${money(plan.pickupCents)} pickup fee`
+                            : 'Remove out-of-area fee'}
+                      </Button>
+                    )}
+                  </div>
+                )
+              })()}
             </CardContent>
           </Card>
 

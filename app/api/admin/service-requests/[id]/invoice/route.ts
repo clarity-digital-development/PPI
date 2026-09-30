@@ -118,13 +118,24 @@ export async function POST(
     // No Stripe customer or saved card needed — collection happens later when
     // the customer pays the bundled invoice.
     if (serviceRequest.user.invoiceBilling) {
-      const updated = await prisma.serviceRequest.update({
-        where: { id },
+      // Conditional on the checks above still holding: a bundle that
+      // attached this request since the read has already put the old amount
+      // on a sent invoice (which re-reads the request live). The bundlers
+      // attach only the amount they summed, so the reverse order refuses too.
+      const written = await prisma.serviceRequest.updateMany({
+        where: { id, invoiceId: null, invoiceStatus: { not: 'paid' } },
         data: {
           invoiceAmount: amount,
           invoiceStatus: 'pending_invoice',
         },
       })
+      if (written.count !== 1) {
+        return NextResponse.json(
+          { error: 'This request was just added to an invoice. Refresh to see it.' },
+          { status: 409 }
+        )
+      }
+      const updated = await prisma.serviceRequest.findUnique({ where: { id } })
       try {
         await createNotification({
           userId: serviceRequest.userId,
