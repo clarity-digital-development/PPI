@@ -551,6 +551,12 @@ export function augmentInventoryWithOrder(
             ...group,
             id: item.customerRiderId,
             quantity: group.quantity + 1,
+            // The id is now THIS order's rider, and the order item doesn't
+            // record which pool it came from — so a brokerage / "General
+            // stock" group must stop claiming that pool (an agent's own rider
+            // read as general stock, and the reverse). 'on-order' renders
+            // unlabelled, like the sign path's on-order tag.
+            ...(group.source === 'brokerage' ? { source: 'on-order' as const, source_label: null } : {}),
           }
         } else {
           base.riders.unshift({ id: item.customerRiderId, rider_type: slug, quantity: 1 })

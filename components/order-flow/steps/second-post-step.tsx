@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Minus, Plus, MapPin, Sun, ChevronDown, ChevronUp, Package } from 'lucide-react'
 import { Select } from '@/components/ui'
 import { cn } from '@/lib/utils'
@@ -10,6 +10,7 @@ import type { StepProps, RiderSelection } from '../types'
 import { PRICING } from '../types'
 import { SignLocationPicker, type PickupFeeState } from './SignLocationPicker'
 import { mainSignIsPickup } from '../sign-choice'
+import { storedSignOptions } from '../sign-options'
 
 function toRiderSelection(
   selected: SelectedRider,
@@ -135,29 +136,24 @@ export function SecondPostStep({ formData, updateFormData, inventory, pickupFee,
 
   const hasStoredSigns = inventory?.signs && inventory.signs.length > 0
 
-  // Group signs by description for the dropdown, keyed on description AND
-  // source. See sign-step.tsx for why: a brokerage pool can hold a sign
-  // described identically to the agent's own, and collapsing them hides the
-  // brokerage one behind the agent's id.
+  // Grouped by description + source, never handing out the sign the main
+  // post already uses — see storedSignOptions.
+  const takenByMainPost = formData.sign_option === 'stored' ? formData.stored_sign_id : undefined
   const signOptions = useMemo(() => {
     if (!hasStoredSigns) return []
-    const grouped: Record<string, { id: string; label: string }> = {}
-    for (const sign of inventory!.signs) {
-      const base = `${sign.description}${sign.size ? ` (${sign.size})` : ''}`
-      // 'on-order' is the row this order already holds. It gets its own
-      // option so it can never mask a same-described sign from either
-      // pool, and is labelled so the agent can tell it apart.
-      const label =
-        sign.source === 'brokerage'
-          ? `${base} — ${sign.source_label || 'Brokerage'}`
-          : sign.source === 'on-order'
-            ? `${base} — currently on this order`
-            : base
-      const key = `${base}::${sign.source ?? 'own'}`
-      if (!grouped[key]) grouped[key] = { id: sign.id, label }
+    return storedSignOptions(inventory!.signs, {
+      selectedId: formData.second_post_stored_sign_id,
+      takenId: takenByMainPost,
+    })
+  }, [hasStoredSigns, inventory, formData.second_post_stored_sign_id, takenByMainPost])
+  // Both posts holding the same physical sign (a saved cart row, or the main
+  // post re-picked after this one) can never be reserved or installed: clear
+  // this post's copy so it has to be picked again from what's left.
+  useEffect(() => {
+    if (takenByMainPost && formData.second_post_stored_sign_id === takenByMainPost) {
+      updateFormData({ second_post_stored_sign_id: undefined })
     }
-    return Object.values(grouped).map(g => ({ value: g.id, label: g.label }))
-  }, [hasStoredSigns, inventory])
+  }, [takenByMainPost, formData.second_post_stored_sign_id, updateFormData])
 
   const ridersCount = formData.second_post_riders.length
   const wireFrameCount = formData.second_post_wire_frame_quantity

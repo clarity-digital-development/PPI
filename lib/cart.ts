@@ -242,8 +242,13 @@ export function useHoldHeartbeat(opts: {
   onConflictRef.current = onConflict
 
   const bump = useCallback(async () => {
-    const live = itemsRef.current
-    const cartItemIds = live.map(i => i.id)
+    // Only rows that actually reserve something. A row with no inventory
+    // items has no holds, so the server has nothing to extend for it — and a
+    // missing entry is read below as "reservation lost", which flagged those
+    // rows "remove & re-pick" for no reason.
+    const cartItemIds = itemsRef.current
+      .filter(i => i.holdIds && Object.values(i.holdIds).some(Boolean))
+      .map(i => i.id)
     if (cartItemIds.length === 0) return
     try {
       const res = await fetch('/api/inventory/holds/bump', {
@@ -272,12 +277,20 @@ export function useHoldHeartbeat(opts: {
     }
   }, [])
 
+  // Renew as soon as the cart's rows are known. The bump that used to run on
+  // mount fired before useCart had read localStorage, saw an empty cart and
+  // did nothing, so the first real renewal came a full interval later.
+  const heldRowsKey = items
+    .filter(i => i.holdIds && Object.values(i.holdIds).some(Boolean))
+    .map(i => i.id)
+    .join(',')
+  useEffect(() => {
+    if (enabled && heldRowsKey) void bump()
+  }, [enabled, heldRowsKey, bump])
+
   useEffect(() => {
     if (!enabled) return
     if (typeof document === 'undefined') return
-
-    // Initial bump on mount.
-    void bump()
 
     const onVisible = () => {
       if (document.visibilityState === 'visible') void bump()

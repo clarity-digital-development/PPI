@@ -738,6 +738,32 @@ export async function PATCH(
       )
     }
 
+    // A NEWLY-added item that sits reserved in a cart belongs to that cart's
+    // checkout. Taking it out of storage here made that checkout fail (and
+    // roll back every row with it). The edit screen already leaves reserved
+    // items out (cart_row=order-edit); this refuses a stale screen or a direct
+    // call. Items already on this order are exempt — they're out of storage
+    // by design and can't be reserved.
+    const freshIds = (field: keyof typeof attachedIds) =>
+      editData.items
+        .map((i) => i[field])
+        .filter((x): x is string => !!x && !attachedIds[field].has(x))
+    const liveHold = { heldByHoldId: { not: null }, heldUntil: { gt: new Date() } }
+    const [heldSigns, heldRiders, heldLockboxes] = await Promise.all([
+      prisma.customerSign.count({ where: { id: { in: freshIds('customer_sign_id') }, ...liveHold } }),
+      prisma.customerRider.count({ where: { id: { in: freshIds('customer_rider_id') }, ...liveHold } }),
+      prisma.customerLockbox.count({ where: { id: { in: freshIds('customer_lockbox_id') }, ...liveHold } }),
+    ])
+    if (heldSigns + heldRiders + heldLockboxes > 0) {
+      return NextResponse.json(
+        {
+          error: 'One of the items you added is reserved in a cart right now. Refresh this page and pick another, or check out or remove that cart order first.',
+          code: 'inventory_reserved',
+        },
+        { status: 409 }
+      )
+    }
+
     // Shrink a newly-attached install-location photo before the tx opens.
     // The edit wizard round-trips the STORED photo back in the PATCH body, so
     // compare against the row first — otherwise adding a note to an order would

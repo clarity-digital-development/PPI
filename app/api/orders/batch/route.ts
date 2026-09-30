@@ -633,19 +633,32 @@ export async function POST(request: NextRequest) {
         return out
       })
     } catch (txError) {
-      // Tx failed → no orders, no PI, no charge. Release any holds the user
-      // managed to acquire so they aren't locked out for 15 min on a retry.
+      // Tx failed → no orders, no PI, no charge. The rollback leaves every
+      // hold valid, and they are what keep the cart's items reserved for the
+      // retry — so only the ROW whose claim failed gives its holds up.
+      // Releasing every row's (as this used to) left the whole cart pointing
+      // at dead reservations the cart still showed as live, so each retry
+      // failed until they timed out ~15 min later. The failed row is released
+      // WHOLE, not just the one hold: a row left half-live is still reported
+      // as renewed by the heartbeat, so nothing would ever flag it — the cart
+      // marks it for re-picking from the conflict (app/dashboard/cart).
       // (releaseHolds.{actor} expects the AuditActor shape.)
-      if (allClaims.length > 0) {
-        await Promise.all(
-          allClaims.map((c) =>
-            releaseHolds(
-              { actor: { id: actor.id, email: actor.email, role: actor.role }, holdId: c.holdId },
-              { reason: 'tx_rollback' }
-            ).catch((err) => console.error('Batch: release after tx fail:', c.holdId, err))
-          )
+      const failedHoldId =
+        txError instanceof HoldConflictError && typeof txError.details.holdId === 'string'
+          ? txError.details.holdId
+          : null
+      const failedRow = failedHoldId
+        ? computed.find((c) => c.claims.some((cl) => cl.holdId === failedHoldId))
+        : undefined
+      const toRelease = failedRow ? Array.from(new Set(failedRow.claims.map((cl) => cl.holdId))) : []
+      await Promise.all(
+        toRelease.map((holdId) =>
+          releaseHolds(
+            { actor: { id: actor.id, email: actor.email, role: actor.role }, holdId },
+            { reason: 'tx_rollback' }
+          ).catch((err) => console.error('Batch: release after tx fail:', holdId, err))
         )
-      }
+      )
 
       if (txError instanceof HoldConflictError) {
         const conflict: HoldConflict = {

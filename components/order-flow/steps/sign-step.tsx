@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils'
 import type { StepProps } from '../types'
 import { PRICING } from '../types'
 import { SignLocationPicker } from './SignLocationPicker'
+import { storedSignOptions } from '../sign-options'
 
 export function SignStep({ formData, updateFormData, inventory, pickupFee, flatFee }: StepProps) {
   const hasStoredSigns = inventory?.signs && inventory.signs.length > 0
@@ -82,33 +83,19 @@ export function SignStep({ formData, updateFormData, inventory, pickupFee, flatF
               label="Select sign"
               value={formData.stored_sign_id || ''}
               onChange={(e) => updateFormData({ stored_sign_id: e.target.value })}
-              options={(() => {
-                // Group signs by description so duplicates only appear once --
-                // but key on description AND source. A brokerage pool (Ryan,
-                // 2026-09-08) can hold a sign described identically to the
-                // agent's own; grouping on description alone collapsed the two
-                // into a single option carrying whichever id sorted first, so
-                // the agent could never actually choose the brokerage sign and
-                // might consume the wrong physical one.
-                const grouped: Record<string, { id: string; label: string }> = {}
-                for (const sign of inventory!.signs) {
-                  const base = `${sign.description}${sign.size ? ` (${sign.size})` : ''}`
-                  // 'on-order' is the row this order already holds. It gets its own
-                  // option so it can never mask a same-described sign from either
-                  // pool, and is labelled so the agent can tell it apart.
-                  const label =
-                    sign.source === 'brokerage'
-                      ? `${base} — ${sign.source_label || 'Brokerage'}`
-                      : sign.source === 'on-order'
-                        ? `${base} — currently on this order`
-                        : base
-                  const key = `${base}::${sign.source ?? 'own'}`
-                  if (!grouped[key]) {
-                    grouped[key] = { id: sign.id, label }
-                  }
-                }
-                return Object.values(grouped).map(g => ({ value: g.id, label: g.label }))
-              })()}
+              // Grouped by description + source, never handing out the sign
+              // the second post already uses — see storedSignOptions. If both
+              // posts somehow hold the same sign, the main post keeps it and
+              // the second post's step clears its copy.
+              options={storedSignOptions(inventory!.signs, {
+                selectedId: formData.stored_sign_id,
+                takenId:
+                  formData.second_post_enabled &&
+                  formData.second_post_sign_option === 'stored' &&
+                  formData.second_post_stored_sign_id !== formData.stored_sign_id
+                    ? formData.second_post_stored_sign_id
+                    : undefined,
+              })}
             />
             {!formData.stored_sign_id && (
               <p className="mt-2 text-xs text-amber-700">

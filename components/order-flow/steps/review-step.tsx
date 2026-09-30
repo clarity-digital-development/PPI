@@ -829,6 +829,18 @@ export function ReviewStep({
       const oldHoldIds: Record<string, string> = existingHoldsAreDead
         ? {}
         : (existingRow?.holdIds || {})
+      // A row marked dead can still have a LIVE leftover (a checkout conflict
+      // flags the whole row though only one reservation failed). Clear them
+      // before reserving afresh, or the row collides with its own old hold
+      // and reports the item as "already in another cart". 404s on holds that
+      // are already gone are harmless.
+      if (existingHoldsAreDead && existingRow?.holdIds) {
+        await Promise.all(
+          Object.values(existingRow.holdIds).map(holdId =>
+            fetch(`/api/inventory/holds?id=${encodeURIComponent(holdId)}`, { method: 'DELETE' }).catch(() => undefined)
+          )
+        )
+      }
 
       // Each Customer*-typed line item needs a hold. Brochure boxes don't
       // participate in the hold infrastructure (quantity-aggregated).
@@ -848,7 +860,20 @@ export function ReviewStep({
         }
       }
 
+      // One physical item can only be reserved once. Two lines carrying the
+      // same id (both posts on one sign) used to reserve it twice, collide with
+      // themselves, and report "already in another cart" on every retry.
       const newKeys = new Set(holdRequests.map(r => r.key))
+      if (newKeys.size !== holdRequests.length) {
+        const dupField = holdRequests.find((r, i) => holdRequests.findIndex(o => o.key === r.key) !== i)?.field
+        throw new Error(
+          dupField === 'customer_sign_id'
+            ? 'The main post and the second post are set to the same sign. Go back to the Second Post step and pick a different sign.'
+            : dupField === 'customer_rider_id'
+              ? 'The same inventory rider is on both posts. An inventory rider can only go on one post per order — remove it from one post, or rent one for it.'
+              : 'The same item is picked twice on this order. Go back and pick a different one for one of them.'
+        )
+      }
       const toAcquire = holdRequests.filter(r => !oldHoldIds[r.key])
       const toReleaseHoldIds = Object.entries(oldHoldIds)
         .filter(([k]) => !newKeys.has(k))

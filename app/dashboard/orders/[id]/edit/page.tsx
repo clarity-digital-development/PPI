@@ -106,9 +106,13 @@ export default function EditOrderPage() {
         // team_admin editing her OWN order must not be offered the items she
         // has handed to her agents as if they were hers. Honoured for
         // team_admins only, so it's a no-op for everyone else.
+        // cart_row=order-edit matches no cart row, so nothing reserved in the
+        // cart is offered here: the edit would take it out of storage and that
+        // cart's checkout would then fail. The order's own items come back via
+        // augmentInventoryWithOrder, so the edit loses nothing.
         const inventoryUrl = memberIdScope
-          ? `/api/inventory?member_id=${encodeURIComponent(memberIdScope)}`
-          : '/api/inventory?unassigned=1'
+          ? `/api/inventory?member_id=${encodeURIComponent(memberIdScope)}&cart_row=order-edit`
+          : '/api/inventory?unassigned=1&cart_row=order-edit'
         const inventoryRes = await fetch(inventoryUrl)
         const rawInventory: WizardInventory | undefined = inventoryRes.ok
           ? await inventoryRes.json()

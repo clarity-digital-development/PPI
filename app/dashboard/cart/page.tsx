@@ -65,7 +65,11 @@ export default function CartPage() {
   useHoldHeartbeat({
     items,
     updateItem,
-    enabled: !checkingOut && !done,
+    // Keeps running after a FAILED checkout too (done is set either way): the
+    // rows left in the cart keep their reservations for the retry, and a row
+    // whose reservation the failure released gets flagged straight away. After
+    // a successful checkout the cart is empty, so there is nothing to renew.
+    enabled: !checkingOut,
     onConflict: (cartItemId) => {
       setExpiredRows(prev => {
         if (prev.has(cartItemId)) return prev
@@ -235,6 +239,26 @@ export default function CartPage() {
               ? (data.error || 'Batch failed')
               : 'Not placed — fix the flagged order above, then check out again.',
         })))
+        // A reservation conflict names the holds that failed. Their rows can't
+        // be retried as they are: mark them expired so checkout stays blocked
+        // until they're re-picked, and so opening the row re-reserves every
+        // pick from scratch instead of carrying a dead reservation forward.
+        if (data.code === 'hold_conflict' && Array.isArray(data.conflicts)) {
+          const deadHoldIds = new Set<string>(
+            data.conflicts
+              .map((c: { hold_id?: unknown }) => c.hold_id)
+              .filter((h: unknown): h is string => typeof h === 'string')
+          )
+          const deadRows = items.filter(i => Object.values(i.holdIds || {}).some(h => deadHoldIds.has(h)))
+          for (const row of deadRows) updateItem(row.id, { holdsExpireAt: new Date(0).toISOString() })
+          if (deadRows.length > 0) {
+            setExpiredRows(prev => {
+              const next = new Set(prev)
+              for (const r of deadRows) next.add(r.id)
+              return next
+            })
+          }
+        }
         setCheckingOut(false)
         setDone(true)
         return

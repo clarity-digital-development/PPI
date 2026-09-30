@@ -1,12 +1,12 @@
 'use client'
 
-import { useState, useEffect, useMemo, Suspense } from 'react'
+import { useState, useEffect, useMemo, useRef, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { Header } from '@/components/dashboard'
 import { OrderWizard } from '@/components/order-flow'
 import { Button, Card, Input } from '@/components/ui'
-import { useCart } from '@/lib/cart'
+import { useCart, useHoldHeartbeat } from '@/lib/cart'
 
 interface AgentBrief {
   id: string
@@ -65,8 +65,15 @@ function PlaceOrderPageInner() {
 
   // Editing an existing cart row: hydrate the wizard from its snapshot rather
   // than running the agent-picker gate.
-  const { items: cartItems, loaded: cartLoaded } = useCart()
+  const { items: cartItems, loaded: cartLoaded, updateItem: updateCartItem } = useCart()
   const editingItem = cartItemId ? cartItems.find(i => i.id === cartItemId) : undefined
+  // Keep the cart's reservations alive while the next order is being built
+  // here, not only while /dashboard/cart is open. A broker filling in several
+  // agent orders could otherwise outlast a row's 15-minute hold, and since
+  // general stock is offered to every agent row, a later row could take the
+  // item an earlier row had picked. A lost reservation is flagged when the
+  // cart page's own heartbeat runs, so no conflict handling is needed here.
+  useHoldHeartbeat({ items: cartItems, updateItem: updateCartItem })
 
   const [inventory, setInventory] = useState<Inventory | undefined>()
 
@@ -141,11 +148,14 @@ function PlaceOrderPageInner() {
         // ordering for themselves must not be offered the signs and riders
         // they've handed to their agents.
         const editingAgentId = editingItem?.agentId || undefined
+        // cart_row: which cart row this wizard is building, so items another
+        // row of the cart already reserved are left out of the pickers.
+        const cartRowParam = `cart_row=${encodeURIComponent(editingItem?.id ?? 'new')}`
         const inventoryUrl = onBehalfOf
-          ? `/api/inventory?on_behalf_of=${encodeURIComponent(onBehalfOf)}`
+          ? `/api/inventory?on_behalf_of=${encodeURIComponent(onBehalfOf)}&${cartRowParam}`
           : editingAgentId
-            ? `/api/inventory?member_id=${encodeURIComponent(editingAgentId)}`
-            : '/api/inventory?unassigned=1'
+            ? `/api/inventory?member_id=${encodeURIComponent(editingAgentId)}&${cartRowParam}`
+            : `/api/inventory?unassigned=1&${cartRowParam}`
 
         const requests: Promise<Response>[] = [
           fetch(inventoryUrl),
@@ -232,24 +242,34 @@ function PlaceOrderPageInner() {
   }, [onBehalfOf, cartLoaded, editingItem?.agentId, teamMemberIdParam])
 
   // Load the selected team member's filtered inventory, then drop into the wizard.
+  // Only the LATEST agent pick may fill the pickers. "Change agent" works
+  // while a load is in flight, and without this a slow response for the first
+  // agent could land after the second's — putting agent A's assigned signs
+  // into agent B's order.
+  const memberFetchSeq = useRef(0)
   async function handleSelectMember(member: TeamMember) {
+    const seq = ++memberFetchSeq.current
     setSelectedMember(member)
     setMemberInventory(undefined)
     setMemberInventoryLoading(true)
     try {
-      const res = await fetch(`/api/inventory?member_id=${encodeURIComponent(member.id)}`)
+      // A freshly picked agent is always a new cart row.
+      const res = await fetch(`/api/inventory?member_id=${encodeURIComponent(member.id)}&cart_row=new`)
+      if (seq !== memberFetchSeq.current) return
       if (res.ok) {
         const data = await res.json()
+        if (seq !== memberFetchSeq.current) return
         setMemberInventory(data)
       }
     } catch (error) {
-      console.error('Error loading member inventory:', error)
+      if (seq === memberFetchSeq.current) console.error('Error loading member inventory:', error)
     } finally {
-      setMemberInventoryLoading(false)
+      if (seq === memberFetchSeq.current) setMemberInventoryLoading(false)
     }
   }
 
   function handleChangeAgent() {
+    memberFetchSeq.current++
     setSelectedMember(null)
     setMemberInventory(undefined)
     setMemberInventoryLoading(false)

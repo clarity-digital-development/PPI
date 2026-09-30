@@ -22,6 +22,10 @@ export async function GET(request: NextRequest) {
     // signs and riders as the admin's own — and riders collapse into one
     // option per type, so picking "For Sale" could quietly take an agent's.
     const unassignedOnly = searchParams.get('unassigned') === '1'
+    // Which cart row the order wizard is building: its cart item id when
+    // editing one, 'new' for an order not in the cart yet. See the hold
+    // visibility note below. Absent for every other caller.
+    const cartRow = searchParams.get('cart_row')
     let targetUserId = user.id
     if (onBehalfOf && onBehalfOf !== user.id) {
       if (!(await canActOnBehalfOf(user, onBehalfOf))) {
@@ -41,6 +45,9 @@ export async function GET(request: NextRequest) {
       | { assignedToMemberId: null }
       | { OR: Array<{ assignedToMemberId: string | null }> }
       | undefined
+    // Set when a broker orders for one of her agents: her unassigned stock is
+    // listed alongside the agent's own items, labelled as general stock.
+    let labelGeneralStock = false
     if (unassignedOnly && user.role === 'team_admin' && !memberId && targetUserId === user.id) {
       // Own-account read only: never narrows someone else's inventory, and
       // member_id already scopes the roster path on its own. team_admin only —
@@ -60,26 +67,30 @@ export async function GET(request: NextRequest) {
       }
       // Items are physically held under the team_admin's account.
       targetUserId = user.id
-      // A broker who puts HERSELF on her own roster and picks her own name is
-      // ordering for herself, so she also gets her unassigned stock — exactly
-      // what "Order for myself" shows. Assigned-only made her assign items to
-      // herself, order, then un-assign them so her agents could see them again
-      // (Ryan, 2026-09-29, Katie Kelley; Rebecca Steele is set up the same way).
+      // What the agent was handed PLUS the broker's unassigned stock. Brokers
+      // stock general signs for everyone, so unassigned means "general", not
+      // "nobody's" (Ryan, 2026-09-30: Sienna Palombino ordering for an agent
+      // saw no signs at all, and had to assign signs before every order).
+      // Items assigned to OTHER members stay hidden — the "every rider showed
+      // up for everyone" bug.
       //
-      // ONLY for her own row. Every other member stays assigned-only: adding
-      // unassigned stock to every agent's picker let one cart row be handed
-      // the copy another row had already reserved (a 409 with no way out),
-      // and merged an agent's own items with generic stock so the order could
-      // pull the wrong physical one. Items assigned to OTHER members stay
-      // hidden either way — the "every rider showed up for everyone" bug.
+      // This used to be her own roster row only (2026-09-29), for two reasons
+      // now handled elsewhere: one cart row could be offered the copy another
+      // row had already reserved (the order wizard now sends cart_row, and
+      // other rows' reservations are left out — below), and an agent's own
+      // items merged with generic stock so the order could pull the wrong
+      // physical one (general stock is now its own labelled group, and a
+      // general rider type the agent already has is dropped, exactly like a
+      // linked agent's brokerage riders).
+      memberFilter = { OR: [{ assignedToMemberId: memberId }, { assignedToMemberId: null }] }
+      // Not labelled when she picks HER OWN name (she puts herself on her own
+      // roster): unassigned stock is simply hers, as on "Order for myself".
       const norm = (v: string | null | undefined) => (v ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
       const isOwnRow =
         member.userId === user.id ||
         (!!member.email && norm(member.email) === norm(user.email)) ||
         (!!norm(member.name) && [user.fullName, user.name].some((n) => norm(n) === norm(member.name)))
-      memberFilter = isOwnRow
-        ? { OR: [{ assignedToMemberId: memberId }, { assignedToMemberId: null }] }
-        : { OR: [{ assignedToMemberId: memberId }] }
+      labelGeneralStock = !isOwnRow
     }
 
     // Linked brokerage inventory (Ryan, 2026-09-08): an agent's pickers show
@@ -133,10 +144,16 @@ export async function GET(request: NextRequest) {
         }
       : { userId: targetUserId }
     const ownerFilter = { userId: targetUserId }
-    const sourceOf = (rowUserId: string) =>
-      pool && rowUserId === pool.ownerUserId
+    // 'brokerage' marks anything that isn't the order owner's own: a linked
+    // agent's pool items, or a broker's general stock in an agent's picker.
+    // It keeps them in separate groups from the owner's items (so the id the
+    // order consumes is the one picked), sorts them after, and labels them.
+    const sourceOf = (row: { userId: string; assignedToMemberId: string | null }) =>
+      pool && row.userId === pool.ownerUserId
         ? { source: 'brokerage' as const, source_label: pool.name }
-        : { source: 'own' as const, source_label: null }
+        : labelGeneralStock && row.assignedToMemberId === null
+          ? { source: 'brokerage' as const, source_label: 'General stock' }
+          : { source: 'own' as const, source_label: null }
 
     // Single Date instance shared by the hold-visibility filter and the
     // held_until_other computation so a row that's "live" in the query is
@@ -146,15 +163,24 @@ export async function GET(request: NextRequest) {
     // Fetch live holds owned by the requester. Items pointing at these holds
     // are visible to them (their own cart). Stale or foreign holds are handled
     // in the OR clause below.
-    const myHoldRows = await prisma.inventoryHold.findMany({
+    const allMyHoldRows = await prisma.inventoryHold.findMany({
       where: {
         ownerUserId: user.id,
         consumedByOrderId: null,
         releasedAt: null,
         expiresAt: { gt: currentMoment },
       },
-      select: { id: true },
+      select: { id: true, cartItemId: true },
     })
+    // The order wizard names the cart row it is building (cart_row). An item
+    // reserved by a DIFFERENT row of the same cart is left out, exactly like
+    // one in someone else's cart: offering it let a second row pick the copy
+    // the first had reserved, and adding that row then failed with "already
+    // in another cart" however often the list was refreshed. It matters now
+    // that general stock appears in every agent's picker (2026-09-30).
+    const myHoldRows = cartRow
+      ? allMyHoldRows.filter((h) => h.cartItemId === null || h.cartItemId === cartRow)
+      : allMyHoldRows
     const myHoldIds = myHoldRows.map(h => h.id)
     const myHoldIdSet = new Set(myHoldIds)
     const canSeeForeignExpiry = user.role === 'admin'
@@ -217,7 +243,7 @@ export async function GET(request: NextRequest) {
         id: sign.id,
         description: sign.description,
         size: null, // Not tracked in current schema
-        ...sourceOf(sign.userId),
+        ...sourceOf(sign),
         ...holdFlagsFor(sign),
       }))
       // Own inventory first so an agent's default pick stays their own.
@@ -250,7 +276,7 @@ export async function GET(request: NextRequest) {
     > = {}
     for (const rider of rawRiders) {
       const riderType = rider.rider.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/, '')
-      const origin = sourceOf(rider.userId)
+      const origin = sourceOf(rider)
       const key = `${riderType}::${origin.source}`
       const flags = holdFlagsFor(rider)
       if (riderCounts[key]) {
@@ -303,7 +329,7 @@ export async function GET(request: NextRequest) {
         lockbox_code: lockbox.code,
         // Serial flows into the line-item description so installers know which physical box to bring
         serial_number: lockbox.serialNumber,
-        ...sourceOf(lockbox.userId),
+        ...sourceOf(lockbox),
         ...holdFlagsFor(lockbox),
       }
     })
