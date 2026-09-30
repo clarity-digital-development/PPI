@@ -100,6 +100,13 @@ const howToVideos = [
     label: 'How to Schedule Pickup',
     url: 'https://www.dropbox.com/scl/fo/mof43ou4341wceaq2aymp/AKVW8rnGfhYNjzdg0tCTZRo/How%20to%20Schedule%20Pickup.mov?rlkey=hisd2ie99xtlyk7dz5p8g5dbg&raw=1',
   },
+  // Ryan, Slack 2026-09-29. A ~9 MB phone screen recording, so it's served
+  // from public/ rather than Dropbox — small enough that hosting it
+  // ourselves costs nothing.
+  {
+    label: 'From Phone: How to Schedule Removal',
+    url: '/how-to/from-phone-how-to-schedule-removal.mp4',
+  },
   {
     label: 'Change/Cancel Orders',
     url: 'https://www.dropbox.com/scl/fi/p856d05b650d2xyvc6r9r/How-To-Change-or-Cancel-Orders.mov?rlkey=6h7wchuxl34isalblcn8j140n&st=3wo7mywr&raw=1',
@@ -302,7 +309,9 @@ const Sidebar = () => {
             src={activeVideo.url}
             controls
             autoPlay
-            className="w-full rounded-lg bg-black"
+            // Capped in height: a portrait phone recording at full modal
+            // width would run far off the bottom of the screen.
+            className="w-full max-h-[75vh] rounded-lg bg-black"
           />
         )}
       </Modal>
