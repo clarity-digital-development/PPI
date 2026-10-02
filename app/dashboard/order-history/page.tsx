@@ -21,6 +21,8 @@ interface BundleResponse {
     // Out-of-area pickup halves billed on this invoice (Ryan, 2026-09-28).
     // Optional so a response from before the deploy still reads.
     pickup_count?: number
+    // Post rental lines billed on it (Ryan, 2026-09-28). Optional likewise.
+    rental_count?: number
     pdf_url: string
     pay_url: string | null
   }
@@ -181,9 +183,11 @@ export default function OrderHistoryPage() {
       }
       const ok = data as BundleResponse
       // A pickup-only invoice would otherwise read "0 order(s) + 0 service trip(s)".
-      const pickupPart = (ok.invoice.pickup_count ?? 0) > 0
+      const pickupPart = ((ok.invoice.pickup_count ?? 0) > 0
         ? ` + ${ok.invoice.pickup_count} out-of-area pickup(s)`
-        : ''
+        : '') + ((ok.invoice.rental_count ?? 0) > 0
+        ? ` + ${ok.invoice.rental_count} post rental charge(s)`
+        : '')
       if (mode === 'send') {
         setGenerateSuccess(
           `Invoice ${ok.invoice.invoice_number} sent to ${ok.sent_to_email} — ${ok.invoice.order_count} order(s) + ${ok.invoice.service_request_count} service trip(s)${pickupPart}, $${ok.invoice.total.toFixed(2)}.`,

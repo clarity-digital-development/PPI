@@ -44,7 +44,7 @@ export async function POST(
         include: { installation: { select: { propertyAddress: true, propertyCity: true, propertyState: true, propertyZip: true } } },
         orderBy: { completedAt: 'asc' },
       },
-      _count: { select: { ooaPickupOrders: true } },
+      _count: { select: { ooaPickupOrders: true, postRentalCharges: true } },
     },
   })
   if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
@@ -87,6 +87,7 @@ export async function POST(
   // uniqueness across rapid retries.
   const bump = `${invoice.updatedAt.getTime()}-${Date.now()}`
   const pickupCount = invoice._count.ooaPickupOrders
+  const rentalCount = invoice._count.postRentalCharges
   let newLink: { id: string; url: string | null }
   try {
     newLink = await createInvoiceCheckoutSession({
@@ -99,7 +100,7 @@ export async function POST(
       customerEmail: recipientEmail,
       successUrl: `${baseUrl}/invoice-paid?invoice=${invoice.invoiceNumber}`,
       cancelUrl: `${baseUrl}/invoice-cancelled?invoice=${invoice.invoiceNumber}`,
-      description: `${invoice.orders.length} order(s) + ${invoice.serviceRequests.length} service trip(s)${pickupCount > 0 ? ` + ${pickupCount} out-of-area pickup(s)` : ''}`,
+      description: `${invoice.orders.length} order(s) + ${invoice.serviceRequests.length} service trip(s)${pickupCount > 0 ? ` + ${pickupCount} out-of-area pickup(s)` : ''}${rentalCount > 0 ? ` + ${rentalCount} post rental charge(s)` : ''}`,
     })
   } catch (err) {
     console.error('Regenerate: Stripe Payment Link create failed:', err)
@@ -139,6 +140,7 @@ export async function POST(
       orderCount: invoice.orders.length,
       serviceRequestCount: invoice.serviceRequests.length,
       pickupCount,
+      rentalCount,
       pdfBytes,
       pdfUrl: invoice.publicPdfToken
         ? `${baseUrl}/api/invoices/${invoice.id}/pdf?token=${invoice.publicPdfToken}`

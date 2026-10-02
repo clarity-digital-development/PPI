@@ -29,11 +29,17 @@
  *     tuples via chargesDue(), insert any not already present. Unique
  *     constraint dedupes against prior runs.
  *   Pass 2 — Attempting: claim every scheduled row whose periodStart is
- *     in the past via atomic conditional updateMany (scheduled→attempting),
- *     then charge Stripe off-session with an idempotency key derived from
+ *     in the past via atomic conditional updateMany (scheduled→attempting).
+ *     An invoice account's row is queued ('pending_invoice') for its next
+ *     bundled invoice — its card is never charged here. Everyone else is
+ *     charged off-session with an idempotency key derived from
  *     (orderId, periodStart). Mark succeeded/failed accordingly; send the
  *     customer a receipt on success and an admin alert on failure (except
  *     'no_payment_method', which is too noisy to alert on every day).
+ *
+ * WHO IS CHARGED (Ryan, 2026-09-28)
+ *   The account that pays for the order (placedBy ?? user) — its
+ *   postRentalChargedFrom switch decides whether, and from which period on.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -47,6 +53,8 @@ import {
   chargesDue,
   isPostRentalEligible,
   getBillingStartAt,
+  payerChargesPeriod,
+  rentalPayer,
   type DueCharge,
 } from '@/lib/post-rental-billing'
 import {
@@ -82,6 +90,7 @@ interface CronSummary {
   succeeded: number
   failed: number
   skipped: number
+  queuedForInvoice: number
   dryRun: boolean
   billingStartAt: string
   durationMs: number
@@ -110,7 +119,7 @@ export async function GET(request: NextRequest) {
 
   const summary: CronSummary = {
     scanned: 0, eligible: 0, scheduled: 0, attempted: 0,
-    succeeded: 0, failed: 0, skipped: 0,
+    succeeded: 0, failed: 0, skipped: 0, queuedForInvoice: 0,
     dryRun,
     billingStartAt: billingStartAt.toISOString(),
     durationMs: 0,
@@ -123,27 +132,19 @@ export async function GET(request: NextRequest) {
     // ─────────────── Pass 1: scheduling ───────────────
     // Narrow the scan to orders that COULD plausibly be rentable so we don't
     // pull every order in the DB each day.
+    // Invoice accounts are scanned too now: their rental is queued for their
+    // next invoice in Pass 2, never charged to a card (Ryan, 2026-09-28). An
+    // invoice order may still be 'pending_invoice' six months on.
     const orders = await prisma.order.findMany({
       where: {
         status: 'completed',
-        paymentStatus: 'succeeded',
+        paymentStatus: { in: ['succeeded', 'pending_invoice'] },
         postRentalStoppedAt: null,
         // CR2: never schedule rental for orders manually opted out (own post).
         postRentalDisabled: false,
         installation: { is: { status: 'active' } },
-        // Defense in depth: NEVER auto-charge an invoice-billing customer's
-        // card here, even if their order somehow got into paymentStatus
-        // 'succeeded' (e.g. via the orders/[id] complete-charge bug). Their
-        // cards may only be charged via the customer-initiated Stripe
-        // Payment Link on a bundled invoice — never on a cron.
-        user: { invoiceBilling: false },
-        // ...and the same for the PAYER. On a team_admin's on-behalf order
-        // the owner above is the agent, while resolveBillingPayer charges the
-        // team_admin's card first — which for an invoice-billing brokerage is
-        // exactly the card this guard exists to protect.
-        OR: [{ placedByUserId: null }, { placedBy: { is: { invoiceBilling: false } } }],
       },
-      include: { user: true, installation: true },
+      include: { user: true, placedBy: true, installation: true },
     })
     summary.scanned = orders.length
 
@@ -160,7 +161,12 @@ export async function GET(request: NextRequest) {
       summary.eligible++
       if (!order.installation) continue // narrowed by predicate, but TS guard
 
-      const due = chargesDue(order.installation.installedAt, now)
+      // Only periods the paying account is charged for — one switched on
+      // today is billed from today on, never back-billed.
+      const payer = rentalPayer(order)
+      const due = chargesDue(order.installation.installedAt, now).filter((d) =>
+        payerChargesPeriod(payer, d.periodStart),
+      )
       for (const d of due) {
         if (dryRun) {
           wouldSchedule.push({
@@ -258,27 +264,73 @@ export async function GET(request: NextRequest) {
           continue
         }
 
-        const payer = await resolveBillingPayer(row.order)
-        const customerEmail = row.order.user.email
-
-        // Defense in depth #2: even after the Pass-1 findMany filter, refuse
-        // to call paymentIntents.create for any row whose underlying order
-        // owner is on invoice billing. Catches PostRentalCharge rows that
-        // were scheduled BEFORE this guard shipped (rows that already exist
-        // in 'due' state for invoice-billing customers — mark them failed
-        // with a clear reason instead of charging). The payer counts too, as
-        // in Pass 1 — placedBy is the first card resolveBillingPayer tries.
-        if (row.order.user.invoiceBilling || row.order.placedBy?.invoiceBilling) {
-          await markFailed(
-            row.id,
-            'invoice_billing',
-            'Customer is on invoice billing — auto-charge not permitted; bundle on next invoice instead',
-            row.attemptCount + 1,
-          )
+        // Re-checked against the paying account as it is NOW: switched off
+        // since this row was scheduled (a failed row retried later, say), or
+        // a period from before it was switched on → never billed.
+        // The order's own opt-out (customer-owned post) is re-checked here too:
+        // a failed row retried after it was turned on must not bill.
+        const rentPayer = rentalPayer(row.order)
+        const skipReason = row.order.postRentalDisabled
+          ? { code: 'manual_opt_out', message: 'Post rental disabled for this order.' }
+          : !payerChargesPeriod(rentPayer, row.periodStart)
+            ? { code: 'account_not_charged', message: 'This account is not charged post rental for this period.' }
+            : null
+        if (skipReason) {
+          await prisma.postRentalCharge.update({
+            where: { id: row.id },
+            data: {
+              status: 'skipped',
+              failureCode: skipReason.code,
+              failureMessage: skipReason.message,
+            },
+          })
           summary.skipped++
           summary.attempted--
+          await audit({
+            actor: { system: true },
+            action: AuditAction.PostRentalChargeSkipped,
+            targetType: 'post_rental_charge',
+            targetId: row.id,
+            metadata: { reason: skipReason.code },
+          })
           continue
         }
+
+        // Invoice account: its card is never charged automatically, anywhere
+        // in the system. The rental waits for its next bundled invoice as its
+        // own line (lib/invoices/post-rental-lines.ts) and flips to
+        // 'succeeded' when that invoice is paid. Conditional on the claim
+        // above, so a double runner can't queue it twice.
+        if (rentPayer.invoiceBilling) {
+          const queued = await prisma.postRentalCharge.updateMany({
+            // Also conditional on the order still billing rental, so a
+            // "customer-owned post" toggle landing mid-run can't be overrun.
+            where: { id: row.id, status: 'attempting', order: { postRentalDisabled: false } },
+            data: { status: 'pending_invoice', failureCode: null, failureMessage: null },
+          })
+          summary.attempted--
+          if (queued.count !== 1) {
+            // Lost to that toggle: record it like the other skips.
+            await prisma.postRentalCharge.updateMany({
+              where: { id: row.id, status: 'attempting' },
+              data: { status: 'skipped', failureCode: 'manual_opt_out', failureMessage: 'Post rental disabled for this order.' },
+            })
+            summary.skipped++
+          } else {
+            summary.queuedForInvoice++
+            await audit({
+              actor: { system: true },
+              action: AuditAction.PostRentalChargeQueuedForInvoice,
+              targetType: 'post_rental_charge',
+              targetId: row.id,
+              metadata: { orderId: row.orderId, amountCents: row.amountCents, payerUserId: rentPayer.id },
+            })
+          }
+          continue
+        }
+
+        const payer = await resolveBillingPayer(row.order)
+        const customerEmail = row.order.user.email
 
         if (!payer || !payer.stripeCustomerId || !payer.paymentMethodId) {
           await markFailed(row.id, 'no_payment_method', 'No card on file', row.attemptCount + 1)
@@ -532,10 +584,14 @@ async function resolveBillingPayer(order: OrderForPayer): Promise<BillingPayer |
   for (const candidateId of candidateIds) {
     const user = await prisma.user.findUnique({
       where: { id: candidateId },
-      select: { id: true, stripeCustomerId: true, teamId: true, role: true },
+      select: { id: true, stripeCustomerId: true, teamId: true, role: true, invoiceBilling: true },
     })
     if (!user) continue
     if (!user.stripeCustomerId) continue
+    // An invoice account's card is never charged automatically — its rental
+    // goes on its invoice (Pass 2). Only reachable for the owner of an order
+    // a card account paid for; skip to the next candidate.
+    if (user.invoiceBilling) continue
     const pm =
       (await prisma.paymentMethod.findFirst({ where: { userId: user.id, isDefault: true } })) ||
       (await prisma.paymentMethod.findFirst({ where: { userId: user.id } }))

@@ -45,10 +45,28 @@ export async function POST(
       return NextResponse.json({ success: true, disabled, changed: false })
     }
 
-    await prisma.order.update({
-      where: { id: orderId },
-      data: { postRentalDisabled: disabled },
-    })
+    // Disabling also cancels this order's rental that hasn't been billed yet:
+    // queued for an invoice account's next invoice, scheduled, or failed and
+    // awaiting a retry. Left alone, a queued row would still land on the next
+    // invoice. One already on an invoice (invoiceId set) or charged stays —
+    // the bundlers' claim needs 'pending_invoice' + no invoice, so a bundle
+    // racing this either claims first (row kept) or finds it skipped (409).
+    const [, skipped] = await prisma.$transaction([
+      prisma.order.update({
+        where: { id: orderId },
+        data: { postRentalDisabled: disabled },
+      }),
+      prisma.postRentalCharge.updateMany({
+        where: disabled
+          ? { orderId, invoiceId: null, status: { in: ['pending_invoice', 'scheduled', 'failed'] } }
+          : { id: '__none__' },
+        data: {
+          status: 'skipped',
+          failureCode: 'manual_opt_out',
+          failureMessage: 'Post rental disabled for this order before it was billed.',
+        },
+      }),
+    ])
 
     await audit({
       actor: { id: user.id, email: user.email, role: user.role },
@@ -60,6 +78,7 @@ export async function POST(
         before,
         after: disabled,
         reason,
+        skippedUnbilledRentals: skipped.count,
       },
       request,
     })

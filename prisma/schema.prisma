@@ -105,6 +105,17 @@ model User {
   // per-order tax was already charged at full price, so discounting it too
   // would mean remitting tax that was never collected.
   invoiceDiscountPercent Decimal? @db.Decimal(5, 2) @map("invoice_discount_percent")
+  // Post rental ($18 at 6 months, $18 at 9, then $6 a month while a post is
+  // out): whether this account is charged it, and from when. Null = not
+  // charged. Otherwise rental periods starting on or after this moment are
+  // billed — to the card on file, or onto the next bundled invoice for an
+  // invoice account (Ryan, 2026-09-28: "post rental charge to be another
+  // toggle … charge to card on file when it happens or have it add to
+  // invoice"). Defaults to the account's creation, so new accounts, new
+  // brokerages included, are charged. Turning it on later stamps that moment,
+  // so periods that already started are never back-billed. Decided by
+  // whoever pays for the order (placedBy ?? user), like the out-of-area fee.
+  postRentalChargedFrom DateTime? @default(now()) @map("post_rental_charged_from")
   // Optional billing-contact email — when set, bundled-invoice emails go
   // here instead of the broker's account email. Lets a broker route bills
   // to their accountant without forwarding. Falls back to `email` when null.
@@ -720,6 +731,9 @@ model Invoice {
   // Out-of-area pickup halves billed on this invoice (their orders usually
   // sit on an earlier one). Lines sit in `subtotal` like service trips.
   ooaPickupOrders Order[]          @relation("OrderOOAPickupInvoice")
+  // Post rental billed on this invoice (an invoice account's rental is never
+  // charged to a card). Lines sit in `subtotal` like the pickups above.
+  postRentalCharges PostRentalCharge[]
 
   @@index([userId])
   @@index([status])
@@ -1280,12 +1294,19 @@ model PostRentalCharge {
   failureCode           String?                @map("failure_code")
   failureMessage        String?                @map("failure_message")
   attemptCount          Int                    @default(0) @map("attempt_count")
+  // An invoice account's rental is queued ('pending_invoice') instead of
+  // charged, and lands here once a bundle picks it up — its own line on that
+  // invoice (lib/invoices/post-rental-lines.ts). Flips to 'succeeded' when the
+  // invoice is paid.
+  invoiceId             String?                @map("invoice_id")
+  invoice               Invoice?               @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
   createdAt             DateTime               @default(now()) @map("created_at")
   updatedAt             DateTime               @updatedAt @map("updated_at")
 
   @@unique([orderId, periodStart], name: "post_rental_charge_order_period_unique")
   @@index([status, periodStart])
   @@index([orderId])
+  @@index([invoiceId])
   @@map("post_rental_charges")
 }
 
@@ -1301,6 +1322,9 @@ enum PostRentalChargeStatus {
   succeeded
   failed
   skipped
+  // Invoice account: waiting for (or on) a bundled invoice instead of a card
+  // charge. invoiceId says which, once bundled.
+  pending_invoice
 }
 
 // Per-user notification-preference change log — answers "when did Peggy opt out"

@@ -13,6 +13,12 @@ import {
   ooaPickupCents,
   toInvoicePickup,
 } from '@/lib/invoices/ooa-pickups'
+import {
+  attachPostRentals,
+  findSweepablePostRentals,
+  postRentalCents,
+  toInvoiceRental,
+} from '@/lib/invoices/post-rental-lines'
 
 /**
  * Admin invoice bundler.
@@ -151,6 +157,10 @@ export async function GET(request: NextRequest) {
     // filter, like adjustments: a pickup belongs to whichever invoice is next.
     const pickups = await findSweepableOOAPickups(prisma, customerId, orders.map((o) => o.id), { kind: 'all' })
     const pickupCents = ooaPickupCents(pickups)
+    // Post rental queued for this invoice account (Ryan, 2026-09-28) — same
+    // helper and scope the POST claims with, and like pickups, no date filter.
+    const rentals = await findSweepablePostRentals(prisma, customerId, orders.map((o) => o.id), { kind: 'all' })
+    const rentalCents = postRentalCents(rentals)
 
     const ordersSubtotal = orders.reduce((s, o) => s + Number(o.subtotal || 0), 0)
     const ordersTotal = orders.reduce((s, o) => s + Number(o.total || 0), 0)
@@ -161,10 +171,10 @@ export async function GET(request: NextRequest) {
     // OLD invoices and are never in this invoice's orders relation. Pickups
     // are different: they're real lines on THIS invoice (re-derived live via
     // ooaPickupOrders), untaxed like service trips, so they sit in subtotal
-    // and the broker discount covers them.
-    const subtotal = ordersSubtotal + srTotal + pickupCents / 100
+    // and the broker discount covers them. Post rental lines likewise.
+    const subtotal = ordersSubtotal + srTotal + pickupCents / 100 + rentalCents / 100
     const discount = invoiceDiscount(subtotal, previewCustomer?.invoiceDiscountPercent)
-    const total = ordersTotal + srTotal + pickupCents / 100 + adjustmentCents / 100 - discount.amount
+    const total = ordersTotal + srTotal + pickupCents / 100 + rentalCents / 100 + adjustmentCents / 100 - discount.amount
     return NextResponse.json({
       discount_percent: discount.amount > 0 ? discount.percent : null,
       discount_amount: discount.amount > 0 ? discount.amount : null,
@@ -204,13 +214,26 @@ export async function GET(request: NextRequest) {
           amount: line.amount,
         }
       }),
+      rentals: rentals.map((r) => {
+        const line = toInvoiceRental(r)
+        return {
+          charge_id: line.charge_id,
+          order_id: line.order_id,
+          order_number: line.order_number,
+          property: `${line.property_address}, ${line.property_city}, ${line.property_state} ${line.property_zip}`,
+          period_start: line.period_start,
+          period_end: line.period_end,
+          amount: line.amount,
+        }
+      }),
       subtotal,
       total,
-      count: orders.length + serviceRequests.length + adjustmentOrders.length + pickups.length,
+      count: orders.length + serviceRequests.length + adjustmentOrders.length + pickups.length + rentals.length,
       order_count: orders.length,
       service_request_count: serviceRequests.length,
       adjustment_count: adjustmentOrders.length,
       pickup_count: pickups.length,
+      rental_count: rentals.length,
     })
   }
 
@@ -226,7 +249,7 @@ export async function GET(request: NextRequest) {
       // serviceRequests count needed so the admin list shows "N orders + M
       // service trips" alongside paid/sent dates instead of just orders;
       // ooaPickupOrders so a pickup-only invoice doesn't read as "0 orders".
-      _count: { select: { orders: true, serviceRequests: true, ooaPickupOrders: true } },
+      _count: { select: { orders: true, serviceRequests: true, ooaPickupOrders: true, postRentalCharges: true } },
     },
     orderBy: { createdAt: 'desc' },
     take: 100,
@@ -249,6 +272,7 @@ export async function GET(request: NextRequest) {
       order_count: i._count.orders,
       service_request_count: i._count.serviceRequests,
       pickup_count: i._count.ooaPickupOrders,
+      rental_count: i._count.postRentalCharges,
       created_at: i.createdAt.toISOString(),
       // Background-worker state for the email-status badge + Resend button.
       email_status: i.emailStatus,
@@ -380,19 +404,23 @@ export async function POST(request: NextRequest) {
     // conditional update, so two parallel sends can't both bill one.
     const pickups = await findSweepableOOAPickups(tx, customerId, orders.map((o) => o.id), { kind: 'all' })
     const pickupCents = ooaPickupCents(pickups)
+    // Queued post rental — same helper + scope as the preview, claimed below
+    // per row the same way.
+    const rentals = await findSweepablePostRentals(tx, customerId, orders.map((o) => o.id), { kind: 'all' })
+    const rentalCents = postRentalCents(rentals)
 
-    // A pickup-only invoice is a normal case: the install was billed last
-    // month and the sign came down this month.
-    if (orders.length === 0 && serviceRequests.length === 0 && adjustmentOrders.length === 0 && pickups.length === 0) {
+    // A pickup-only or rental-only invoice is a normal case: the install was
+    // billed months ago and only the pickup or the rent is new.
+    if (orders.length === 0 && serviceRequests.length === 0 && adjustmentOrders.length === 0 && pickups.length === 0 && rentals.length === 0) {
       return { invoice: null, ordersCount: 0, serviceRequestsCount: 0, subtotal: 0, total: 0 }
     }
 
     const ordersSubtotal = orders.reduce((s, o) => s + Number(o.subtotal || 0), 0)
     const ordersTotal = orders.reduce((s, o) => s + Number(o.total || 0), 0)
     const srTotal = serviceRequests.reduce((s, sr) => s + Number(sr.invoiceAmount || 0), 0)
-    // Adjustments ride into TOTAL only; pickups sit in subtotal (discounted,
-    // untaxed) — see the preview branch comment.
-    const subtotal = ordersSubtotal + srTotal + pickupCents / 100
+    // Adjustments ride into TOTAL only; pickups and rentals sit in subtotal
+    // (discounted, untaxed) — see the preview branch comment.
+    const subtotal = ordersSubtotal + srTotal + pickupCents / 100 + rentalCents / 100
     // Broker discount off the pre-tax subtotal — see lib/invoices/discount.ts.
     // Deliberately NOT applied to `adjustmentCents`: an adjustment is a
     // tax-inclusive correction to an order that a PREVIOUS invoice already
@@ -403,13 +431,13 @@ export async function POST(request: NextRequest) {
     // this is a documented choice rather than an observed behaviour — revisit
     // with Ryan the first time an invoice actually carries one.
     const discount = invoiceDiscount(subtotal, customer.invoiceDiscountPercent)
-    const total = ordersTotal + srTotal + pickupCents / 100 + adjustmentCents / 100 - discount.amount
+    const total = ordersTotal + srTotal + pickupCents / 100 + rentalCents / 100 + adjustmentCents / 100 - discount.amount
 
     // Net-negative or zero invoices can't be collected via a Stripe Payment
     // Link. Rare (needs credits exceeding the period's new work) — surface it
     // to the admin instead of creating an uncollectable invoice.
     if (total <= 0) {
-      const charges = (ordersTotal + srTotal + pickupCents / 100).toFixed(2)
+      const charges = (ordersTotal + srTotal + pickupCents / 100 + rentalCents / 100).toFixed(2)
       throw uncollectableInvoice(
         discount.amount > 0
           ? `This period's charges ($${charges}) don't cover the ${discount.percent}% discount (-$${discount.amount.toFixed(2)}) plus pending adjustments (-$${Math.abs(adjustmentCents / 100).toFixed(2)}). Handle it manually, or wait for more orders before invoicing.`
@@ -496,6 +524,8 @@ export async function POST(request: NextRequest) {
     // Claim each pickup half for this invoice; a row that changed or was
     // claimed mid-bundle throws the race error and rolls everything back.
     await attachOOAPickups(tx, pickups, invoice.id)
+    // Same for each queued post rental.
+    await attachPostRentals(tx, rentals, invoice.id)
 
     // Sweep the adjustments: zero each source column ONLY if it still holds
     // the value we read (an edit saving mid-bundle would change it — count
@@ -522,11 +552,13 @@ export async function POST(request: NextRequest) {
       adjustmentsCount: adjustmentOrders.length,
       adjustmentCents,
       pickupsCount: pickups.length,
+      rentalsCount: rentals.length,
       subtotal,
       total,
       orderNumbers: orders.map((o) => o.orderNumber),
       serviceRequestIds: serviceRequests.map((sr) => sr.id),
       pickupOrderNumbers: pickups.map((p) => p.orderNumber),
+      rentalChargeIds: rentals.map((r) => r.id),
       publicPdfToken: invoice.publicPdfToken!,
     }
   })
@@ -553,7 +585,7 @@ export async function POST(request: NextRequest) {
 
   if (!result.invoice) {
     return NextResponse.json(
-      { error: 'Nothing to bundle: no pending-invoice orders or service trips in this date range, and no adjustments or out-of-area pickups waiting to be billed.' },
+      { error: 'Nothing to bundle: no pending-invoice orders or service trips in this date range, and no adjustments, out-of-area pickups or post rental waiting to be billed.' },
       { status: 400 },
     )
   }
@@ -582,6 +614,8 @@ export async function POST(request: NextRequest) {
       serviceRequestIds: result.serviceRequestIds,
       pickupCount: result.pickupsCount,
       pickupOrderNumbers: result.pickupOrderNumbers,
+      rentalCount: result.rentalsCount,
+      rentalChargeIds: result.rentalChargeIds,
       total: result.total,
       rangeStart: startDate.toISOString(),
       rangeEnd: endDate.toISOString(),
@@ -627,6 +661,7 @@ export async function POST(request: NextRequest) {
       order_count: result.ordersCount,
       service_request_count: result.serviceRequestsCount,
       pickup_count: result.pickupsCount,
+      rental_count: result.rentalsCount,
       email_status: 'queued',
       recipient_email: resolvedRecipientEmail,
     },

@@ -14,6 +14,7 @@ import {
   ooaPickupCents,
   type PreviouslyBilledScope,
 } from '@/lib/invoices/ooa-pickups'
+import { attachPostRentals, findSweepablePostRentals, postRentalCents } from '@/lib/invoices/post-rental-lines'
 import { createInvoiceCheckoutSession } from '@/lib/stripe/server'
 
 /**
@@ -205,10 +206,15 @@ export async function POST(request: NextRequest) {
     // scoped by pickupScope above. Claimed below per row, race-safe.
     const pickups = await findSweepableOOAPickups(tx, user.id, orders.map((o) => o.id), pickupScope)
     const pickupCents = ooaPickupCents(pickups)
+    // Queued post rental (Ryan, 2026-09-28) — sliced by the same scope as the
+    // pickups: an agent bundle takes that agent's rent only, a price-filtered
+    // one only rent on orders this invoice carries.
+    const rentals = await findSweepablePostRentals(tx, user.id, orders.map((o) => o.id), pickupScope)
+    const rentalCents = postRentalCents(rentals)
 
-    // A pickup-only invoice is a normal case: the install was billed last
-    // month and the sign came down this month.
-    if (orders.length === 0 && serviceRequests.length === 0 && adjustmentOrders.length === 0 && pickups.length === 0) {
+    // A pickup-only or rental-only invoice is a normal case: the install was
+    // billed months ago and only the pickup or the rent is new.
+    if (orders.length === 0 && serviceRequests.length === 0 && adjustmentOrders.length === 0 && pickups.length === 0 && rentals.length === 0) {
       return { invoice: null, ordersCount: 0, serviceRequestsCount: 0, subtotal: 0, total: 0 }
     }
 
@@ -218,14 +224,14 @@ export async function POST(request: NextRequest) {
     // Adjustments ride into TOTAL only — subtotal must keep matching the live
     // sum of the bundled lines (customer page + PDF re-derive it from them).
     // Pickups ARE lines on this invoice (untaxed, like service trips), so they
-    // sit in subtotal and the broker discount covers them.
-    const subtotal = ordersSubtotal + srTotal + pickupCents / 100
+    // sit in subtotal and the broker discount covers them. Post rental too.
+    const subtotal = ordersSubtotal + srTotal + pickupCents / 100 + rentalCents / 100
     // Broker discount off the pre-tax subtotal — see lib/invoices/discount.ts.
     const discount = invoiceDiscount(subtotal, profile.invoiceDiscountPercent)
-    const total = ordersTotal + srTotal + pickupCents / 100 + adjustmentCents / 100 - discount.amount
+    const total = ordersTotal + srTotal + pickupCents / 100 + rentalCents / 100 + adjustmentCents / 100 - discount.amount
 
     if (total <= 0) {
-      const charges = (ordersTotal + srTotal + pickupCents / 100).toFixed(2)
+      const charges = (ordersTotal + srTotal + pickupCents / 100 + rentalCents / 100).toFixed(2)
       throw uncollectableInvoice(
         discount.amount > 0
           ? `This period's charges ($${charges}) don't cover your ${discount.percent}% discount (-$${discount.amount.toFixed(2)}) plus pending adjustments (-$${Math.abs(adjustmentCents / 100).toFixed(2)}). Contact Pink Posts to settle it directly.`
@@ -295,6 +301,8 @@ export async function POST(request: NextRequest) {
     }
     // Claim each pickup half; a mismatch throws the race error → full rollback.
     await attachOOAPickups(tx, pickups, invoice.id)
+    // Same for each queued post rental.
+    await attachPostRentals(tx, rentals, invoice.id)
 
     // Sweep: zero each adjustment only if it still holds the value we read;
     // an edit racing this bundle changes it → count mismatch → full rollback.
@@ -317,11 +325,13 @@ export async function POST(request: NextRequest) {
       serviceRequestsCount: serviceRequests.length,
       adjustmentsCount: adjustmentOrders.length,
       pickupsCount: pickups.length,
+      rentalsCount: rentals.length,
       subtotal,
       total,
       orderNumbers: orders.map((o) => o.orderNumber),
       serviceRequestIds: serviceRequests.map((sr) => sr.id),
       pickupOrderNumbers: pickups.map((p) => p.orderNumber),
+      rentalChargeIds: rentals.map((r) => r.id),
       publicPdfToken: invoice.publicPdfToken!,
     }
   })
@@ -346,7 +356,7 @@ export async function POST(request: NextRequest) {
 
   if (!result.invoice) {
     return NextResponse.json(
-      { error: 'Nothing to bundle: no pending-invoice orders, service trips, or out-of-area pickups matched your filters.' },
+      { error: 'Nothing to bundle: no pending-invoice orders, service trips, out-of-area pickups or post rental matched your filters.' },
       { status: 400 },
     )
   }
@@ -372,7 +382,7 @@ export async function POST(request: NextRequest) {
       invoiceNumber: result.invoice.invoiceNumber,
       amountInCents: Math.round(Number(result.invoice.total) * 100),
       customerEmail: recipientEmail,
-      description: `${result.ordersCount} order(s) + ${result.serviceRequestsCount} service trip(s)${result.pickupsCount > 0 ? ` + ${result.pickupsCount} out-of-area pickup(s)` : ''} — ${startDate.toISOString().slice(0, 10)} → ${endDate.toISOString().slice(0, 10)}`,
+      description: `${result.ordersCount} order(s) + ${result.serviceRequestsCount} service trip(s)${result.pickupsCount > 0 ? ` + ${result.pickupsCount} out-of-area pickup(s)` : ''}${result.rentalsCount > 0 ? ` + ${result.rentalsCount} post rental charge(s)` : ''} — ${startDate.toISOString().slice(0, 10)} → ${endDate.toISOString().slice(0, 10)}`,
       successUrl: `${baseUrl}/invoice-paid?invoice=${result.invoice.invoiceNumber}`,
       cancelUrl: `${baseUrl}/invoice-cancelled?invoice=${result.invoice.invoiceNumber}`,
     })
@@ -414,6 +424,7 @@ export async function POST(request: NextRequest) {
           orderCount: result.ordersCount,
           serviceRequestCount: result.serviceRequestsCount,
           pickupCount: result.pickupsCount,
+          rentalCount: result.rentalsCount,
           pdfBytes,
           pdfUrl: `${baseUrl}/api/invoices/${result.invoice.id}/pdf?token=${result.publicPdfToken}`,
           payUrl: checkoutUrl,
@@ -449,6 +460,8 @@ export async function POST(request: NextRequest) {
       serviceRequestIds: result.serviceRequestIds,
       pickupCount: result.pickupsCount,
       pickupOrderNumbers: result.pickupOrderNumbers,
+      rentalCount: result.rentalsCount,
+      rentalChargeIds: result.rentalChargeIds,
       rangeStart: startDate.toISOString(),
       rangeEnd: endDate.toISOString(),
       filters: { minPrice, maxPrice, agent },
@@ -468,6 +481,7 @@ export async function POST(request: NextRequest) {
       order_count: result.ordersCount,
       service_request_count: result.serviceRequestsCount,
       pickup_count: result.pickupsCount,
+      rental_count: result.rentalsCount,
       pdf_url: `${baseUrl}/api/invoices/${result.invoice.id}/pdf?token=${result.publicPdfToken}`,
       pay_url: checkoutUrl,
     },

@@ -4,7 +4,7 @@
  * never see. Mirrors the exact cascade app/api/webhooks/stripe/route.ts runs
  * for a Stripe-collected invoice payment: Invoice -> paid, every bundled
  * Order -> paymentStatus succeeded, every bundled ServiceRequest -> invoiceStatus
- * paid, every out-of-area pickup half billed on it -> paid. No paymentIntentId is stamped anywhere (there is no real Stripe PI
+ * paid, every out-of-area pickup half and post rental billed on it -> paid. No paymentIntentId is stamped anywhere (there is no real Stripe PI
  * behind a manual payment) — refundOrder() already rejects a succeeded order
  * with no paymentIntentId rather than crashing, so this is safe to leave null.
  *
@@ -79,6 +79,7 @@ export async function POST(
 
   const paidAt = new Date()
   let ooaPickupCount = 0
+  let postRentalCount = 0
   try {
     await prisma.$transaction(async (tx) => {
       // Conditional claim — only proceeds if the invoice is still 'sent'.
@@ -107,6 +108,12 @@ export async function POST(
         data: { serviceAreaSecondChargeStatus: 'paid', serviceAreaSecondChargedAt: paidAt },
       })
       ooaPickupCount = pickups.count
+      // And the post rental billed on it, keyed the same way.
+      const rentals = await tx.postRentalCharge.updateMany({
+        where: { invoiceId: invoice.id, status: 'pending_invoice' },
+        data: { status: 'succeeded', succeededAt: paidAt },
+      })
+      postRentalCount = rentals.count
     })
   } catch (err) {
     if (err instanceof Error && err.message === 'INVOICE_ALREADY_PAID_RACE') {
@@ -131,6 +138,7 @@ export async function POST(
       orderCount: invoice.orders.length,
       serviceRequestCount: invoice.serviceRequests.length,
       ooaPickupCount,
+      postRentalCount,
       total: Number(invoice.total),
     },
     request,

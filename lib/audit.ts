@@ -151,6 +151,10 @@ export const AuditAction = {
   PostRentalChargeFailed:    'post_rental.charge.failed',
   PostRentalChargeSkipped:   'post_rental.charge.skipped',
   PostRentalChargeRetry:     'post_rental.charge.retry',
+  // Invoice account: queued for the next bundled invoice instead of charged.
+  PostRentalChargeQueuedForInvoice: 'post_rental.charge.queued_for_invoice',
+  // Admin turned an account's post-rental charging on or off.
+  PostRentalAccountToggle:   'post_rental.account.toggle',
   PostRentalOverrideToggle:  'post_rental.override.toggle',
   PostRentalDisableToggle:   'post_rental.disable.toggle',
   PostRentalStopped:         'post_rental.stopped',

@@ -108,9 +108,7 @@ export type EligibilityReason =
   | 'pickup_before_6mo'
   | 'pickup_scheduled'
   | 'exempt_role_admin'
-  | 'exempt_role_team_admin'
-  | 'exempt_per_customer'
-  | 'exempt_invoice_billing'
+  | 'account_not_charged'
   | 'grandfathered'
   | 'order_not_completed'
   | 'payment_not_succeeded'
@@ -120,9 +118,35 @@ export type EligibilityResult =
   | { eligible: false; reason: EligibilityReason }
 
 export interface EligibilityInput {
-  order: Order & { user: User; installation: Installation | null }
+  order: Order & { user: User; placedBy: User | null; installation: Installation | null }
   now: Date
   billingStartAt: Date
+}
+
+/**
+ * The account a post's rental is billed to: whoever pays for the order
+ * (placedBy ?? user) — the same rule as the out-of-area fee. Its
+ * postRentalChargedFrom decides WHETHER rental is charged and from when, and
+ * its invoiceBilling decides HOW: card on file, or the next bundled invoice
+ * (Ryan, 2026-09-28).
+ */
+export function rentalPayer<U extends { postRentalChargedFrom: Date | null; invoiceBilling: boolean }>(order: {
+  user: U
+  placedBy: U | null
+}): U {
+  return order.placedBy ?? order.user
+}
+
+/**
+ * Whether one rental period is billable to this payer: the account is
+ * charged at all, and the period starts on or after the moment it was turned
+ * on — switching an account on never back-bills periods already under way.
+ */
+export function payerChargesPeriod(
+  payer: { postRentalChargedFrom: Date | null },
+  periodStart: Date,
+): boolean {
+  return payer.postRentalChargedFrom != null && periodStart >= payer.postRentalChargedFrom
 }
 
 /**
@@ -164,22 +188,20 @@ export function isPostRentalEligible(
     return { eligible: false, reason: 'pickup_scheduled' }
   }
 
-  // (4) Exemptions — admins, brokers, per-customer overrides skip rental.
+  // (4) Exemptions. Internal staff orders never rent. Everyone else goes by
+  // the paying account's own switch (Ryan, 2026-09-28) — it used to be
+  // blanket rules: every broker account, every out-of-area-exempt account,
+  // and every invoice account skipped rental. At the switch-over
+  // (2026-10-02) Semonin, the internal test account and the admin stayed off
+  // ("Semonin I'm ok w"); every other brokerage was switched on from that day
+  // ("these future brokerages definitely need to charge"). Invoice accounts
+  // are no longer skipped: their rental goes on their next invoice (cron
+  // Pass 2), never on a card.
   if (order.user.role === 'admin') {
     return { eligible: false, reason: 'exempt_role_admin' }
   }
-  if (order.user.role === 'team_admin') {
-    return { eligible: false, reason: 'exempt_role_team_admin' }
-  }
-  if (order.user.isServiceAreaExempt) {
-    return { eligible: false, reason: 'exempt_per_customer' }
-  }
-  // Invoice-billing customers' cards are never auto-charged anywhere in
-  // the system — post-rental fees included. Any rental owed by an
-  // invoice-billing customer must be added to a bundled invoice manually
-  // (admin SR invoice flow / broker self-serve / admin order edit).
-  if (order.user.invoiceBilling) {
-    return { eligible: false, reason: 'exempt_invoice_billing' }
+  if (rentalPayer(order).postRentalChargedFrom == null) {
+    return { eligible: false, reason: 'account_not_charged' }
   }
 
   // (5) Grandfathered — installed before rollout date and not opted in.
@@ -187,11 +209,13 @@ export function isPostRentalEligible(
     return { eligible: false, reason: 'grandfathered' }
   }
 
-  // (6) Order must actually have been completed and paid.
+  // (6) Order must actually have been completed and paid — or, on an invoice
+  // account, be billed through invoices: its own invoice may still be unpaid
+  // six months on, and the post is out either way.
   if (order.status !== 'completed') {
     return { eligible: false, reason: 'order_not_completed' }
   }
-  if (order.paymentStatus !== 'succeeded') {
+  if (order.paymentStatus !== 'succeeded' && order.paymentStatus !== 'pending_invoice') {
     return { eligible: false, reason: 'payment_not_succeeded' }
   }
 

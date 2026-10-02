@@ -572,6 +572,8 @@ interface InvoiceEmailProps {
   // Without it a pickup-only invoice (install billed last month, sign came
   // down this month) read as "this invoice".
   pickupCount?: number
+  // Post rental lines for an invoice account (Ryan, 2026-09-28). Optional too.
+  rentalCount?: number
   // Optional rendered PDF (from buildInvoicePdfBytes). When present, attached
   // to the email so the customer has the document in their inbox for records.
   pdfBytes?: Uint8Array | null
@@ -612,6 +614,7 @@ export async function sendInvoiceEmail({
   orderCount,
   serviceRequestCount = 0,
   pickupCount = 0,
+  rentalCount = 0,
   pdfBytes,
   pdfUrl,
   payUrl,
@@ -633,6 +636,7 @@ export async function sendInvoiceEmail({
   if (orderCount > 0) countLineParts.push(`${orderCount} order${orderCount === 1 ? '' : 's'}`)
   if (serviceRequestCount > 0) countLineParts.push(`${serviceRequestCount} service trip${serviceRequestCount === 1 ? '' : 's'}`)
   if (pickupCount > 0) countLineParts.push(`${pickupCount} out-of-area pickup${pickupCount === 1 ? '' : 's'}`)
+  if (rentalCount > 0) countLineParts.push(`${rentalCount} post rental charge${rentalCount === 1 ? '' : 's'}`)
   const countLine = countLineParts.join(' + ') || 'this invoice'
 
   // The two CTAs the email body offers. Both point AWAY from pinkposts.com

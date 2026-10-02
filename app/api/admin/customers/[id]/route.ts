@@ -216,6 +216,10 @@ export async function GET(
         is_service_area_exempt: customer.isServiceAreaExempt,
         invoice_billing: customer.invoiceBilling,
         flat_fee_billing: customer.flatFeeBilling,
+        // Post rental (Ryan, 2026-09-28): whether this account is charged it,
+        // and since when — periods starting before that are never billed.
+        post_rental_charged: customer.postRentalChargedFrom != null,
+        post_rental_charged_from: customer.postRentalChargedFrom?.toISOString() ?? null,
         // Account-level lockbox perk — the one that applies when this account
         // has no team. The admin screen shows whichever of the two is in play.
         free_lockbox_install: customer.freeLockboxInstall,
@@ -367,6 +371,31 @@ export async function PUT(
       if (cur.invoiceBilling !== nextInvoiceBilling) {
         updateData.invoiceBilling = nextInvoiceBilling
         invoiceBillingAudit = { from: cur.invoiceBilling, to: nextInvoiceBilling }
+      }
+    }
+
+    // Post rental on/off (Ryan, 2026-09-28: "post rental charge to be another
+    // toggle"). On stamps NOW, so turning it on bills rental periods that
+    // start from today — never periods already under way. Already on stays
+    // as it was: re-saving the form mustn't move the date. Off clears it.
+    let postRentalAudit: { from: string | null; to: string | null } | null = null
+    if (body.post_rental_charged !== undefined) {
+      const nextOn = Boolean(body.post_rental_charged)
+      const cur = await prisma.user.findUnique({
+        where: { id },
+        select: { postRentalChargedFrom: true },
+      })
+      if (!cur) {
+        return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
+      }
+      const curOn = cur.postRentalChargedFrom != null
+      if (curOn !== nextOn) {
+        const next = nextOn ? new Date() : null
+        updateData.postRentalChargedFrom = next
+        postRentalAudit = {
+          from: cur.postRentalChargedFrom?.toISOString() ?? null,
+          to: next?.toISOString() ?? null,
+        }
       }
     }
 
@@ -639,6 +668,37 @@ export async function PUT(
         targetType: 'user',
         targetId: customer.id,
         metadata: { email: customer.email, ...exemptChangeAudit },
+        request,
+      })
+    }
+
+    if (postRentalAudit) {
+      // Switched off: rental this account pays for that hasn't been billed yet
+      // is cancelled too — queued for an invoice, scheduled, or failed awaiting
+      // a retry. Otherwise the next bundle would still invoice it. Rows already
+      // on an invoice or charged stay (see the disable route for the race).
+      let skippedUnbilledRentals = 0
+      if (postRentalAudit.to === null) {
+        const skipped = await prisma.postRentalCharge.updateMany({
+          where: {
+            invoiceId: null,
+            status: { in: ['pending_invoice', 'scheduled', 'failed'] },
+            order: { OR: [{ placedByUserId: customer.id }, { placedByUserId: null, userId: customer.id }] },
+          },
+          data: {
+            status: 'skipped',
+            failureCode: 'account_not_charged',
+            failureMessage: 'Post rental switched off for this account before it was billed.',
+          },
+        })
+        skippedUnbilledRentals = skipped.count
+      }
+      await audit({
+        actor: { id: user.id, email: user.email, role: user.role },
+        action: AuditAction.PostRentalAccountToggle,
+        targetType: 'user',
+        targetId: customer.id,
+        metadata: { email: customer.email, ...postRentalAudit, skippedUnbilledRentals },
         request,
       })
     }

@@ -38,11 +38,17 @@ interface PostRentalChargeRow {
   failureMessage: string | null
   stripePaymentIntentId: string | null
   attemptCount: number
+  // An invoice account's rental: the invoice it was billed on, once bundled.
+  invoiceId?: string | null
+  invoiceNumber?: string | null
 }
 
 interface PostRentalView {
   status: 'active' | 'grandfathered' | 'stopped' | 'disabled' | 'exempt' | 'never_eligible'
   reason?: string
+  // The account whose "Charge post rental" switch decides this order.
+  payerId?: string
+  payerName?: string
   installedAt: string | null
   stoppedAt: string | null
   override: boolean
@@ -1530,6 +1536,17 @@ const chargeStatusVariant: Record<string, 'success' | 'info' | 'warning' | 'erro
   succeeded: 'success',
   failed: 'error',
   skipped: 'neutral',
+  pending_invoice: 'info',
+}
+
+// Plain words for a charge row. An invoice account's rental is never charged
+// to a card: it is queued for, then billed on, their next invoice.
+function chargeStatusLabel(row: PostRentalChargeRow): string {
+  if (row.status === 'pending_invoice') {
+    return row.invoiceNumber ? `On invoice ${row.invoiceNumber}` : 'Queued for next invoice'
+  }
+  if (row.status === 'succeeded' && row.invoiceNumber) return `Paid on invoice ${row.invoiceNumber}`
+  return row.status
 }
 
 function formatPRDate(iso: string | null): string {
@@ -1633,6 +1650,14 @@ function PostRentalCard(props: {
             <div className="md:col-span-2">
               <p className="text-gray-500">Reason</p>
               <p className="text-gray-700">{view.reason}</p>
+              {/* Straight to the account whose switch decides it — on an
+                  order a brokerage placed for an agent, that's the
+                  brokerage, not the customer linked at the top. */}
+              {view.status === 'exempt' && view.payerId && (
+                <Link href={`/admin/customers/${view.payerId}`} className="text-pink-600 hover:underline text-xs">
+                  {view.payerName ? `Open ${view.payerName}’s customer page →` : 'Open their customer page →'}
+                </Link>
+              )}
             </div>
           )}
         </div>
@@ -1747,7 +1772,7 @@ function PostRentalCard(props: {
                       </td>
                       <td className="py-2 pr-3">
                         <Badge variant={chargeStatusVariant[row.status] || 'neutral'}>
-                          {row.status}
+                          {chargeStatusLabel(row)}
                         </Badge>
                         {row.status === 'failed' && row.failureMessage && (
                           <p className="text-red-600 text-xs mt-1">
@@ -1766,7 +1791,15 @@ function PostRentalCard(props: {
                         {formatPRDateTime(row.succeededAt)}
                       </td>
                       <td className="py-2 pr-3">
-                        {row.stripePaymentIntentId ? (
+                        {row.invoiceId ? (
+                          <Link
+                            href={`/dashboard/invoices/${row.invoiceId}`}
+                            target="_blank"
+                            className="text-pink-600 hover:underline"
+                          >
+                            {row.invoiceNumber ?? 'Invoice'}
+                          </Link>
+                        ) : row.stripePaymentIntentId ? (
                           <a
                             href={`https://dashboard.stripe.com/payments/${row.stripePaymentIntentId}`}
                             target="_blank"

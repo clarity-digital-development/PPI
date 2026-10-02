@@ -52,6 +52,17 @@ interface PreviewPickup {
   amount: number
 }
 
+// One period of post rental for an invoice account (Ryan, 2026-09-28).
+interface PreviewRental {
+  charge_id: string
+  order_id: string
+  order_number: string
+  property: string
+  period_start: string
+  period_end: string
+  amount: number
+}
+
 interface PreviewResponse {
   orders: PreviewOrder[]
   service_requests: PreviewServiceRequest[]
@@ -60,6 +71,8 @@ interface PreviewResponse {
   adjustments?: PreviewAdjustment[]
   // Out-of-area pickups the next bundle will bill. Optional, same reason.
   pickups?: PreviewPickup[]
+  // Post rental the next bundle will bill. Optional, same reason.
+  rentals?: PreviewRental[]
   /** Broker discount already netted out of `total` — shown so the headline
    *  number is explainable against the rows listed beneath it. */
   discount_percent?: number | null
@@ -71,6 +84,7 @@ interface PreviewResponse {
   service_request_count: number
   adjustment_count?: number
   pickup_count?: number
+  rental_count?: number
 }
 
 type EmailStatus = 'queued' | 'sending' | 'sent' | 'failed' | 'skipped'
@@ -96,6 +110,8 @@ interface InvoiceListRow {
   service_request_count?: number
   // Out-of-area pickup lines billed on the invoice (Invoice._count.ooaPickupOrders).
   pickup_count?: number
+  // Post rental lines billed on the invoice (Invoice._count.postRentalCharges).
+  rental_count?: number
   created_at: string
   // Background email-worker state (Round 21). Optional for back-compat with
   // any in-flight responses that haven't picked up the new fields yet.
@@ -308,10 +324,12 @@ export default function AdminInvoicesPage() {
         const oc = data.invoice.order_count ?? 0
         const sc = data.invoice.service_request_count ?? 0
         const pc = data.invoice.pickup_count ?? 0
+        const rc = data.invoice.rental_count ?? 0
         const parts: string[] = []
         if (oc > 0) parts.push(`${oc} order${oc === 1 ? '' : 's'}`)
         if (sc > 0) parts.push(`${sc} service trip${sc === 1 ? '' : 's'}`)
         if (pc > 0) parts.push(`${pc} out-of-area pickup${pc === 1 ? '' : 's'}`)
+        if (rc > 0) parts.push(`${rc} post rental charge${rc === 1 ? '' : 's'}`)
         const bundleLine = parts.join(' + ') || 'this invoice'
         // Worded as "queued for" — Round 21 moved the actual send to a
         // background worker so the response returns in <500ms. The list
@@ -542,6 +560,9 @@ export default function AdminInvoicesPage() {
                   {(preview.pickup_count ?? preview.pickups?.length ?? 0) > 0 && (
                     <>{' + '}{preview.pickup_count ?? preview.pickups?.length ?? 0} out-of-area pickup{(preview.pickup_count ?? preview.pickups?.length ?? 0) === 1 ? '' : 's'}</>
                   )}
+                  {(preview.rental_count ?? preview.rentals?.length ?? 0) > 0 && (
+                    <>{' + '}{preview.rental_count ?? preview.rentals?.length ?? 0} post rental charge{(preview.rental_count ?? preview.rentals?.length ?? 0) === 1 ? '' : 's'}</>
+                  )}
                 </p>
                 {/* Without this the headline total is quietly short by the
                     discount and disagrees with the order rows listed below. */}
@@ -558,9 +579,10 @@ export default function AdminInvoicesPage() {
             {preview.orders.length === 0 &&
             (preview.service_requests?.length ?? 0) === 0 &&
             (preview.adjustments?.length ?? 0) === 0 &&
-            (preview.pickups?.length ?? 0) === 0 ? (
+            (preview.pickups?.length ?? 0) === 0 &&
+            (preview.rentals?.length ?? 0) === 0 ? (
               <p className="text-sm text-gray-500 py-4 text-center">
-                No pending-invoice orders or service trips in this range, and no adjustments or out-of-area pickups waiting to be billed.
+                No pending-invoice orders or service trips in this range, and no adjustments, out-of-area pickups or post rental waiting to be billed.
               </p>
             ) : (
               <div className="space-y-4">
@@ -640,6 +662,34 @@ export default function AdminInvoicesPage() {
                             <td className="px-3 py-2 text-gray-600">{p.property}</td>
                             <td className="px-3 py-2 text-gray-600">{p.removal_date ? formatDate(p.removal_date) : '—'}</td>
                             <td className="px-3 py-2 text-right font-medium">{formatCurrency(p.amount)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {/* Post rental for an invoice account — queued by the nightly
+                    rental run instead of charging a card. Like pickups, not
+                    limited to the date range. */}
+                {(preview.rentals?.length ?? 0) > 0 && (
+                  <div className="overflow-x-auto">
+                    <p className="text-xs font-semibold text-gray-500 uppercase mb-1">Post rental</p>
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+                        <tr>
+                          <th className="px-3 py-2 text-left">Order #</th>
+                          <th className="px-3 py-2 text-left">Property</th>
+                          <th className="px-3 py-2 text-left">Period</th>
+                          <th className="px-3 py-2 text-right">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {preview.rentals!.map((r) => (
+                          <tr key={r.charge_id}>
+                            <td className="px-3 py-2 font-medium text-gray-900">{r.order_number}</td>
+                            <td className="px-3 py-2 text-gray-600">{r.property}</td>
+                            <td className="px-3 py-2 text-gray-600">{formatDate(r.period_start)} – {formatDate(r.period_end)}</td>
+                            <td className="px-3 py-2 text-right font-medium">{formatCurrency(r.amount)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -780,6 +830,13 @@ export default function AdminInvoicesPage() {
                               {' + '}
                               <span className="text-gray-900">{inv.pickup_count}</span>
                               <span className="text-xs text-gray-500"> pickup{(inv.pickup_count ?? 0) === 1 ? '' : 's'}</span>
+                            </>
+                          )}
+                          {(inv.rental_count ?? 0) > 0 && (
+                            <>
+                              {' + '}
+                              <span className="text-gray-900">{inv.rental_count}</span>
+                              <span className="text-xs text-gray-500"> rental{(inv.rental_count ?? 0) === 1 ? '' : 's'}</span>
                             </>
                           )}
                         </td>

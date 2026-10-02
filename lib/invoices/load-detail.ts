@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import type { InvoiceDetail } from './invoice-pdf'
 import { ooaPickupCents, ooaPickupSelect, toInvoicePickup } from './ooa-pickups'
+import { postRentalCents, postRentalLineSelect, toInvoiceRental } from './post-rental-lines'
 
 /**
  * Load an invoice in the exact shape the PDF builder + customer page expect.
@@ -19,6 +20,7 @@ export async function loadInvoiceDetailForPdf(invoiceId: string): Promise<Invoic
         orderBy: { completedAt: 'asc' },
       },
       ooaPickupOrders: { select: ooaPickupSelect, orderBy: { createdAt: 'asc' } },
+      postRentalCharges: { select: postRentalLineSelect, orderBy: [{ periodStart: 'asc' }, { id: 'asc' }] },
     },
   })
   if (!invoice) return null
@@ -33,6 +35,8 @@ export async function loadInvoiceDetailForPdf(invoiceId: string): Promise<Invoic
   const service_requests_subtotal = invoice.serviceRequests.reduce((s, sr) => s + Number(sr.invoiceAmount ?? 0), 0)
   // Out-of-area pickup halves billed here — untaxed, like service trips.
   const pickups_subtotal = ooaPickupCents(invoice.ooaPickupOrders) / 100
+  // Post rental billed here for an invoice account — untaxed, like pickups.
+  const rentals_subtotal = postRentalCents(invoice.postRentalCharges) / 100
   return {
     id: invoice.id,
     invoice_number: invoice.invoiceNumber,
@@ -43,6 +47,7 @@ export async function loadInvoiceDetailForPdf(invoiceId: string): Promise<Invoic
     orders_subtotal,
     service_requests_subtotal,
     pickups_subtotal,
+    rentals_subtotal,
     adjustments: (invoice.adjustments as InvoiceDetail['adjustments']) ?? [],
     total: Number(invoice.total),
     fuel_total: orderSum('fuelSurcharge'),
@@ -96,5 +101,6 @@ export async function loadInvoiceDetailForPdf(invoiceId: string): Promise<Invoic
       amount: Number(sr.invoiceAmount || 0),
     })),
     pickups: invoice.ooaPickupOrders.map(toInvoicePickup),
+    rentals: invoice.postRentalCharges.map(toInvoiceRental),
   }
 }

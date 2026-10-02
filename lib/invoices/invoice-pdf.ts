@@ -78,6 +78,23 @@ export interface InvoicePickup {
   amount: number
 }
 
+// One period of post rental for an invoice account (Ryan, 2026-09-28) — never
+// charged to their card, billed here instead. Its order sits on an earlier
+// invoice, so like a pickup it is its own line.
+export interface InvoiceRental {
+  charge_id: string
+  order_id: string
+  order_number: string
+  property_address: string
+  property_city: string
+  property_state: string
+  property_zip: string
+  placed_for_agent_name: string | null
+  period_start: string
+  period_end: string
+  amount: number
+}
+
 export interface InvoiceDetail {
   id: string
   invoice_number: string
@@ -92,12 +109,14 @@ export interface InvoiceDetail {
   // legible to brokers (otherwise the displayed Sales Tax line looks too low
   // versus subtotal × 6%). Out-of-area pickups are the same kind of line —
   // untaxed, no fuel — and sit in the subtotal too, so the broker discount
-  // covers them exactly as it covers the install half inside the order.
+  // covers them exactly as it covers the install half inside the order. Post
+  // rental lines are the same again (no tax on a card rental charge either).
   // Always: orders_subtotal + service_requests_subtotal + pickups_subtotal
-  // === subtotal.
+  // + rentals_subtotal === subtotal.
   orders_subtotal: number
   service_requests_subtotal: number
   pickups_subtotal: number
+  rentals_subtotal: number
   // Post-invoice edit adjustments swept onto THIS invoice (snapshot taken at
   // bundle time; the per-order source column is zeroed by the sweep). Amounts
   // can be negative — an order edited cheaper after its invoice went out.
@@ -127,6 +146,7 @@ export interface InvoiceDetail {
   orders: InvoiceOrder[]
   service_requests: InvoiceServiceRequest[]
   pickups: InvoicePickup[]
+  rentals: InvoiceRental[]
 }
 
 function fmtCurrency(n: number): string {
@@ -141,6 +161,11 @@ function fmtPercent(n: number): string {
 function fmtDate(iso: string | null): string {
   if (!iso) return '—'
   return new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'short', day: 'numeric' }).format(new Date(iso))
+}
+
+/** "Apr 7" — the Date column already carries the year; the Item column is 100pt. */
+function fmtMonthDay(iso: string): string {
+  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(iso))
 }
 
 function formatAddress(addr: string | null, city: string | null, state: string | null, zip: string | null): string {
@@ -199,15 +224,19 @@ export function buildInvoicePdfDoc(invoice: InvoiceDetail): jsPDF {
   // out-of-area pickups existed.
   const pickups = invoice.pickups ?? []
   const pickupsSubtotal = invoice.pickups_subtotal ?? 0
+  const rentals = invoice.rentals ?? []
+  const rentalsSubtotal = invoice.rentals_subtotal ?? 0
   const orderCount = invoice.orders.length
   const srCount = invoice.service_requests.length
   const pickupCount = pickups.length
-  // Inlined rather than imported from ./ooa-pickups (ooaPickupCountLabel):
-  // that module pulls in Prisma, and this file also ships to the browser.
+  const rentalCount = rentals.length
+  // Inlined rather than imported from ./ooa-pickups / ./post-rental-lines:
+  // those modules pull in Prisma, and this file also ships to the browser.
   const countLine = [
     orderCount ? `${orderCount} order${orderCount === 1 ? '' : 's'}` : null,
     srCount ? `${srCount} service trip${srCount === 1 ? '' : 's'}` : null,
     pickupCount ? `${pickupCount} out-of-area pickup${pickupCount === 1 ? '' : 's'}` : null,
+    rentalCount ? `${rentalCount} post rental charge${rentalCount === 1 ? '' : 's'}` : null,
   ].filter(Boolean).join(' + ')
   if (countLine) {
     doc.text(countLine, pageWidth - margin, 76, { align: 'right' })
@@ -351,6 +380,21 @@ export function buildInvoicePdfDoc(invoice: InvoiceDetail): jsPDF {
     ])
   }
 
+  // Post rental for an invoice account (Ryan, 2026-09-28): one line per
+  // period, dated by the period start, with the period in the item text.
+  for (const r of rentals) {
+    rows.push([
+      r.order_number,
+      fmtDate(r.period_start),
+      formatAddress(r.property_address, r.property_city, r.property_state, r.property_zip),
+      r.placed_for_agent_name || '—',
+      `Post rental ${fmtMonthDay(r.period_start)} – ${fmtMonthDay(r.period_end)}`,
+      '1',
+      fmtCurrency(r.amount),
+      fmtCurrency(r.amount),
+    ])
+  }
+
   autoTable(doc, {
     startY: metaTop + 70,
     head: [['Order / SR #', 'Date', 'Address', 'Agent', 'Item', 'Qty', 'Unit', 'Total']],
@@ -429,10 +473,11 @@ export function buildInvoicePdfDoc(invoice: InvoiceDetail): jsPDF {
   // base nets discounts and adds fees). The "(non-taxable)" parentheticals
   // carry the explanation; leaving the orders row neutral keeps it honest
   // across all invoice shapes.
-  if (invoice.service_requests_subtotal > 0 || pickupsSubtotal > 0) {
+  if (invoice.service_requests_subtotal > 0 || pickupsSubtotal > 0 || rentalsSubtotal > 0) {
     if (invoice.orders_subtotal > 0) detailRow('Orders subtotal', invoice.orders_subtotal)
     if (invoice.service_requests_subtotal > 0) detailRow('Service trips (non-taxable)', invoice.service_requests_subtotal)
     if (pickupsSubtotal > 0) detailRow('Out-of-area pickups (non-taxable)', pickupsSubtotal)
+    if (rentalsSubtotal > 0) detailRow('Post rental (non-taxable)', rentalsSubtotal)
   } else {
     detailRow('Subtotal', invoice.subtotal)
   }

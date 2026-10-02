@@ -98,7 +98,7 @@ export async function POST(request: NextRequest) {
           }
 
           const paidAt = new Date()
-          const [, , , pickupsPaid] = await prisma.$transaction([
+          const [, , , pickupsPaid, rentalsPaid] = await prisma.$transaction([
             prisma.invoice.update({
               where: { id: invoice.id },
               data: { status: 'paid', paidAt, paymentIntentId: paymentIntent.id },
@@ -125,6 +125,13 @@ export async function POST(request: NextRequest) {
               where: { serviceAreaSecondChargeInvoiceId: invoice.id, serviceAreaSecondChargeStatus: 'pending_invoice' },
               data: { serviceAreaSecondChargeStatus: 'paid', serviceAreaSecondChargedAt: paidAt },
             }),
+            // Post rental billed on this invoice (an invoice account's rent).
+            // Keyed on the rental's own invoice id, like the pickups. No PI on
+            // the row for the same reason: it isn't the charge for this rent.
+            prisma.postRentalCharge.updateMany({
+              where: { invoiceId: invoice.id, status: 'pending_invoice' },
+              data: { status: 'succeeded', succeededAt: paidAt },
+            }),
           ])
 
           await audit({
@@ -138,12 +145,13 @@ export async function POST(request: NextRequest) {
               orderCount: invoice.orders.length,
               serviceRequestCount: invoice.serviceRequests.length,
               ooaPickupCount: pickupsPaid.count,
+              postRentalCount: rentalsPaid.count,
               total: Number(invoice.total),
             },
             request,
           })
 
-          console.log(`Webhook: invoice ${invoice.invoiceNumber} marked paid (${invoice.orders.length} orders + ${invoice.serviceRequests.length} SRs + ${pickupsPaid.count} OOA pickups flipped)`)
+          console.log(`Webhook: invoice ${invoice.invoiceNumber} marked paid (${invoice.orders.length} orders + ${invoice.serviceRequests.length} SRs + ${pickupsPaid.count} OOA pickups + ${rentalsPaid.count} post rentals flipped)`)
           return NextResponse.json({ received: true })
         }
 

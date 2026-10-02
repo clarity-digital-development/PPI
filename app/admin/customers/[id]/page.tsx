@@ -24,6 +24,9 @@ interface CustomerData {
     is_service_area_exempt?: boolean
     invoice_billing?: boolean
     flat_fee_billing?: boolean
+    // Post rental (Ryan, 2026-09-28): charged at all, and since when.
+    post_rental_charged?: boolean
+    post_rental_charged_from?: string | null
     free_lockbox_install?: boolean
     billing_email?: string | null
     invoice_discount_percent?: number | null
@@ -134,6 +137,7 @@ export default function CustomerDetailPage() {
     is_service_area_exempt: boolean
     invoice_billing: boolean
     flat_fee_billing: boolean
+    post_rental_charged: boolean
     billing_email: string
     invoice_discount_percent: string
     // Team perks — only sent when the account has a team.
@@ -148,6 +152,7 @@ export default function CustomerDetailPage() {
     is_service_area_exempt: false,
     invoice_billing: false,
     flat_fee_billing: false,
+    post_rental_charged: false,
     billing_email: '',
     invoice_discount_percent: '',
     team_pickup_fee_waived: false,
@@ -212,6 +217,7 @@ export default function CustomerDetailPage() {
           is_service_area_exempt: data.customer.is_service_area_exempt ?? false,
           invoice_billing: data.customer.invoice_billing ?? false,
           flat_fee_billing: data.customer.flat_fee_billing ?? false,
+          post_rental_charged: data.customer.post_rental_charged ?? false,
           billing_email: data.customer.billing_email || '',
           invoice_discount_percent:
             data.customer.invoice_discount_percent != null ? String(data.customer.invoice_discount_percent) : '',
@@ -247,6 +253,7 @@ export default function CustomerDetailPage() {
           is_service_area_exempt: editData.is_service_area_exempt,
           invoice_billing: editData.invoice_billing,
           flat_fee_billing: editData.flat_fee_billing,
+          post_rental_charged: editData.post_rental_charged,
           billing_email: editData.billing_email,
           invoice_discount_percent: editData.invoice_discount_percent,
           // The sign-pickup waiver exists only on a team; the API refuses it
@@ -673,6 +680,9 @@ export default function CustomerDetailPage() {
               )}
               {data.customer.is_service_area_exempt && (
                 <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200">No Out-of-Area Fee</Badge>
+              )}
+              {data.customer.post_rental_charged === false && data.customer.role !== 'admin' && (
+                <Badge className="bg-amber-100 text-amber-800 border-amber-200">No Post Rental</Badge>
               )}
             </div>
             <p className="text-gray-600">{data.customer.email} {data.customer.phone && `\u2022 ${data.customer.phone}`}</p>
@@ -1939,6 +1949,33 @@ export default function CustomerDetailPage() {
                 <span className="font-medium text-gray-700">Flat-fee billing (${FLAT_FEE_PRICING.total.toFixed(2)} per order)</span>
                 <span className="block text-xs text-gray-500">
                   Every order for this account is charged a flat <strong>${FLAT_FEE_PRICING.total.toFixed(2)}</strong> (${FLAT_FEE_PRICING.subtotal.toFixed(2)} base + ${FLAT_FEE_PRICING.fuelSurcharge.toFixed(2)} gas + 6% tax) regardless of what&apos;s selected — expedite, no-post, and promo are suppressed. An out-of-area fee is still added on top when the property is outside the free radius; tick &ldquo;Exempt from out-of-area service fee&rdquo; above to waive it for this account. Items still flow to fulfillment and service requests as normal.
+                </span>
+              </span>
+            </label>
+          </div>
+          {/* Post rental (Ryan, 2026-09-28: "post rental charge to be another
+              toggle"). Goes by whoever pays for the order. Turning it on
+              stamps today, so rental is billed from now on — never for time
+              a post has already been out. */}
+          <div>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={editData.post_rental_charged}
+                onChange={(e) => setEditData({ ...editData, post_rental_charged: e.target.checked })}
+                className="mt-0.5 w-4 h-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
+              />
+              <span className="text-sm">
+                <span className="font-medium text-gray-700">Charge post rental</span>
+                <span className="block text-xs text-gray-500">
+                  $18 when a post has been out 6 months, $18 at 9 months, then $6 a month until it&apos;s picked up.{' '}
+                  {editData.invoice_billing
+                    ? 'This account pays by invoice, so each charge is added to their next invoice.'
+                    : 'Charged to the card on file when it comes due.'}{' '}
+                  Turning it on charges from today forward, never for time a post was already out.
+                  {data?.customer.post_rental_charged && data.customer.post_rental_charged_from && (
+                    <> Charging since {new Date(data.customer.post_rental_charged_from).toLocaleDateString()}.</>
+                  )}
                 </span>
               </span>
             </label>

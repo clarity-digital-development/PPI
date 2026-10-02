@@ -42,6 +42,7 @@ export async function GET(
             role: true,
             isServiceAreaExempt: true,
             invoiceBilling: true,
+            postRentalChargedFrom: true,
           },
         },
         // Whoever paid for the order (placedBy ?? user) decides how a failed
@@ -49,7 +50,8 @@ export async function GET(
         // their next invoice (lib/orders/out-of-area-charge.ts routes on the
         // payer's CURRENT flag, so the admin page labels the button by it).
         placedBy: {
-          select: { id: true, fullName: true, email: true, invoiceBilling: true },
+          // postRentalChargedFrom: the same payer decides post rental.
+          select: { id: true, fullName: true, email: true, invoiceBilling: true, postRentalChargedFrom: true },
         },
         // The invoice the order itself was bundled on, and the (usually
         // later) invoice its out-of-area pickup half was billed on — Ryan,
@@ -71,6 +73,8 @@ export async function GET(
         },
         postRentalCharges: {
           orderBy: { periodStart: 'desc' },
+          // The invoice an invoice account's rental was billed on.
+          include: { invoice: { select: { id: true, invoiceNumber: true } } },
         },
       },
     })
@@ -84,6 +88,17 @@ export async function GET(
       order,
       installation: order.installation,
       user: order.user,
+      // Rental goes by the account that pays (placedBy ?? user).
+      payer: (() => {
+        const p = order.placedBy ?? order.user
+        return {
+          id: p.id,
+          name: p.fullName || p.email,
+          placedForAgent: !!order.placedBy,
+          postRentalChargedFrom: p.postRentalChargedFrom,
+          invoiceBilling: p.invoiceBilling,
+        }
+      })(),
       charges: order.postRentalCharges,
       now: new Date(),
     })

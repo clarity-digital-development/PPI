@@ -39,8 +39,8 @@ export async function GET(request: NextRequest) {
 
     // The /admin/invoices picker. Besides accounts on invoice billing now, it
     // lists any account that still has invoice work waiting — orders placed
-    // on invoice terms, service trips, or out-of-area pickup halves queued for
-    // an invoice. Those stay on the invoice path when an account is switched
+    // on invoice terms, service trips, or out-of-area pickup halves or post
+    // rental queued for an invoice. Those stay on the invoice path when an account is switched
     // back to card (their card is never charged for them), so without this the
     // switch stranded them with nowhere to bundle them.
     const unbundledOrder = { paymentStatus: 'pending_invoice' as const, invoiceId: null, status: { not: 'cancelled' as const } }
@@ -50,13 +50,18 @@ export async function GET(request: NextRequest) {
       serviceAreaSecondChargeCents: { gt: 0 },
       status: { not: 'cancelled' as const },
     }
+    const queuedRental = {
+      postRentalCharges: { some: { status: 'pending_invoice' as const, invoiceId: null, amountCents: { gt: 0 } } },
+      status: { not: 'cancelled' as const },
+      postRentalDisabled: false,
+    }
     const invoiceBillingScope = {
       OR: [
         { invoiceBilling: true },
         // Own orders only when nobody else placed them — an on-behalf order's
         // invoice work belongs to the team_admin who placed it (next line).
-        { orders: { some: { placedByUserId: null, OR: [unbundledOrder, queuedPickup] } } },
-        { ordersPlacedFor: { some: { OR: [unbundledOrder, queuedPickup] } } },
+        { orders: { some: { placedByUserId: null, OR: [unbundledOrder, queuedPickup, queuedRental] } } },
+        { ordersPlacedFor: { some: { OR: [unbundledOrder, queuedPickup, queuedRental] } } },
         { serviceRequests: { some: { invoiceStatus: 'pending_invoice', invoiceId: null } } },
       ],
     }

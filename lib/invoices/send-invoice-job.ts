@@ -156,10 +156,10 @@ export async function processInvoiceSendJob(args: SendInvoiceJobArgs): Promise<v
     // Counted here rather than read off the PDF detail above: PDF generation
     // is allowed to fail, and the email's count line must still be right.
     // ooaPickupOrders so a pickup-only invoice (Ryan, 2026-09-28) doesn't
-    // read as "this invoice" in the email.
+    // read as "this invoice" in the email; postRentalCharges likewise.
     const counts = await prisma.invoice.findUniqueOrThrow({
       where: { id: invoiceId },
-      select: { _count: { select: { orders: true, serviceRequests: true, ooaPickupOrders: true } } },
+      select: { _count: { select: { orders: true, serviceRequests: true, ooaPickupOrders: true, postRentalCharges: true } } },
     })
     const result = await sendInvoiceEmail({
       invoiceId: invoice.id,
@@ -173,6 +173,7 @@ export async function processInvoiceSendJob(args: SendInvoiceJobArgs): Promise<v
       orderCount: counts._count.orders,
       serviceRequestCount: counts._count.serviceRequests,
       pickupCount: counts._count.ooaPickupOrders,
+      rentalCount: counts._count.postRentalCharges,
       pdfBytes,
       pdfUrl: invoice.publicPdfToken
         ? `${baseUrl}/api/invoices/${invoice.id}/pdf?token=${invoice.publicPdfToken}`

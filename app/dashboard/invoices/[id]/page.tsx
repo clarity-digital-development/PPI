@@ -143,6 +143,9 @@ export default function InvoiceDetailPage() {
   // defensively — a tab opened before the deploy holds a response without them.
   const pickups = invoice.pickups ?? []
   const pickupsSubtotal = invoice.pickups_subtotal ?? 0
+  // Post rental billed on this invoice (Ryan, 2026-09-28) — same defensive read.
+  const rentals = invoice.rentals ?? []
+  const rentalsSubtotal = invoice.rentals_subtotal ?? 0
 
   return (
     <div>
@@ -202,6 +205,7 @@ export default function InvoiceDetailPage() {
                   if (invoice.orders.length) parts.push(`${invoice.orders.length} bundled order${invoice.orders.length === 1 ? '' : 's'}`)
                   if (invoice.service_requests.length) parts.push(`${invoice.service_requests.length} service trip${invoice.service_requests.length === 1 ? '' : 's'}`)
                   if (pickups.length) parts.push(`${pickups.length} out-of-area pickup${pickups.length === 1 ? '' : 's'}`)
+                  if (rentals.length) parts.push(`${rentals.length} post rental charge${rentals.length === 1 ? '' : 's'}`)
                   return parts.join(' + ') || 'this invoice'
                 })()}.
               </p>
@@ -394,6 +398,42 @@ export default function InvoiceDetailPage() {
           </Card>
         )}
 
+        {/* Post rental — rent on a post that's been out over six months,
+            billed here because this account pays by invoice. One line per
+            rental period, each linking back to its order. */}
+        {rentals.length > 0 && (
+          <Card className="mb-6">
+            <CardContent className="p-6">
+              <h2 className="text-base font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                <Truck className="w-4 h-4 text-pink-500" /> Post rental
+              </h2>
+              <div className="space-y-3">
+                {rentals.map((r) => (
+                  <div key={r.charge_id} className="border border-gray-200 rounded-lg p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-medium text-gray-900">
+                          Post rental — {r.property_address}, {r.property_city}, {r.property_state} {r.property_zip}
+                        </p>
+                        <Link href={`/dashboard/orders/${r.order_id}`} className="text-xs font-medium text-pink-600 hover:text-pink-700">
+                          Order {r.order_number}
+                        </Link>
+                        <p className="text-xs text-gray-500">
+                          {formatDate(r.period_start)} – {formatDate(r.period_end)}
+                        </p>
+                        {r.placed_for_agent_name && (
+                          <p className="text-xs text-pink-600 mt-1">Agent: {r.placed_for_agent_name}</p>
+                        )}
+                      </div>
+                      <p className="font-semibold text-gray-900">{formatCurrency(r.amount)}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Grand total — broken out so Subtotal → Total is fully explained */}
         <Card>
           <CardContent className="p-6">
@@ -408,7 +448,7 @@ export default function InvoiceDetailPage() {
                   the explanation; the orders row stays neutral because
                   discounts/fees mean 6% × orders_subtotal ≠ tax_total in the
                   general case. Same rows as lib/invoices/invoice-pdf.ts. */}
-              {invoice.service_requests_subtotal > 0 || pickupsSubtotal > 0 ? (
+              {invoice.service_requests_subtotal > 0 || pickupsSubtotal > 0 || rentalsSubtotal > 0 ? (
                 <>
                   {invoice.orders_subtotal > 0 && (
                     <div className="flex justify-between">
@@ -426,6 +466,12 @@ export default function InvoiceDetailPage() {
                     <div className="flex justify-between">
                       <span className="text-gray-500">Out-of-area pickups (non-taxable)</span>
                       <span className="text-gray-900">{formatCurrency(pickupsSubtotal)}</span>
+                    </div>
+                  )}
+                  {rentalsSubtotal > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Post rental (non-taxable)</span>
+                      <span className="text-gray-900">{formatCurrency(rentalsSubtotal)}</span>
                     </div>
                   )}
                 </>

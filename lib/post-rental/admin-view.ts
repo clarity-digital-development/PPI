@@ -28,7 +28,22 @@ type InstallationForView = {
 
 type UserForView = {
   role: string
-  isServiceAreaExempt: boolean
+}
+
+// Whoever pays for the order (placedBy ?? user) — the account whose
+// "Charge post rental" switch decides it (Ryan, 2026-09-28).
+type PayerForView = {
+  id: string
+  name: string
+  // True when a brokerage placed the order for an agent — then the
+  // brokerage's switch decides, not the agent's.
+  placedForAgent: boolean
+  postRentalChargedFrom: Date | null
+  invoiceBilling: boolean
+}
+
+type ChargeForView = PostRentalCharge & {
+  invoice?: { id: string; invoiceNumber: string } | null
 }
 
 export type PostRentalViewStatus =
@@ -58,11 +73,17 @@ export interface PostRentalChargeRow {
   failureMessage: string | null
   stripePaymentIntentId: string | null
   attemptCount: number
+  // Set once an invoice account's queued rental is bundled onto an invoice.
+  invoiceId: string | null
+  invoiceNumber: string | null
 }
 
 export interface PostRentalView {
   status: PostRentalViewStatus
   reason?: string
+  // The account whose "Charge post rental" switch decides this order.
+  payerId: string
+  payerName: string
   installedAt: string | null
   stoppedAt: string | null
   override: boolean
@@ -110,10 +131,11 @@ export function computePostRentalView(args: {
   order: OrderForView
   installation: InstallationForView
   user: UserForView
-  charges: PostRentalCharge[]
+  payer: PayerForView
+  charges: ChargeForView[]
   now: Date
 }): PostRentalView {
-  const { order, installation, user, charges, now } = args
+  const { order, installation, user, payer, charges, now } = args
 
   const history: PostRentalChargeRow[] = charges.map((c) => ({
     id: c.id,
@@ -128,6 +150,8 @@ export function computePostRentalView(args: {
     failureMessage: c.failureMessage,
     stripePaymentIntentId: c.stripePaymentIntentId,
     attemptCount: c.attemptCount,
+    invoiceId: c.invoice?.id ?? c.invoiceId ?? null,
+    invoiceNumber: c.invoice?.invoiceNumber ?? null,
   }))
 
   const installedAt = installation ? installation.installedAt.toISOString() : null
@@ -140,6 +164,8 @@ export function computePostRentalView(args: {
     return {
       status: 'disabled',
       reason: 'Post-rental billing disabled for this order (e.g. customer-owned post)',
+      payerId: payer.id,
+      payerName: payer.name,
       installedAt,
       stoppedAt,
       override,
@@ -149,11 +175,17 @@ export function computePostRentalView(args: {
   }
 
   // Status resolution mirrors the eligibility predicate ladder so admin sees
-  // the same answer the cron would.
-  if (user.role === 'admin' || user.role === 'team_admin' || user.isServiceAreaExempt) {
+  // the same answer the cron would (lib/post-rental-billing.ts).
+  if (user.role === 'admin' || payer.postRentalChargedFrom == null) {
     return {
       status: 'exempt',
-      reason: user.role === 'team_admin' ? 'Broker account (team_admin)' : user.role === 'admin' ? 'Internal staff account' : 'Per-customer exemption',
+      reason: user.role === 'admin'
+        ? 'Internal staff account'
+        : payer.placedForAgent
+          ? `Placed and paid by ${payer.name}, whose “Charge post rental” switch is off. Turn it on on ${payer.name}’s customer page to start (the agent’s own switch doesn’t apply to this order).`
+          : 'This account isn’t charged post rental. Turn on “Charge post rental” on their customer page to start.',
+      payerId: payer.id,
+      payerName: payer.name,
       installedAt,
       stoppedAt,
       override,
@@ -166,6 +198,8 @@ export function computePostRentalView(args: {
     return {
       status: 'never_eligible',
       reason: !installation ? 'No installation on file' : `Installation is ${installation.status}`,
+      payerId: payer.id,
+      payerName: payer.name,
       installedAt,
       stoppedAt,
       override,
@@ -178,6 +212,8 @@ export function computePostRentalView(args: {
     return {
       status: 'stopped',
       reason: 'Pickup scheduled or completed',
+      payerId: payer.id,
+      payerName: payer.name,
       installedAt,
       stoppedAt,
       override,
@@ -186,10 +222,12 @@ export function computePostRentalView(args: {
     }
   }
 
-  if (order.status !== 'completed' || order.paymentStatus !== 'succeeded') {
+  if (order.status !== 'completed' || (order.paymentStatus !== 'succeeded' && order.paymentStatus !== 'pending_invoice')) {
     return {
       status: 'never_eligible',
       reason: `Order status is ${order.status} / payment ${order.paymentStatus}`,
+      payerId: payer.id,
+      payerName: payer.name,
       installedAt,
       stoppedAt,
       override,
@@ -209,6 +247,8 @@ export function computePostRentalView(args: {
     return {
       status: 'grandfathered',
       reason: `Installed before billing rollout (${billingStartAt.toISOString().slice(0, 10)})`,
+      payerId: payer.id,
+      payerName: payer.name,
       installedAt,
       stoppedAt,
       override,
@@ -219,13 +259,22 @@ export function computePostRentalView(args: {
 
   // Active path — compute next-charge preview by walking anchors and skipping
   // ones we've already scheduled (matches by periodStart millis-equal).
+  // Periods before the account was switched on are never billed.
   const scheduledStartsMs = new Set(charges.map((c) => c.periodStart.getTime()))
+  const chargedFrom = payer.postRentalChargedFrom
   const anchors = futureChargeAnchors(installation.installedAt, now)
-  const nextCharge = anchors.find((a) => !scheduledStartsMs.has(new Date(a.dueDate).getTime())) ?? null
+  const nextCharge =
+    anchors.find((a) => !scheduledStartsMs.has(new Date(a.dueDate).getTime()) && new Date(a.dueDate) >= chargedFrom) ?? null
 
+  const reasons = [
+    order.postRentalEnabledOverride && isPreRollout ? 'Admin opt-in (per-order override)' : null,
+    payer.invoiceBilling ? 'Pays by invoice: each charge is added to their next invoice.' : null,
+  ].filter(Boolean)
   return {
     status: 'active',
-    reason: order.postRentalEnabledOverride && isPreRollout ? 'Admin opt-in (per-order override)' : undefined,
+    reason: reasons.length ? reasons.join(' ') : undefined,
+    payerId: payer.id,
+    payerName: payer.name,
     installedAt,
     stoppedAt,
     override,
