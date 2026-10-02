@@ -199,11 +199,13 @@ export async function PATCH(
     // the inflation bound — admin can refund or restructure freely.
     if (user.role !== 'admin') {
       const claimedSubtotal = editData.items.reduce((sum, item) => sum + item.total_price, 0)
-      const originalTotal = Number(existingOrder.total)
-      // Approximate new total before tax/fees just for the sanity bound. Real
-      // total recomputation happens further down; this is a fast pre-check.
-      const claimedTotalApprox = claimedSubtotal + Number(existingOrder.fuelSurcharge)
-      if (claimedTotalApprox > originalTotal * 2 + 50) {
+      // Pre-discount against pre-discount. This used to compare the items
+      // (before any promo) with the order's TOTAL (after it), so any order
+      // with a big promo tripped it on the smallest edit: a $68-off order at
+      // $9.85 couldn't add a $2 rider ($76 of items > 2 × $9.85 + $50) —
+      // Ryan, 2026-10-02, 3593 Laredo Dr.
+      const originalSubtotal = Number(existingOrder.subtotal)
+      if (claimedSubtotal > originalSubtotal * 2 + 50) {
         return NextResponse.json(
           {
             error: 'This edit more than doubles the order total. Please contact Pink Posts at 859-395-8188 for large adjustments.',

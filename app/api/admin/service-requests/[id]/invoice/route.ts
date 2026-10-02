@@ -122,8 +122,15 @@ export async function POST(
       // attached this request since the read has already put the old amount
       // on a sent invoice (which re-reads the request live). The bundlers
       // attach only the amount they summed, so the reverse order refuses too.
+      // invoiceStatus is null until a request is first invoiced, and SQL's
+      // `<> 'paid'` never matches null — the null case has to be spelled out,
+      // or every first-time amount is refused (Ryan, 2026-10-01).
       const written = await prisma.serviceRequest.updateMany({
-        where: { id, invoiceId: null, invoiceStatus: { not: 'paid' } },
+        where: {
+          id,
+          invoiceId: null,
+          OR: [{ invoiceStatus: null }, { invoiceStatus: { not: 'paid' } }],
+        },
         data: {
           invoiceAmount: amount,
           invoiceStatus: 'pending_invoice',
