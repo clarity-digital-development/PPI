@@ -107,27 +107,62 @@ const SearchableSelect = ({
     else setPos(null)
   }, [open])
 
-  // Close on scroll/resize so the floating popover never detaches from its trigger.
+  // Follow the trigger on scroll/resize so the floating popover never detaches
+  // from it; close only once the trigger has left the screen. It used to close
+  // on ANY scroll or resize — and on a phone, tapping into the search box
+  // brings up the keyboard, which resizes the viewport and scrolls the page,
+  // so the popover (search box and all) vanished the moment it was used
+  // (Ryan, 2026-10-05: "Mobile app formatting removes the search box for
+  // agent inventory").
   useEffect(() => {
     if (!open) return
-    const close = (e?: Event) => {
-      // Ignore scrolls originating inside the popover — let the option list scroll independently.
-      if (e && e.type === 'scroll' && popoverRef.current?.contains(e.target as Node)) return
-      setOpen(false)
-      setQuery('')
+    // True when a clipping ancestor (a scrolling list, a modal body) has
+    // scrolled the trigger completely out of its visible box — the trigger is
+    // gone from view even though it's still inside the window.
+    const clippedByAncestor = (el: HTMLElement, r: DOMRect) => {
+      for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+        const s = getComputedStyle(p)
+        if (s.overflowX === 'visible' && s.overflowY === 'visible') continue
+        const pr = p.getBoundingClientRect()
+        if (r.bottom <= pr.top || r.top >= pr.bottom || r.right <= pr.left || r.left >= pr.right) return true
+      }
+      return false
+    }
+    const follow = (e?: Event) => {
+      // Ignore scrolls originating inside the popover — let the option list
+      // scroll independently. (A visualViewport event's target isn't a Node.)
+      if (e && e.type === 'scroll' && e.target instanceof Node && popoverRef.current?.contains(e.target)) return
+      const t = triggerRef.current
+      const r = t?.getBoundingClientRect()
+      if (!t || !r || r.bottom < 0 || r.top > window.innerHeight || clippedByAncestor(t, r)) {
+        setOpen(false)
+        setQuery('')
+        return
+      }
+      computePos()
     }
     // Capture-phase scroll catches scrolls in any ancestor (modal body, page, etc.).
-    window.addEventListener('scroll', close, true)
-    window.addEventListener('resize', close)
+    window.addEventListener('scroll', follow, true)
+    window.addEventListener('resize', follow)
+    // The on-screen keyboard moves the visual viewport, not always the window.
+    const vv = window.visualViewport
+    vv?.addEventListener('resize', follow)
+    vv?.addEventListener('scroll', follow)
     return () => {
-      window.removeEventListener('scroll', close, true)
-      window.removeEventListener('resize', close)
+      window.removeEventListener('scroll', follow, true)
+      window.removeEventListener('resize', follow)
+      vv?.removeEventListener('resize', follow)
+      vv?.removeEventListener('scroll', follow)
     }
   }, [open])
 
-  // Focus the search input when the popover opens.
+  // Focus the search input when the popover opens — but not on a touch
+  // screen, where focusing pops the keyboard up over the list before anyone
+  // has asked to type. There the search box is a tap away.
   useEffect(() => {
-    if (open) inputRef.current?.focus()
+    if (!open) return
+    const touch = typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches
+    if (!touch) inputRef.current?.focus()
   }, [open])
 
   // Keep highlighted item scrolled into view.
@@ -219,7 +254,9 @@ const SearchableSelect = ({
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder={searchPlaceholder}
-                  className="block w-full rounded-md border border-gray-200 bg-white pl-9 pr-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-pink-200 focus:border-pink-500"
+                  // 16px on phones: iOS zooms into any input under 16px when
+                  // it's focused, which also scrolled the popover away.
+                  className="block w-full rounded-md border border-gray-200 bg-white pl-9 pr-3 py-2 text-base sm:text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-pink-200 focus:border-pink-500"
                 />
               </div>
               <ul

@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { audit, AuditAction } from '@/lib/audit'
+import { centerLocationProblem } from '@/lib/service-area/center-zip-check'
 
 // WHY: PATCH is partial — every field optional but with the same validation rules as create.
 const centerPatchSchema = z.object({
@@ -88,6 +89,19 @@ export async function PATCH(
         { error: 'surchargeMinutes must be greater than standardMinutes' },
         { status: 400 }
       )
+    }
+
+    // Checked against the merged result whenever any part of the location
+    // changes, so a partial PATCH can't leave a centre in the wrong place.
+    if (data.lat !== undefined || data.lng !== undefined || data.zip !== undefined) {
+      const locationProblem = centerLocationProblem(
+        data.lat ?? Number(before.lat),
+        data.lng ?? Number(before.lng),
+        data.zip ?? before.zip,
+      )
+      if (locationProblem) {
+        return NextResponse.json({ error: locationProblem }, { status: 400 })
+      }
     }
 
     // WHY: name uniqueness — surface friendly 409 if renaming to a taken name.

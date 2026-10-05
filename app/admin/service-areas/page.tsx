@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { MapPin, Plus, Pencil, Trash2, RotateCcw } from 'lucide-react'
 import { Card, CardContent, Button, Input, Badge, Modal } from '@/components/ui'
+import { centerCoordinateProblem } from '@/lib/service-area/center-coordinates'
 
 interface ServiceCenter {
   id: string
@@ -152,6 +153,9 @@ export default function ServiceAreasPage() {
     if (!/^\d{5}$/.test(form.zip.trim())) return setFormError('ZIP must be 5 digits')
     if (!Number.isFinite(lat) || lat < -90 || lat > 90) return setFormError('Latitude must be between -90 and 90')
     if (!Number.isFinite(lng) || lng < -180 || lng > 180) return setFormError('Longitude must be between -180 and 180')
+    // Catches the usual slip: "84.20835° W" typed without its minus sign.
+    const coordinateProblem = centerCoordinateProblem(lat, lng)
+    if (coordinateProblem) return setFormError(coordinateProblem)
     if (!Number.isInteger(standardMinutes) || standardMinutes <= 0) return setFormError('Standard band minutes must be a positive integer')
     if (!Number.isInteger(surchargeMinutes) || surchargeMinutes <= 0) return setFormError('Surcharge band minutes must be a positive integer')
     if (surchargeMinutes <= standardMinutes) return setFormError('Surcharge band must exceed standard band')

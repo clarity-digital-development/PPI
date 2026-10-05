@@ -139,6 +139,8 @@ export const AuditAction = {
   ServiceAreaSecondChargeRetry: 'service_area.second_charge.retry',
   // Admin took the out-of-area fee off an order (lib/orders/waive-out-of-area.ts).
   ServiceAreaFeeWaived: 'service_area.fee_waived',
+  // Admin tagged an order with its crew area (lib/orders/areas.ts).
+  OrderAreaSet: 'order.area_set',
   // Policy-notice acceptance — legal trail proving each non-exempt user
   // saw and acknowledged the out-of-area fee + post-rental clarification.
   PolicyNoticeAccepted: 'policy_notice.accepted',

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
+import { isOrderArea } from '@/lib/orders/areas'
 
 export async function GET(request: NextRequest) {
   try {
@@ -35,6 +36,10 @@ export async function GET(request: NextRequest) {
         : scheduledDateParam && /^\d{4}-\d{2}-\d{2}$/.test(scheduledDateParam)
           ? { scheduledDate: { gte: new Date(`${scheduledDateParam}T00:00:00.000Z`), lte: new Date(`${scheduledDateParam}T23:59:59.999Z`) } }
           : {}
+    // Crew area (Ryan, 2026-10-05): one area, or 'none' for orders not tagged yet.
+    const areaParam = searchParams.get('area')
+    const areaWhere =
+      areaParam === 'none' ? { area: null } : isOrderArea(areaParam) ? { area: areaParam } : {}
     const limit = parseInt(searchParams.get('limit') || '50')
     const offset = parseInt(searchParams.get('offset') || '0')
 
@@ -47,6 +52,7 @@ export async function GET(request: NextRequest) {
         ? { editChargeStatus: { in: ['charge_failed', 'no_payment_method', 'credit_pending'] as Array<'charge_failed' | 'no_payment_method' | 'credit_pending'> } }
         : {}),
       ...scheduledDateWhere,
+      ...areaWhere,
     }
 
     // Total matching count so the admin UI can paginate through every order
@@ -79,6 +85,7 @@ export async function GET(request: NextRequest) {
       id: order.id,
       order_number: order.orderNumber,
       status: order.status,
+      area: order.area,
       payment_status: order.paymentStatus,
       property_address: order.propertyAddress,
       property_city: order.propertyCity,

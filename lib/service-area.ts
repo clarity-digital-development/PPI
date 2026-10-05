@@ -193,6 +193,16 @@ interface CenterPrice {
   tier: CenterTier
   /** Fee for BOTH trips — the order route splits it 50/50. */
   feeCents: number
+  /**
+   * What this centre would charge with no safety cap — the number centres
+   * are RANKED by. Equals feeCents except for an unmeasured estimate, whose
+   * bill is capped at the flat fee: ranking by the capped bill let a centre
+   * that couldn't be measured at all win on the cap alone. A centre saved with
+   * its longitude missing the minus sign sat 8,000+ miles away, Google found no
+   * route, the estimate capped at $50, and it beat Elizabethtown's measured
+   * $65.20 on three orders (Ryan, 2026-10-04, 1792 Robbin Ln).
+   */
+  rankCents: number
   overMiles: number
   explanation?: string
 }
@@ -231,6 +241,7 @@ function priceCenter(
     return {
       tier: cappedBoth > 0 ? 'surcharge' : 'standard',
       feeCents: cappedBoth,
+      rankCents: fee.bothTripsCents,
       overMiles: fee.overMiles,
       explanation: measured
         ? describeMileageFee(center.name, miles, cfg, fee)
@@ -238,9 +249,11 @@ function priceCenter(
     }
   }
   const tier = tierForCenter(minutes, center)
+  const flat = tier === 'surcharge' ? center.surchargeCents : 0
   return {
     tier,
-    feeCents: tier === 'surcharge' ? center.surchargeCents : 0,
+    feeCents: flat,
+    rankCents: flat,
     overMiles: 0,
   }
 }
@@ -266,6 +279,7 @@ interface ScoredCenter {
   miles: number | null
   tier: CenterTier
   feeCents: number
+  rankCents: number
   overMiles: number
   explanation?: string
   source: DecidedBy['driveTimeSource']
@@ -467,10 +481,11 @@ export async function resolveServiceArea(input: ResolveInput): Promise<ResolveRe
   // Lexington just because Lexington happened to be marginally closer in
   // minutes. Tier still leads so a standard (free) centre always beats a paid
   // one, and out_of_area always loses.
+  // Ranked by the uncapped fee (rankCents) — see CenterPrice.
   scored.sort((a, b) => {
     const r = TIER_RANK[a.tier] - TIER_RANK[b.tier]
     if (r !== 0) return r
-    if (a.feeCents !== b.feeCents) return a.feeCents - b.feeCents
+    if (a.rankCents !== b.rankCents) return a.rankCents - b.rankCents
     return a.minutes - b.minutes
   })
   const winner = scored[0]

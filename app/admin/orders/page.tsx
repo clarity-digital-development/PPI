@@ -9,11 +9,18 @@ import { DateInput } from '@/components/ui/DateInput'
 import { useDispatchSelection } from '@/components/admin/dispatch/useDispatchSelection'
 import { DispatchBar } from '@/components/admin/dispatch/DispatchBar'
 import { DispatchEmailModal } from '@/components/admin/dispatch/DispatchEmailModal'
+import { ORDER_AREAS, isOrderArea } from '@/lib/orders/areas'
 
 const PAGE_SIZE = 25
 
 type StatusFilter = '' | 'pending' | 'confirmed' | 'scheduled' | 'in_progress' | 'completed' | 'cancelled'
 const VALID_STATUSES: StatusFilter[] = ['', 'pending', 'confirmed', 'scheduled', 'in_progress', 'completed', 'cancelled']
+
+// Crew area filter (Ryan, 2026-10-05): '' = all, 'none' = not tagged yet.
+type AreaFilter = '' | 'none' | (typeof ORDER_AREAS)[number]['value']
+function isValidAreaFilter(v: unknown): v is AreaFilter {
+  return v === '' || v === 'none' || isOrderArea(v)
+}
 const FILTER_STORAGE_KEY = 'admin-orders-filters-v1'
 
 // localStorage fallback: when the user navigates back to /admin/orders via the
@@ -29,27 +36,32 @@ function isValidDateFilter(v: string | null): v is DateFilter {
   return v === '' || v === 'unscheduled' || (!!v && /^\d{4}-\d{2}-\d{2}$/.test(v))
 }
 
-function readPersistedFilters(): { statusFilter: StatusFilter; chargeIssuesOnly: boolean; dateUnscheduled: boolean } | null {
+function readPersistedFilters(): { statusFilter: StatusFilter; chargeIssuesOnly: boolean; dateUnscheduled: boolean; areaFilter: AreaFilter } | null {
   if (typeof window === 'undefined') return null
   try {
     const raw = window.localStorage.getItem(FILTER_STORAGE_KEY)
     if (!raw) return null
-    const parsed = JSON.parse(raw) as { statusFilter?: unknown; chargeIssuesOnly?: unknown; dateUnscheduled?: unknown }
+    const parsed = JSON.parse(raw) as { statusFilter?: unknown; chargeIssuesOnly?: unknown; dateUnscheduled?: unknown; areaFilter?: unknown }
     const s = typeof parsed.statusFilter === 'string' && VALID_STATUSES.includes(parsed.statusFilter as StatusFilter)
       ? (parsed.statusFilter as StatusFilter)
       : ''
-    return { statusFilter: s, chargeIssuesOnly: parsed.chargeIssuesOnly === true, dateUnscheduled: parsed.dateUnscheduled === true }
+    return {
+      statusFilter: s,
+      chargeIssuesOnly: parsed.chargeIssuesOnly === true,
+      dateUnscheduled: parsed.dateUnscheduled === true,
+      areaFilter: isValidAreaFilter(parsed.areaFilter) ? parsed.areaFilter : '',
+    }
   } catch {
     return null
   }
 }
 
-function writePersistedFilters(statusFilter: StatusFilter, chargeIssuesOnly: boolean, dateFilter: DateFilter) {
+function writePersistedFilters(statusFilter: StatusFilter, chargeIssuesOnly: boolean, dateFilter: DateFilter, areaFilter: AreaFilter) {
   if (typeof window === 'undefined') return
   try {
     window.localStorage.setItem(
       FILTER_STORAGE_KEY,
-      JSON.stringify({ statusFilter, chargeIssuesOnly, dateUnscheduled: dateFilter === 'unscheduled' })
+      JSON.stringify({ statusFilter, chargeIssuesOnly, dateUnscheduled: dateFilter === 'unscheduled', areaFilter })
     )
   } catch {
     /* localStorage blocked or quota exceeded — silently degrade to URL-only */
@@ -60,6 +72,7 @@ interface Order {
   id: string
   order_number: string
   status: string
+  area: string | null
   payment_status: string
   property_address: string
   property_city: string
@@ -85,6 +98,12 @@ const statusOptions = [
   { value: 'in_progress', label: 'In Progress' },
   { value: 'completed', label: 'Completed' },
   { value: 'cancelled', label: 'Cancelled' },
+]
+
+const areaFilterOptions = [
+  { value: '', label: 'All Areas' },
+  ...ORDER_AREAS.map((a) => ({ value: a.value, label: a.label })),
+  { value: 'none', label: 'No Area Yet' },
 ]
 
 const getStatusIcon = (status: string) => {
@@ -147,12 +166,14 @@ function AdminOrdersPageInner() {
   const urlChargeIssues = searchParams.get('charge_issues')
   const urlDate = searchParams.get('date')
   const urlPage = searchParams.get('page')
+  const urlArea = searchParams.get('area')
   const statusFilter: StatusFilter = VALID_STATUSES.includes((urlStatus ?? '') as StatusFilter)
     ? ((urlStatus ?? '') as StatusFilter)
     : ''
   const chargeIssuesOnly = urlChargeIssues === 'true'
   const dateFilter: DateFilter = isValidDateFilter(urlDate) ? urlDate : ''
   const page = Math.max(0, Number.parseInt(urlPage ?? '0', 10) || 0)
+  const areaFilter: AreaFilter = isValidAreaFilter(urlArea ?? '') ? ((urlArea ?? '') as AreaFilter) : ''
 
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
@@ -169,10 +190,13 @@ function AdminOrdersPageInner() {
   // filters (not page) to localStorage so a sidebar round-trip back to
   // /admin/orders restores Ryan's last selection. Page is intentionally NOT
   // saved to localStorage — stale page numbers go bad as new orders arrive.
-  function pushUrl(next: { statusFilter: StatusFilter; chargeIssuesOnly: boolean; dateFilter: DateFilter; page: number }) {
-    writePersistedFilters(next.statusFilter, next.chargeIssuesOnly, next.dateFilter)
+  function pushUrl(next: { statusFilter: StatusFilter; chargeIssuesOnly: boolean; dateFilter: DateFilter; page: number; areaFilter?: AreaFilter }) {
+    // Every caller but changeArea leaves the area filter as it is.
+    const nextArea = next.areaFilter ?? areaFilter
+    writePersistedFilters(next.statusFilter, next.chargeIssuesOnly, next.dateFilter, nextArea)
     const params = new URLSearchParams()
     if (next.statusFilter) params.set('status', next.statusFilter)
+    if (nextArea) params.set('area', nextArea)
     if (next.chargeIssuesOnly) params.set('charge_issues', 'true')
     if (next.dateFilter) params.set('date', next.dateFilter)
     if (next.page > 0) params.set('page', String(next.page))
@@ -200,6 +224,9 @@ function AdminOrdersPageInner() {
   function changePage(next: number) {
     pushUrl({ statusFilter, chargeIssuesOnly, dateFilter, page: next })
   }
+  function changeArea(value: AreaFilter) {
+    pushUrl({ statusFilter, chargeIssuesOnly, dateFilter, page: 0, areaFilter: value })
+  }
 
   // Mount-only restore: if URL has no filters but localStorage does, replay
   // them into the URL so the page renders with the saved filter applied. Ref
@@ -209,15 +236,16 @@ function AdminOrdersPageInner() {
   useEffect(() => {
     if (hasRestored.current) return
     hasRestored.current = true
-    if (urlStatus !== null || urlChargeIssues !== null || urlDate !== null) return
+    if (urlStatus !== null || urlChargeIssues !== null || urlDate !== null || urlArea !== null) return
     const persisted = readPersistedFilters()
     if (!persisted) return
-    if (persisted.statusFilter === '' && !persisted.chargeIssuesOnly && !persisted.dateUnscheduled) return
+    if (persisted.statusFilter === '' && !persisted.chargeIssuesOnly && !persisted.dateUnscheduled && persisted.areaFilter === '') return
     pushUrl({
       statusFilter: persisted.statusFilter,
       chargeIssuesOnly: persisted.chargeIssuesOnly,
       dateFilter: persisted.dateUnscheduled ? 'unscheduled' : '',
       page: 0,
+      areaFilter: persisted.areaFilter,
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -237,6 +265,7 @@ function AdminOrdersPageInner() {
         if (statusFilter) params.set('status', statusFilter)
         if (chargeIssuesOnly) params.set('charge_issues', 'true')
         if (dateFilter) params.set('scheduled_date', dateFilter)
+        if (areaFilter) params.set('area', areaFilter)
         params.set('limit', String(PAGE_SIZE))
         params.set('offset', String(page * PAGE_SIZE))
 
@@ -257,7 +286,7 @@ function AdminOrdersPageInner() {
 
     fetchOrders()
     return () => ac.abort()
-  }, [statusFilter, chargeIssuesOnly, dateFilter, page, reloadKey])
+  }, [statusFilter, chargeIssuesOnly, dateFilter, areaFilter, page, reloadKey])
 
   // Select-all state for the header checkbox (current page only).
   const selectableIds = orders.filter((o) => o.status !== 'cancelled').map((o) => o.id)
@@ -284,6 +313,25 @@ function AdminOrdersPageInner() {
       }
     } catch (error) {
       console.error('Error updating order:', error)
+    }
+  }
+
+  // Internal tag only — its own admin route, so the customer is never emailed
+  // (the status select above goes through the order PUT, which does email).
+  async function updateOrderArea(orderId: string, newArea: string) {
+    const area = newArea || null
+    const prevArea = orders.find((o) => o.id === orderId)?.area ?? null
+    setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, area } : o)))
+    try {
+      const res = await fetch(`/api/admin/orders/${orderId}/area`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ area }),
+      })
+      if (!res.ok) throw new Error('Area update failed')
+    } catch (error) {
+      console.error('Error updating order area:', error)
+      setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, area: prevArea } : o)))
     }
   }
 
@@ -325,6 +373,14 @@ function AdminOrdersPageInner() {
             <AlertTriangle className="w-4 h-4" />
             {chargeIssuesOnly ? 'Charge issues only · clear' : 'Charge issues'}
           </Button>
+          <div className="w-full sm:w-44">
+            <Select
+              aria-label="Filter by area"
+              options={areaFilterOptions}
+              value={areaFilter}
+              onChange={(e) => changeArea(e.target.value as AreaFilter)}
+            />
+          </div>
           <div className="w-full sm:w-48">
             <Select
               options={statusOptions}
@@ -476,6 +532,18 @@ function AdminOrdersPageInner() {
                           <option value="in_progress">In Progress</option>
                           <option value="completed">Completed</option>
                           <option value="cancelled">Cancelled</option>
+                        </select>
+                        <select
+                          value={order.area ?? ''}
+                          onChange={(e) => updateOrderArea(order.id, e.target.value)}
+                          aria-label={`Area for ${order.order_number}`}
+                          title="Crew area — internal only, the customer isn't emailed"
+                          className={`text-sm border rounded px-2 py-1 ${order.area ? 'border-gray-200' : 'border-dashed border-gray-300 text-gray-400'}`}
+                        >
+                          <option value="">Area…</option>
+                          {ORDER_AREAS.map((a) => (
+                            <option key={a.value} value={a.value}>{a.label}</option>
+                          ))}
                         </select>
                       </div>
                     </td>

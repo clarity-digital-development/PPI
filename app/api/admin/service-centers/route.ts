@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { audit, AuditAction } from '@/lib/audit'
+import { centerLocationProblem } from '@/lib/service-area/center-zip-check'
 
 // WHY: shared shape — POST + (PATCH partial) reuse these field rules.
 const centerCreateSchema = z.object({
@@ -72,6 +73,12 @@ export async function POST(request: NextRequest) {
         { error: 'surchargeMinutes must be greater than standardMinutes' },
         { status: 400 }
       )
+    }
+
+    // A centre off in the wrong place prices every nearby order wrong.
+    const locationProblem = centerLocationProblem(data.lat, data.lng, data.zip)
+    if (locationProblem) {
+      return NextResponse.json({ error: locationProblem }, { status: 400 })
     }
 
     // WHY: name is @unique — surface a friendly 409 instead of a P2002 stack.

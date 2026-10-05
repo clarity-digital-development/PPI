@@ -590,6 +590,12 @@ model Order {
   // $5 net rather than charged $10 + still owed $5.
   pendingCreditCents      Int               @default(0) @map("pending_credit_cents")
 
+  // Which crew area the order belongs to — 'louisville' | 'lexington' |
+  // 'cincinnati' (lib/orders/areas.ts). Set by an admin from the orders list
+  // and filtered on like status (Ryan, 2026-10-05). Internal only: setting it
+  // never emails the customer. Null = not assigned yet.
+  area String? @map("area")
+
   // Post-invoice edits (Ryan, 2026-07-29): an order already bundled onto an
   // invoice stays editable, but its money columns are FROZEN at the invoiced
   // values — the invoice detail page and PDF re-read order rows live, so
@@ -637,6 +643,7 @@ model Order {
   ooaPickupInvoice  Invoice?           @relation("OrderOOAPickupInvoice", fields: [serviceAreaSecondChargeInvoiceId], references: [id], onDelete: SetNull)
 
   @@index([placedByUserId])
+  @@index([area])
   @@index([serviceAreaSecondChargeInvoiceId])
   @@index([cancelledByUserId])
   @@index([invoiceId])
