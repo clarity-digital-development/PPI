@@ -1083,9 +1083,9 @@ export function ReviewStep({
           customer_sign_id: formData.stored_sign_id,
         })
       } else if (formData.sign_option === 'at_property') {
-        // Listing keeps the exact legacy line ('owned' / 'Sign Install'); the
-        // other two record where the sign is coming from, and a pickup carries
-        // its address so the crew's dispatch email shows it.
+        // Listing keeps the legacy category ('owned'); the line text says
+        // "(at property)". The other two record where the sign is coming from,
+        // and a pickup carries its address so the crew's dispatch email shows it.
         const location = formData.sign_location ?? 'listing'
         const address = sanitizePickupAddress(formData.sign_pickup_address)
         items.push({

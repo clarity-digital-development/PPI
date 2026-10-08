@@ -55,6 +55,15 @@ export function applyPickupFeePolicy<T extends PolicyItem>(
   const out: T[] = []
   for (const item of items) {
     if (item.item_type === 'pickup_fee') continue
+    // A sign already at the listing gets the canonical "(at property)" line
+    // too, so the crew always sees where the sign is — whatever text the
+    // client sent (an old tab sends the bare 'Sign Install').
+    if (item.item_type === 'sign' && (item.item_category === 'owned' || item.item_category === 'install')) {
+      const secondPost =
+        item.item_category === 'install' || (typeof item.description === 'string' && item.description.startsWith('Second Post'))
+      out.push({ ...item, description: signInstallDescription('listing', null, secondPost) })
+      continue
+    }
     if (item.item_type === 'sign' && (item.item_category === 'pickup' || item.item_category === 'delivered')) {
       const secondPost = typeof item.description === 'string' && item.description.startsWith('Second Post')
       if (item.item_category === 'pickup') {

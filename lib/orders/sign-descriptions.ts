@@ -50,9 +50,13 @@ export function categoryToSignLocation(category: string | null | undefined): Sig
 }
 
 /**
- * The sign line's description. The listing wording is byte-identical to the
- * pre-2026-09 builder output ('Sign Install' / 'Second Post Sign Install (at
- * property)') so old and new orders read the same.
+ * The sign line's description. A sign already at the listing says so — it
+ * used to be a bare 'Sign Install' on the main post (kept identical to the
+ * pre-2026-09 builder output), which read exactly like an install from
+ * storage: Ryan couldn't tell where an agent's sign was on an order placed
+ * with no signs left in storage (2026-10-08, PPI-MV03DRME-6YKN). Older orders
+ * keep their saved text until they're next edited; the location itself is
+ * read from itemCategory, never from this text.
  */
 export function signInstallDescription(
   location: SignLocation,
@@ -64,7 +68,7 @@ export function signInstallDescription(
     return `${head} (pickup from another location: ${sanitizePickupAddress(address)})`
   }
   if (location === 'ppi_storage') return `${head} (sign delivered to Pink Posts storage)`
-  return secondPost ? `${head} (at property)` : head
+  return `${head} (at property)`
 }
 
 const PICKUP_MARKER = '(pickup from another location:'
