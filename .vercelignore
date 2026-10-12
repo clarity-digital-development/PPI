@@ -1,0 +1,9 @@
+# Never upload local secrets, customer documents or scratch scripts with a CLI deploy.
+.env
+.env.*
+invoices-out/
+*.pdf
+scripts/_*
+.playwright-mcp/
+.claude/
+.mcp.json

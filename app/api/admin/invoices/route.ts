@@ -1,3 +1,4 @@
+import { waitUntil } from '@vercel/functions'
 import { NextRequest, NextResponse } from 'next/server'
 import { randomBytes } from 'node:crypto'
 import type { Prisma } from '@prisma/client'
@@ -623,14 +624,13 @@ export async function POST(request: NextRequest) {
     request,
   })
 
-  // Fire-and-forget the background worker. Railway runs a long-lived Node
-  // process so the setImmediate'd promise continues to completion after
-  // the HTTP response is sent (unlike serverless/edge runtimes which would
-  // kill it). The whole reason we moved this out of the request handler:
+  // Run the send after the response. The whole reason it's off the request:
   // doing Stripe Payment Link + PDF + Resend synchronously took 10-15s and
-  // Safari (+ Railway's gateway) timed out the fetch, leaving Ryan with a
-  // "Load failed" error even when the work succeeded server-side.
-  setImmediate(() => {
+  // Safari timed out the fetch, leaving Ryan with a "Load failed" error even
+  // when the work succeeded server-side. On Vercel a function can be frozen
+  // once it has responded, so waitUntil keeps it alive until the job (and
+  // its failure write) settles.
+  waitUntil(
     processInvoiceSendJob({
       invoiceId: result.invoice!.id,
       resolvedRecipientEmail,
@@ -640,7 +640,7 @@ export async function POST(request: NextRequest) {
     }).catch((err) => {
       console.error('Background invoice-send job crashed:', err)
       // Mark failed best-effort so the UI doesn't show "Queued" forever.
-      prisma.invoice
+      return prisma.invoice
         .update({
           where: { id: result.invoice!.id },
           data: {
@@ -651,7 +651,7 @@ export async function POST(request: NextRequest) {
         })
         .catch(() => {})
     })
-  })
+  )
 
   return NextResponse.json({
     invoice: {

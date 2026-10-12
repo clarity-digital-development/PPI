@@ -21,6 +21,7 @@
  *    for "who created this invoice" must not conflate creates with retries.
  *    Captures the actor's id/email/IP + old vs new recipient.
  */
+import { waitUntil } from '@vercel/functions'
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
@@ -144,11 +145,12 @@ export async function POST(
     request,
   })
 
-  // 7. Fire-and-forget. Same idempotent worker as the initial send.
+  // 7. Run after the response (waitUntil, see app/api/admin/invoices/route.ts).
+  //    Same idempotent worker as the initial send.
   //    Pass the 4-tier recipientSource through so the worker's outcome
   //    audit event (InvoiceEmailSent/Failed) distinguishes "admin reused
   //    the snapshot on resend" from "no billing email was ever set".
-  setImmediate(() => {
+  waitUntil(
     processInvoiceSendJob({
       invoiceId,
       resolvedRecipientEmail: newRecipient,
@@ -157,7 +159,7 @@ export async function POST(
       rangeEndIso: existing.rangeEnd.toISOString(),
     }).catch((err) => {
       console.error('Background invoice-send resend crashed:', err)
-      prisma.invoice
+      return prisma.invoice
         .update({
           where: { id: invoiceId },
           data: {
@@ -168,7 +170,7 @@ export async function POST(
         })
         .catch(() => {})
     })
-  })
+  )
 
   return NextResponse.json({
     ok: true,
