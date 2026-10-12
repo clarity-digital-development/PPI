@@ -1432,6 +1432,48 @@ export interface AdminChargeFailureAlertProps {
 }
 
 /**
+ * Admin alert when Stripe reports a payment for an invoice that is already
+ * paid (by another pay link, or marked paid by hand). The webhook keeps the
+ * invoice as it is, so without this the second charge would go unnoticed.
+ */
+export async function sendAdminDuplicateInvoicePaymentAlert(props: {
+  invoiceId: string
+  invoiceNumber: string
+  paymentIntentId: string
+  amountCents: number
+  firstPaymentIntentId: string | null
+}) {
+  const adminEmail = process.env.ADMIN_EMAIL
+  if (!adminEmail) {
+    console.error('ADMIN_EMAIL not configured - skipping duplicate invoice payment alert')
+    return null
+  }
+  const amount = (props.amountCents / 100).toFixed(2)
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pinkposts.com'
+  const text = `Invoice ${props.invoiceNumber} was already paid, and Stripe just took another payment for it.
+
+Amount: $${amount}
+New payment: ${props.paymentIntentId}
+Earlier payment: ${props.firstPaymentIntentId ?? 'none recorded (invoice was marked paid by hand)'}
+
+Nothing was changed on the invoice. Check Stripe and refund the extra payment if it's a duplicate.
+
+Invoices: ${appUrl}/admin/invoices`
+  try {
+    return await getResend().emails.send({
+      from: 'Pink Posts Installations <orders@pinkposts.com>',
+      reply_to: 'Pink Posts Installations <contact@pinkposts.com>',
+      to: adminEmail,
+      subject: `[PPI] Possible double payment — Invoice ${props.invoiceNumber}`,
+      text,
+    })
+  } catch (err) {
+    console.error('Failed to send duplicate invoice payment alert:', err)
+    return null
+  }
+}
+
+/**
  * Admin alert when a post-rental charge fails. Caller decides whether to
  * send (we skip silent-card-missing in the cron); the helper itself always
  * sends when invoked. Plain text format to ADMIN_EMAIL.

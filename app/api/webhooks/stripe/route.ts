@@ -3,7 +3,12 @@ import { headers } from 'next/headers'
 import Stripe from 'stripe'
 import { stripe } from '@/lib/stripe/server'
 import { prisma } from '@/lib/prisma'
-import { sendOrderConfirmationEmail, sendAdminOrderNotification, sendRefundConfirmationEmail } from '@/lib/email'
+import {
+  sendOrderConfirmationEmail,
+  sendAdminOrderNotification,
+  sendRefundConfirmationEmail,
+  sendAdminDuplicateInvoicePaymentAlert,
+} from '@/lib/email'
 import { releaseOrderHoldsAndRestoreInventory } from '@/lib/inventory-holds'
 import { resolveRefundRecipient } from '@/lib/orders/refund-recipient'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
@@ -91,9 +96,20 @@ export async function POST(request: NextRequest) {
             console.warn(`Webhook: invoice ${invoiceId} not found for PI ${paymentIntent.id} — returning 500 for Stripe retry`)
             return NextResponse.json({ error: 'invoice_not_ready', paymentIntentId: paymentIntent.id }, { status: 500 })
           }
-          // Idempotent — if already paid, do nothing.
+          // Idempotent — if already paid, do nothing. A DIFFERENT payment for a
+          // paid invoice (a second pay link, or paid after being marked paid
+          // by hand) is money taken twice: tell admin so it can be refunded.
           if (invoice.status === 'paid') {
             console.log(`Webhook: invoice ${invoiceId} already paid — skipping`)
+            if (invoice.paymentIntentId !== paymentIntent.id) {
+              await sendAdminDuplicateInvoicePaymentAlert({
+                invoiceId: invoice.id,
+                invoiceNumber: invoice.invoiceNumber,
+                paymentIntentId: paymentIntent.id,
+                amountCents: paymentIntent.amount_received || paymentIntent.amount,
+                firstPaymentIntentId: invoice.paymentIntentId,
+              })
+            }
             return NextResponse.json({ received: true })
           }
 
