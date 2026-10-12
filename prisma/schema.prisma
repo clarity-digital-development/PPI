@@ -55,10 +55,15 @@ model VerificationToken {
 model PasswordResetToken {
   id        String   @id @default(cuid())
   email     String
+  // A reset link's random token, or for an emailed 6-digit sign-in code
+  // "code:<sha256 of email:code>" (lib/passwords/code.ts).
   token     String   @unique
   expires   DateTime
+  // Wrong guesses against an emailed code; it stops working at the limit.
+  attempts  Int      @default(0)
   createdAt DateTime @default(now()) @map("created_at")
 
+  @@index([email])
   @@map("password_reset_tokens")
 }
 

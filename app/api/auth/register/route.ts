@@ -3,36 +3,7 @@ import { prisma } from '@/lib/prisma'
 import bcrypt from 'bcryptjs'
 import { createWelcomeNotification } from '@/lib/notifications'
 import { checkRateLimit, rateLimitPresets } from '@/lib/rate-limit'
-
-// Password validation rules
-const PASSWORD_MIN_LENGTH = 8
-const PASSWORD_REGEX = {
-  hasUppercase: /[A-Z]/,
-  hasLowercase: /[a-z]/,
-  hasNumber: /[0-9]/,
-}
-
-function validatePassword(password: string): { valid: boolean; errors: string[] } {
-  const errors: string[] = []
-
-  if (password.length < PASSWORD_MIN_LENGTH) {
-    errors.push(`Password must be at least ${PASSWORD_MIN_LENGTH} characters`)
-  }
-
-  if (!PASSWORD_REGEX.hasUppercase.test(password)) {
-    errors.push('Password must contain at least one uppercase letter')
-  }
-
-  if (!PASSWORD_REGEX.hasLowercase.test(password)) {
-    errors.push('Password must contain at least one lowercase letter')
-  }
-
-  if (!PASSWORD_REGEX.hasNumber.test(password)) {
-    errors.push('Password must contain at least one number')
-  }
-
-  return { valid: errors.length === 0, errors }
-}
+import { validatePassword } from '@/lib/passwords/rules'
 
 function validateEmail(email: string): boolean {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -81,6 +52,17 @@ export async function POST(request: NextRequest) {
     })
 
     if (existingUser) {
+      // Accounts carried over to the new site (October 2026) have no password
+      // yet: send them to choose one instead of a dead-end "already exists".
+      if (!existingUser.password) {
+        return NextResponse.json(
+          {
+            error: 'You already have an account from before we moved to the new site. Choose a new password to sign in.',
+            code: 'needs_new_password',
+          },
+          { status: 409 }
+        )
+      }
       return NextResponse.json(
         { error: 'An account with this email already exists' },
         { status: 400 }

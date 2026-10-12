@@ -57,6 +57,12 @@ export default function SignUpPage() {
       const registerData = await registerRes.json()
 
       if (!registerRes.ok) {
+        // An account carried over to the new site: choose a password on the
+        // sign-in page instead of signing up again.
+        if (registerData.code === 'needs_new_password') {
+          router.push(`/sign-in?new=1&email=${encodeURIComponent(formData.email)}`)
+          return
+        }
         setError(registerData.error || 'Failed to create account')
         setIsLoading(false)
         return

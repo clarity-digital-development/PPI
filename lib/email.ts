@@ -760,6 +760,49 @@ export async function sendPasswordResetEmail(
   })
 }
 
+/**
+ * 6-digit code for choosing a new password on the sign-in page
+ * (lib/passwords/code.ts). `firstSignIn` is for accounts carried over to the
+ * new site, which have no password yet.
+ */
+export async function sendPasswordCodeEmail(email: string, code: string, firstSignIn: boolean) {
+  const intro = firstSignIn
+    ? "We've moved Pink Posts to a new system. Your account and saved card came with it; you just need to choose a new password."
+    : 'Here is the code to choose a new password for your Pink Posts account.'
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>Your Pink Posts code</title>
+    </head>
+    <body style="font-family: 'Poppins', Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #FFF0F3;">
+      <div style="background-color: white; border-radius: 12px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <h1 style="color: #E84A7A; margin: 0;">Pink Posts Installations</h1>
+        </div>
+        <p style="color: #333;">Hi,</p>
+        <p style="color: #333;">${intro} Enter this code on the sign-in page:</p>
+        <div style="text-align: center; margin: 28px 0;">
+          <div style="display: inline-block; font-size: 32px; letter-spacing: 8px; font-weight: 700; color: #111; background: #FFF0F3; border-radius: 8px; padding: 12px 20px;">${code}</div>
+        </div>
+        <p style="color: #666; font-size: 14px;">The code works for 15 minutes. If you didn't ask for it, you can ignore this email; your account won't change.</p>
+        <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid #eee; text-align: center;">
+          <p style="color: #999; margin: 0; font-size: 12px;">&copy; ${new Date().getFullYear()} Pink Posts Installations. All rights reserved.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `
+  return getResend().emails.send({
+    from: 'Pink Posts Installations <noreply@pinkposts.com>',
+    to: email,
+    subject: `${code} is your Pink Posts code`,
+    html,
+    text: `${intro} Enter this code on the sign-in page: ${code}\n\nThe code works for 15 minutes. If you didn't ask for it, you can ignore this email.`,
+  })
+}
+
 // Lockboxes already on-site at an installation — surfaced in SR emails so the
 // install crew knows what's there before they roll a truck. Serial is optional
 // because InstallationLockbox has no FK back to CustomerLockbox yet (gap).
