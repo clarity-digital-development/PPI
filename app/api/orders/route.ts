@@ -70,6 +70,9 @@ export async function GET(request: NextRequest) {
         ...createdAtFilter,
         ...totalFilter,
       },
+      // The install photo is a data URI of up to ~1 MB that no list screen
+      // shows; 50 of them would blow past the host's 4.5 MB response limit.
+      omit: { installationLocationImage: true },
       include: {
         orderItems: true,
         postType: { select: { name: true } },

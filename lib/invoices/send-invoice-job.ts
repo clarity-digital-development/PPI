@@ -2,7 +2,7 @@
  * Background worker for the invoice email send.
  *
  * The POST /api/admin/invoices route returns immediately after the DB
- * transaction commits, then enqueues this worker via setImmediate. Doing
+ * transaction commits, then runs this worker under waitUntil. Doing
  * the slow network I/O (Stripe Payment Link create + PDF generation +
  * Resend send) in a request handler caused the original "Load failed"
  * Safari timeout — the round trip was 10-15s, which Safari and some
@@ -15,10 +15,11 @@
  *   3. Stripe Payment Link create uses an idempotencyKey derived from
  *      invoice.id (see lib/stripe/server.ts createInvoiceCheckoutSession).
  *
- * Crash-recovery: if the Node process dies between claim and final state
- * write, the row is left in 'sending' with sendingStartedAt set. The
- * startup heal hook in instrumentation.ts marks any row stuck >10min as
- * 'failed' on next boot so admin can manually Resend.
+ * Crash-recovery: if the function dies between claim and final state
+ * write, the row is left in 'sending' (or 'queued' if it never started).
+ * The admin Resend route accepts either once the row is 10+ minutes stale.
+ * (instrumentation.ts was meant to heal these on boot, but Next 14 only
+ * runs it with experimental.instrumentationHook, which was never set.)
  *
  * Audit trail: the route writes InvoiceCreated (intent — which recipient
  * the admin typed). This worker writes InvoiceEmailSent / Failed / Skipped

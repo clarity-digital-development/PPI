@@ -280,6 +280,7 @@ export async function GET(request: NextRequest) {
       recipient_email: i.recipientEmail,
       email_error: i.emailError,
       sending_started_at: i.sendingStartedAt?.toISOString() ?? null,
+      updated_at: i.updatedAt.toISOString(),
     })),
   })
 }

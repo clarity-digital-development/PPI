@@ -7,6 +7,7 @@ import { Input, AddressAutocomplete } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import type { StepProps } from '../types'
 import type { PropertyType } from '@/types/database'
+import { compressPhotoForUpload } from '@/lib/images/client-compress'
 
 const propertyTypes: Array<{
   value: PropertyType
@@ -59,17 +60,16 @@ export function PropertyStep({ formData, updateFormData }: StepProps) {
       return
     }
 
-    // Validate file size (max 5MB)
-    if (file.size > 5 * 1024 * 1024) {
-      alert('Image must be less than 5MB')
-      return
-    }
-
-    const reader = new FileReader()
-    reader.onloadend = () => {
-      updateFormData({ installation_location_image: reader.result as string })
-    }
-    reader.readAsDataURL(file)
+    // Shrunk in the browser first: the photo rides in the order's JSON body,
+    // which has to stay under the host's 4.5 MB request limit.
+    compressPhotoForUpload(file).then((dataUrl) => {
+      if (!dataUrl) {
+        alert("We couldn't read that photo. Please try a JPEG or PNG under 1.5MB.")
+        if (fileInputRef.current) fileInputRef.current.value = ''
+        return
+      }
+      updateFormData({ installation_location_image: dataUrl })
+    })
   }
 
   const removeImage = () => {

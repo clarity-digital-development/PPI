@@ -99,11 +99,18 @@ export async function POST(
   //    the admin doesn't accidentally race the worker into a double-send.
   //    Same query also clears invoiceEmailSentAt (the legacy single-flight)
   //    + emailError so the worker can start clean.
+  //    Exception: a 'queued'/'sending' row untouched for 10+ minutes is a send
+  //    that died (the background job runs at most 5 minutes under waitUntil),
+  //    and nothing else ever clears it, so it can be resent.
+  const staleBefore = new Date(Date.now() - 10 * 60 * 1000)
   const claim = await prisma.invoice.updateMany({
     where: {
       id: invoiceId,
-      emailStatus: { in: ['failed', 'sent', 'skipped'] },
       status: { notIn: ['paid', 'void'] },
+      OR: [
+        { emailStatus: { in: ['failed', 'sent', 'skipped'] } },
+        { emailStatus: { in: ['queued', 'sending'] }, updatedAt: { lt: staleBefore } },
+      ],
     },
     data: {
       emailStatus: 'queued',
@@ -120,7 +127,7 @@ export async function POST(
           existing.emailStatus === 'sending'
             ? 'Invoice is currently sending — wait 30 seconds and try again.'
             : existing.emailStatus === 'queued'
-              ? 'Invoice is already queued for sending — nothing to do.'
+              ? 'Invoice is already queued for sending. If it is still queued in 10 minutes, try again.'
               : 'Invoice is in a state that cannot be resent.',
         code: existing.emailStatus,
       },

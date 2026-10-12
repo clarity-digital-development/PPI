@@ -119,6 +119,16 @@ interface InvoiceListRow {
   recipient_email?: string | null
   email_error?: string | null
   sending_started_at?: string | null
+  updated_at?: string
+}
+
+// A queued/sending invoice untouched this long is a send that died; the
+// Resend route accepts it again (app/api/admin/invoices/[id]/resend).
+const STUCK_SEND_MS = 10 * 60 * 1000
+function sendLooksStuck(inv: InvoiceListRow): boolean {
+  if (inv.email_status !== 'queued' && inv.email_status !== 'sending') return false
+  if (!inv.updated_at) return false
+  return Date.now() - new Date(inv.updated_at).getTime() > STUCK_SEND_MS
 }
 
 const EMAIL_STATUS_LABEL: Record<
@@ -882,10 +892,12 @@ export default function AdminInvoicesPage() {
                                 different address — e.g., customer's accountant
                                 didn't get the first one). Hidden while currently
                                 queued/sending — the resend endpoint returns 409
-                                for those states anyway. */}
+                                for those states anyway — unless the send has
+                                been stuck for 10+ minutes. */}
                             {(inv.email_status === 'failed' ||
                               inv.email_status === 'sent' ||
-                              inv.email_status === 'skipped') &&
+                              inv.email_status === 'skipped' ||
+                              sendLooksStuck(inv)) &&
                               inv.status !== 'paid' &&
                               inv.status !== 'void' && (
                                 <button

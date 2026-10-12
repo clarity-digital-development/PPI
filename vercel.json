@@ -10,7 +10,7 @@
     },
     {
       "path": "/api/cron/inventory-hold-sweeper",
-      "schedule": "*/5 * * * *"
+      "schedule": "* * * * *"
     }
   ]
 }

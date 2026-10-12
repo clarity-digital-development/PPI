@@ -5,7 +5,7 @@
  *   Daily at 8am ET (13:00 UTC).
  *
  * WIRING (production)
- *   Use Railway's Cron Service plugin (or any external scheduler) to hit:
+ *   vercel.json's crons hit it; Vercel sends the CRON_SECRET header:
  *     GET https://<host>/api/cron/post-rental-billing
  *     Authorization: Bearer ${CRON_SECRET}
  *   A single daily run is sufficient — the unique constraint on
