@@ -29,7 +29,8 @@ function SignInForm() {
   // email is theirs, then they type the new password twice. A failed sign-in
   // on such an account switches here by itself (lib/passwords/code.ts).
   const [mode, setMode] = useState<Mode>(params.get('new') === '1' ? 'new' : 'signin')
-  const [newStep, setNewStep] = useState<NewStep>('email')
+  // The code email links back here on the code step (?new=1&step=code&email=).
+  const [newStep, setNewStep] = useState<NewStep>(params.get('step') === 'code' ? 'code' : 'email')
   const [email, setEmail] = useState(params.get('email') ?? '')
   const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
@@ -63,19 +64,45 @@ function SignInForm() {
     setConfirmPassword('')
   }
 
-  async function requestCode(firstSignIn: boolean): Promise<{ codeSent: boolean } | null> {
+  // quiet: the check after a failed sign-in, whose own errors (e.g. a busy
+  // office hitting the request limit) shouldn't replace "Invalid email or
+  // password". resend: the "Send a new code" button, the only thing that
+  // replaces a code already in the customer's inbox.
+  async function requestCode(
+    firstSignIn: boolean,
+    opts: { quiet?: boolean; resend?: boolean } = {},
+  ): Promise<{ codeSent: boolean; alreadySent: boolean } | null> {
     const res = await fetch('/api/auth/password-code', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, firstSignIn }),
+      body: JSON.stringify({ email, firstSignIn, resend: !!opts.resend }),
     })
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
-      setError(data.error || "We couldn't send a code. Please try again.")
+      if (!opts.quiet) setError(data.error || "We couldn't send a code. Please try again.")
       return null
     }
-    if (data.codeSent) setResendIn(RESEND_SECONDS)
-    return { codeSent: !!data.codeSent }
+    if (data.codeSent && !data.alreadySent) setResendIn(RESEND_SECONDS)
+    return { codeSent: !!data.codeSent, alreadySent: !!data.alreadySent }
+  }
+
+  async function sendResetLink() {
+    setError('')
+    setInfo('')
+    setIsLoading(true)
+    try {
+      const res = await fetch('/api/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      })
+      if (!res.ok) throw new Error()
+      setInfo(`If there's an account for ${email}, we've emailed it a link to choose a new password.`)
+    } catch {
+      setError("We couldn't send the link. Please try again.")
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   const handleSignIn = async (e: React.FormEvent) => {
@@ -88,7 +115,7 @@ function SignInForm() {
       if (result?.error) {
         // An account carried over without a password: go straight to
         // choosing one, with the code already on its way.
-        const sent = await requestCode(true)
+        const sent = await requestCode(true, { quiet: true })
         if (sent?.codeSent) {
           setMode('new')
           setNewStep('code')
@@ -96,7 +123,7 @@ function SignInForm() {
           setInfo(
             `Welcome to the new Pink Posts site. Your account came over, but it needs a new password. We emailed a 6-digit code to ${email}.`,
           )
-        } else if (sent) {
+        } else {
           setError('Invalid email or password')
         }
         setIsLoading(false)
@@ -110,16 +137,20 @@ function SignInForm() {
     }
   }
 
-  const handleSendCode = async (e?: React.FormEvent) => {
+  const handleSendCode = async (e?: React.FormEvent, resend = false) => {
     e?.preventDefault()
     setIsLoading(true)
     setError('')
     setInfo('')
     try {
-      const sent = await requestCode(false)
+      const sent = await requestCode(false, { resend })
       if (sent) {
         setNewStep('code')
-        setInfo(`If there's an account for ${email}, we've emailed it a 6-digit code.`)
+        setInfo(
+          sent.alreadySent && !resend
+            ? `We already emailed a code to ${email}. It can take a minute to arrive, so check spam too.`
+            : `If there's an account for ${email}, we've emailed it a 6-digit code.`,
+        )
       }
     } catch {
       setError('An error occurred. Please try again.')
@@ -261,6 +292,16 @@ function SignInForm() {
             <Button type="submit" className="w-full" size="lg" isLoading={isLoading}>
               Email Me a Code
             </Button>
+            <div className="text-center text-sm">
+              <button
+                type="button"
+                onClick={() => { setError(''); setInfo(''); setNewStep('code') }}
+                disabled={!email}
+                className="text-pink-600 hover:text-pink-700 disabled:text-gray-400"
+              >
+                I already have a code
+              </button>
+            </div>
           </form>
         )}
 
@@ -309,12 +350,26 @@ function SignInForm() {
               {resendIn > 0 ? (
                 <span>You can send a new code in {resendIn}s</span>
               ) : (
-                <button type="button" onClick={() => handleSendCode()} className="text-pink-600 hover:text-pink-700">
+                <button type="button" onClick={() => handleSendCode(undefined, true)} className="text-pink-600 hover:text-pink-700">
                   Send a new code
                 </button>
               )}
             </div>
           </form>
+        )}
+
+        {mode === 'new' && (
+          <div className="mt-4 text-center text-sm text-gray-500">
+            Trouble with the code?{' '}
+            <button
+              type="button"
+              onClick={sendResetLink}
+              disabled={!email || isLoading}
+              className="text-pink-600 hover:text-pink-700 disabled:text-gray-400"
+            >
+              Email me a reset link instead
+            </button>
+          </div>
         )}
 
         <div className="mt-6 text-center text-sm text-gray-600">

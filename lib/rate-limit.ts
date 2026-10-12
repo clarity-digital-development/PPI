@@ -69,13 +69,13 @@ export const rateLimitPresets = {
  * Get client identifier from request
  */
 function getClientId(request: NextRequest): string {
-  // Try to get real IP from various headers (for proxied requests)
+  // Vercel sets x-real-ip and x-forwarded-for itself (overwriting anything the
+  // caller sent). cf-connecting-ip is NOT used: the site isn't behind
+  // Cloudflare's proxy, so that header would be whatever the caller typed,
+  // and a fresh value per request would get a fresh limit.
   const forwardedFor = request.headers.get('x-forwarded-for')
   const realIp = request.headers.get('x-real-ip')
-  const cfConnectingIp = request.headers.get('cf-connecting-ip')
-
-  // Use the first available IP, fallback to a default
-  const ip = cfConnectingIp || realIp || forwardedFor?.split(',')[0]?.trim() || 'unknown'
+  const ip = realIp || forwardedFor?.split(',')[0]?.trim() || 'unknown'
 
   return ip
 }

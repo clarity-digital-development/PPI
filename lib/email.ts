@@ -769,6 +769,9 @@ export async function sendPasswordCodeEmail(email: string, code: string, firstSi
   const intro = firstSignIn
     ? "We've moved Pink Posts to a new system. Your account and saved card came with it; you just need to choose a new password."
     : 'Here is the code to choose a new password for your Pink Posts account.'
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'https://pinkposts.com'
+  // Opens the sign-in page on the code step (the code itself is never in a link).
+  const enterUrl = `${baseUrl}/sign-in?new=1&step=code&email=${encodeURIComponent(email)}`
   const html = `
     <!DOCTYPE html>
     <html>
@@ -786,6 +789,9 @@ export async function sendPasswordCodeEmail(email: string, code: string, firstSi
         <div style="text-align: center; margin: 28px 0;">
           <div style="display: inline-block; font-size: 32px; letter-spacing: 8px; font-weight: 700; color: #111; background: #FFF0F3; border-radius: 8px; padding: 12px 20px;">${code}</div>
         </div>
+        <div style="text-align: center; margin: 0 0 24px;">
+          <a href="${enterUrl}" style="background-color: #E84A7A; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block;">Enter the code</a>
+        </div>
         <p style="color: #666; font-size: 14px;">The code works for 15 minutes. If you didn't ask for it, you can ignore this email; your account won't change.</p>
         <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid #eee; text-align: center;">
           <p style="color: #999; margin: 0; font-size: 12px;">&copy; ${new Date().getFullYear()} Pink Posts Installations. All rights reserved.</p>
@@ -799,7 +805,7 @@ export async function sendPasswordCodeEmail(email: string, code: string, firstSi
     to: email,
     subject: `${code} is your Pink Posts code`,
     html,
-    text: `${intro} Enter this code on the sign-in page: ${code}\n\nThe code works for 15 minutes. If you didn't ask for it, you can ignore this email.`,
+    text: `${intro} Enter this code on the sign-in page: ${code}\n\n${enterUrl}\n\nThe code works for 15 minutes. If you didn't ask for it, you can ignore this email.`,
   })
 }
 

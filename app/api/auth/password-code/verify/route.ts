@@ -3,20 +3,21 @@ import bcrypt from 'bcryptjs'
 import { prisma } from '@/lib/prisma'
 import { checkRateLimit, clearFailedLogins } from '@/lib/rate-limit'
 import { validatePassword } from '@/lib/passwords/rules'
-import { CODE_PREFIX, MAX_ATTEMPTS, codeMatches, normalizeEmail } from '@/lib/passwords/code'
+import { CODE_PREFIX, DAY_MS, MAX_ATTEMPTS, MAX_WRONG_PER_DAY, codeLockKey, codeMatches, normalizeEmail } from '@/lib/passwords/code'
 
 // POST /api/auth/password-code/verify — { email, code, password }. Checks the
 // emailed code and sets the new password; the page then signs in with it.
 //
-// Each guess first takes one of the code's MAX_ATTEMPTS (an atomic increment
-// on rows still under the limit) and is only checked if it got one, so
-// parallel guesses can't get past the limit. A matching code is consumed by
-// deleting its row; only the request whose delete removed it sets the password.
+// The guess is checked under the same per-email lock that issues codes:
+// against the one live code, after taking one of its MAX_ATTEMPTS, and only
+// while the email has wrong guesses left for the day (MAX_WRONG_PER_DAY across
+// every code, so asking for new codes doesn't buy more guesses). A match
+// consumes the code inside the lock.
 export async function POST(request: NextRequest) {
   const limited = checkRateLimit(request, {
     windowMs: 15 * 60 * 1000,
-    maxRequests: 20,
-    message: 'Too many tries. Please wait 15 minutes and send a new code.',
+    maxRequests: 30,
+    message: 'Too many tries. Please wait 15 minutes and try again.',
   })
   if (limited) return limited
 
@@ -33,51 +34,57 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: rules.errors.join('. ') }, { status: 400 })
     }
 
-    const now = new Date()
-    const live = { email, token: { startsWith: CODE_PREFIX }, expires: { gt: now } }
-    const took = await prisma.passwordResetToken.updateMany({
-      where: { ...live, attempts: { lt: MAX_ATTEMPTS } },
-      data: { attempts: { increment: 1 } },
-    })
-    if (took.count === 0) {
-      const exhausted = await prisma.passwordResetToken.count({ where: live })
-      return NextResponse.json(
-        {
-          error: exhausted
-            ? 'Too many wrong tries for that code. Send a new code.'
-            : 'That code has expired. Send a new code.',
-        },
-        { status: 400 },
-      )
-    }
+    const outcome = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${codeLockKey(email)}))`
+      const now = new Date()
+      const codeRows = { email, token: { startsWith: CODE_PREFIX } }
+      const spent = await tx.passwordResetToken.aggregate({
+        where: { ...codeRows, createdAt: { gt: new Date(now.getTime() - DAY_MS) } },
+        _sum: { attempts: true },
+      })
+      if ((spent._sum.attempts ?? 0) >= MAX_WRONG_PER_DAY) return { kind: 'budget' as const }
 
-    const rows = await prisma.passwordResetToken.findMany({
-      where: { ...live, attempts: { lte: MAX_ATTEMPTS } },
-      select: { id: true, token: true, attempts: true },
-    })
-    const match = rows.find((r) => codeMatches(r.token, email, code))
-    if (!match) {
-      const used = rows.length ? Math.max(...rows.map((r) => r.attempts)) : MAX_ATTEMPTS
-      const left = Math.max(0, MAX_ATTEMPTS - used)
-      return NextResponse.json(
-        {
-          error: left > 0
-            ? `That code doesn't match. ${left} ${left === 1 ? 'try' : 'tries'} left.`
-            : 'That code doesn’t match, and it has no tries left. Send a new code.',
-        },
-        { status: 400 },
-      )
-    }
+      const current = await tx.passwordResetToken.findFirst({
+        where: { ...codeRows, expires: { gt: now } },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true, token: true, attempts: true },
+      })
+      if (!current) return { kind: 'expired' as const }
+      if (current.attempts >= MAX_ATTEMPTS) return { kind: 'exhausted' as const }
 
-    const consumed = await prisma.passwordResetToken.deleteMany({ where: { id: match.id } })
-    if (consumed.count !== 1) {
-      return NextResponse.json({ error: 'That code was already used. Send a new code.' }, { status: 400 })
+      if (codeMatches(current.token, email, code)) {
+        await tx.passwordResetToken.delete({ where: { id: current.id } })
+        return { kind: 'match' as const }
+      }
+      await tx.passwordResetToken.update({ where: { id: current.id }, data: { attempts: { increment: 1 } } })
+      return { kind: 'wrong' as const, left: MAX_ATTEMPTS - (current.attempts + 1) }
+    })
+
+    switch (outcome.kind) {
+      case 'budget':
+        return NextResponse.json(
+          { error: 'Too many wrong codes for this email today. Use "Email me a reset link instead" below, or try again tomorrow.' },
+          { status: 429 },
+        )
+      case 'expired':
+        return NextResponse.json({ error: 'That code has expired. Send a new code.' }, { status: 400 })
+      case 'exhausted':
+        return NextResponse.json({ error: 'Too many wrong tries for that code. Send a new code.' }, { status: 400 })
+      case 'wrong':
+        return NextResponse.json(
+          {
+            error: outcome.left > 0
+              ? `That code doesn't match. ${outcome.left} ${outcome.left === 1 ? 'try' : 'tries'} left.`
+              : 'That code doesn’t match, and it has no tries left. Send a new code.',
+          },
+          { status: 400 },
+        )
     }
 
     const hashed = await bcrypt.hash(password, 12)
     const updated = await prisma.user.updateMany({
       where: { email },
-      data: { password: hashed, emailVerified: now },
+      data: { password: hashed, emailVerified: new Date() },
     })
     if (updated.count !== 1) {
       return NextResponse.json({ error: 'No account was found for that email.' }, { status: 400 })
