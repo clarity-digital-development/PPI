@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { sendPasswordResetEmail } from '@/lib/email'
 import crypto from 'crypto'
+import { CODE_PREFIX } from '@/lib/passwords/code'
 
 export async function POST(request: NextRequest) {
   try {
@@ -29,9 +30,10 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Delete any existing reset tokens for this email
+    // Delete any existing reset links for this email. Emailed sign-in codes
+    // stay: their rows are what the per-day code limit counts.
     await prisma.passwordResetToken.deleteMany({
-      where: { email: normalizedEmail },
+      where: { email: normalizedEmail, NOT: { token: { startsWith: CODE_PREFIX } } },
     })
 
     // Generate a secure token

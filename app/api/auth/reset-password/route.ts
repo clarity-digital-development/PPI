@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import bcrypt from 'bcryptjs'
+import { CODE_PREFIX } from '@/lib/passwords/code'
 
 export async function POST(request: NextRequest) {
   try {
@@ -10,6 +11,15 @@ export async function POST(request: NextRequest) {
     if (!token || !password) {
       return NextResponse.json(
         { error: 'Token and password are required' },
+        { status: 400 }
+      )
+    }
+
+    // Emailed sign-in codes share this table but are only redeemable through
+    // /api/auth/password-code/verify, which limits guesses; this route doesn't.
+    if (typeof token !== 'string' || token.startsWith(CODE_PREFIX)) {
+      return NextResponse.json(
+        { error: 'Invalid or expired reset link' },
         { status: 400 }
       )
     }
