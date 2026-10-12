@@ -1,11 +1,16 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "regions": ["iad1"],
-  "crons": [
-    { "path": "/api/cron/post-rental-billing", "schedule": "0 13 * * *" },
-    { "path": "/api/cron/inventory-hold-sweeper", "schedule": "*/5 * * * *" }
+  "regions": [
+    "iad1"
   ],
-  "functions": {
-    "app/api/cron/**/route.ts": { "maxDuration": 300 }
-  }
+  "crons": [
+    {
+      "path": "/api/cron/post-rental-billing",
+      "schedule": "0 13 * * *"
+    },
+    {
+      "path": "/api/cron/inventory-hold-sweeper",
+      "schedule": "*/5 * * * *"
+    }
+  ]
 }

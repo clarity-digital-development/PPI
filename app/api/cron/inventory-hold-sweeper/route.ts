@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sweepExpired } from '@/lib/inventory-holds'
 
+// Vercel function time limit for the daily/periodic run (seconds).
+export const maxDuration = 300
+
 export async function GET(request: NextRequest) {
   const secret = process.env.CRON_SECRET
   if (!secret) {
