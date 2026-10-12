@@ -402,14 +402,16 @@ export default function ServiceRequestsPage() {
         // them to enter the billing amount instead of closing and leaving
         // the SR completed-but-unbilled. Effect hook above handles the
         // focus + scroll once needsInvoiceAmount flips true.
-        // Removals of one of our installs are skipped: the pickup is paid
-        // through the order (and its out-of-area half collects itself), so
-        // nudging for an amount there invites billing the trip twice. Only
-        // unlisted-address removals carry a trip fee of their own.
+        // Removals are skipped: the pickup is paid through the order (and its
+        // out-of-area half collects itself), so nudging for an amount there
+        // invites billing the trip twice. That includes unlisted-address
+        // removals, which since the Oct 2026 rebuild are often one of our
+        // own signs whose record is missing; a real trip fee can still be
+        // entered by hand.
         const shouldPrompt =
           newStatus === 'completed' &&
           updated.user?.invoiceBilling &&
-          !(updated.type === 'removal' && updated.installation) &&
+          updated.type !== 'removal' &&
           (updated.invoiceAmount == null || Number(updated.invoiceAmount) <= 0) &&
           updated.invoiceStatus !== 'paid' &&
           updated.invoiceStatus !== 'pending_invoice'
@@ -436,7 +438,13 @@ export default function ServiceRequestsPage() {
       return `${i.propertyAddress}, ${i.propertyCity}, ${i.propertyState} ${i.propertyZip}`
     }
     if (request.unlistedAddress) {
-      return `${request.unlistedAddress}, ${request.unlistedCity}, ${request.unlistedState} ${request.unlistedZip} (unlisted — trip fee applies)`
+      // A removal of a sign that isn't on the customer's list is often one of
+      // ours whose record is missing (the "isn't listed" option on Schedule
+      // Removal), and its pickup was paid with the install, so don't presume a fee.
+      const note = request.type === 'removal'
+        ? 'not on their list, may be one of ours'
+        : 'unlisted — trip fee applies'
+      return `${request.unlistedAddress}, ${request.unlistedCity}, ${request.unlistedState} ${request.unlistedZip} (${note})`
     }
     return '(no address)'
   }

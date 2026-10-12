@@ -1544,7 +1544,13 @@ function renderDispatchServiceText(j: DispatchServiceJob, n: number): string {
     : 'address not on file with PPI — call agent'
   out.push(`${n}) ${where} — SERVICE TRIP: ${j.type}${j.status === 'completed' ? '   (already marked completed)' : ''}`)
   if (j.mapsUrl) out.push(`   Map: ${j.mapsUrl}`)
-  if (j.address.unlisted && j.address.onFile) out.push('   (address not on file with PPI — no existing install here)')
+  // An unlisted removal is often one of our own signs whose record is missing,
+  // so it must not tell the crew there's nothing of ours there.
+  if (j.address.unlisted && j.address.onFile) {
+    out.push(j.type === 'Removal'
+      ? '   (sign not on file with PPI — customer says it is up at this address)'
+      : '   (address not on file with PPI — no existing install here)')
+  }
   out.push(`   Date: ${dispatchDayLabel(j.requestedDate, 'long')}`)
   out.push(`   Agent: ${j.agent.name}${j.agent.phone ? ` (${j.agent.phone})` : ''}${j.agent.company ? ` · ${j.agent.company}` : ''}`)
   if (j.listingAgent) out.push(`   For agent: ${j.listingAgent.name}${j.listingAgent.phone ? ` (${j.listingAgent.phone})` : ''}`)

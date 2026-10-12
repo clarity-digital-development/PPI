@@ -5,6 +5,7 @@ import { createNotification } from '@/lib/notifications'
 import { sendAdminServiceRequestNotification, sendServiceRequestConfirmationEmail } from '@/lib/email'
 import { closedDayReason } from '@/lib/scheduling'
 import { INSTALLABLE_ITEM_TYPES } from '@/lib/dispatch/types'
+import { sameProperty } from '@/lib/installations/address-match'
 
 // POST - Create a service request for an unlisted address
 // This is used when the system doesn't show an existing installation
@@ -48,19 +49,77 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: closedReason }, { status: 400 })
     }
 
+    if (!['removal', 'service', 'repair', 'replacement'].includes(type)) {
+      return NextResponse.json({ error: 'Invalid request type' }, { status: 400 })
+    }
+
+    // Every part of the address is required: a blank street or city would
+    // turn the `contains` match below into "any installation on the account".
+    if (address) {
+      const parts = [address.street, address.city, address.state, address.zip]
+      if (!parts.every((p) => typeof p === 'string' && p.trim())) {
+        return NextResponse.json(
+          { error: 'Please enter the street, city, state and ZIP.' },
+          { status: 400 }
+        )
+      }
+      address.street = address.street.trim()
+      address.city = address.city.trim()
+      address.state = address.state.trim()
+      address.zip = address.zip.trim()
+    }
+
+    // A removal for a sign that IS on the customer's list has to go through
+    // the listed route (/api/installations/[id]/service-request), which marks
+    // the installation removal_scheduled and bills the second half of an
+    // out-of-area fee; booking it here would skip both. The Schedule Removal
+    // modal already sends a typed-in listed address that way, so this only
+    // catches a stale page or a direct call. Matched on the whole normalized
+    // address (lib/installations/address-match.ts), not a substring: "12 Main
+    // St" is a different sign from "112 Main St". Installs already taken down
+    // don't count: a new sign at an address we removed from before is one we
+    // lost track of, so it goes in unlisted.
+    if (type === 'removal' && address) {
+      const candidates = await prisma.installation.findMany({
+        where: { userId: user.id, status: { not: 'removed' } },
+        select: { propertyAddress: true, propertyCity: true, propertyZip: true, status: true },
+      })
+      const match = candidates.find((i) =>
+        sameProperty({ street: i.propertyAddress, city: i.propertyCity, zip: i.propertyZip }, address)
+      )
+      if (match) {
+        const where = `${match.propertyAddress}, ${match.propertyCity}`
+        return NextResponse.json(
+          {
+            error: match.status === 'removal_scheduled'
+              ? `A removal is already scheduled for ${where}. You can see it under Service Requests.`
+              : `${where} is already on your list. Pick it under "Which listing are we removing?" instead.`,
+          },
+          { status: 409 }
+        )
+      }
+    }
+
     // Try to attach this request to an existing installation at the same address.
     // If we can't find one and the customer supplied an address, we create a
     // standalone (unlisted-address) request — admin sees the address fields
     // directly on the request. This is how same-day pickups from places we've
-    // never been to get scheduled.
+    // never been to get scheduled, and how a customer books a removal for a
+    // sign the site has no record of (the "isn't listed" option on Schedule
+    // Removal). A removal never attaches here (see above). Same whole-address
+    // match, and only on exactly one live install: a substring match sent a
+    // "12 Main St" trip to the "112 Main St" install.
     let installation = null
-    if (address) {
-      installation = await prisma.installation.findFirst({
-        where: {
-          userId: user.id,
-          propertyAddress: { contains: address.street, mode: 'insensitive' },
-          propertyCity: { contains: address.city, mode: 'insensitive' },
-        },
+    if (address && type !== 'removal') {
+      const candidates = await prisma.installation.findMany({
+        where: { userId: user.id, status: { not: 'removed' } },
+        select: { id: true, propertyAddress: true, propertyCity: true, propertyZip: true },
+      })
+      const matches = candidates.filter((i) =>
+        sameProperty({ street: i.propertyAddress, city: i.propertyCity, zip: i.propertyZip }, address)
+      )
+      installation = matches.length !== 1 ? null : await prisma.installation.findUnique({
+        where: { id: matches[0].id },
         include: {
           // On-site lockboxes — surfaced in SR emails so the install crew sees what's there.
           lockboxes: {

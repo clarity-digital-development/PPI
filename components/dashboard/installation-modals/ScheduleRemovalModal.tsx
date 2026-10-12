@@ -3,13 +3,15 @@
 import { useState, useEffect } from 'react'
 import { Modal, Button, Input } from '@/components/ui'
 import { SearchableSelect } from '@/components/ui/SearchableSelect'
-import { Calendar, Loader2, AlertCircle, CheckCircle } from 'lucide-react'
+import { Calendar, Loader2, AlertCircle, CheckCircle, MapPin } from 'lucide-react'
 import { getNextAvailableDate, toDateStr, closedDayReason } from '@/lib/scheduling'
+import { sameProperty } from '@/lib/installations/address-match'
 
 interface PickerInstallation {
   id: string
   propertyAddress: string
   propertyCity: string
+  propertyZip: string
   status: string
 }
 
@@ -38,6 +40,16 @@ export function ScheduleRemovalModal({
   const [pickedId, setPickedId] = useState('')
   const [installations, setInstallations] = useState<PickerInstallation[]>([])
   const [loadingInstallations, setLoadingInstallations] = useState(false)
+  const [installationsLoaded, setInstallationsLoaded] = useState(false)
+  // A failed load is not an empty list: it gets a retry, not the
+  // "no signs on your list" address form.
+  const [loadError, setLoadError] = useState(false)
+  const [loadAttempt, setLoadAttempt] = useState(0)
+  // "My sign isn't listed": a removal for a sign the site has no record of
+  // goes in by address (POST /api/service-requests, type 'removal'), so a
+  // customer is never stuck because their sign is missing from the list.
+  const [unlistedChosen, setUnlistedChosen] = useState(false)
+  const [unlistedAddress, setUnlistedAddress] = useState({ street: '', city: '', state: 'KY', zip: '' })
 
   const [removalDate, setRemovalDate] = useState('')
   const [notes, setNotes] = useState('')
@@ -54,21 +66,40 @@ export function ScheduleRemovalModal({
   // (active-posts-table.tsx), so a customer can't pick one that already has
   // a removal scheduled or was already removed.
   useEffect(() => {
-    if (isOpen && pickerMode) {
-      setLoadingInstallations(true)
-      fetch('/api/installations')
-        .then((res) => (res.ok ? res.json() : { installations: [] }))
-        .then((data) => {
-          const eligible = (data.installations || []).filter(
-            (inst: PickerInstallation) => inst.status === 'active'
-          )
-          setInstallations(eligible)
-        })
-        .catch(() => setInstallations([]))
-        .finally(() => setLoadingInstallations(false))
+    if (!isOpen || !pickerMode) return
+    // A load still running when the modal closes (or a retry starts) must not
+    // write into the next one's state.
+    let cancelled = false
+    setLoadingInstallations(true)
+    setLoadError(false)
+    setInstallationsLoaded(false)
+    fetch('/api/installations')
+      .then((res) => {
+        if (!res.ok) throw new Error('Failed to load installations')
+        return res.json()
+      })
+      .then((data) => {
+        if (cancelled) return
+        const eligible = (data.installations || []).filter(
+          (inst: PickerInstallation) => inst.status === 'active'
+        )
+        setInstallations(eligible)
+        setInstallationsLoaded(true)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setInstallations([])
+        setLoadError(true)
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingInstallations(false)
+      })
+    return () => {
+      cancelled = true
+      setLoadingInstallations(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, pickerMode])
+  }, [isOpen, pickerMode, loadAttempt])
 
   const selected = installations.find((i) => i.id === pickedId)
   const effectiveId = pickerMode ? pickedId || null : installationId
@@ -76,10 +107,22 @@ export function ScheduleRemovalModal({
     ? (selected ? `${selected.propertyAddress}, ${selected.propertyCity}` : '')
     : installationAddress
 
+  // With nothing on the list there's nothing to pick, so the address form
+  // shows straight away.
+  const unlisted = pickerMode && (unlistedChosen || (installationsLoaded && installations.length === 0))
+  const trimmedUnlisted = {
+    street: unlistedAddress.street.trim(),
+    city: unlistedAddress.city.trim(),
+    state: unlistedAddress.state.trim(),
+    zip: unlistedAddress.zip.trim(),
+  }
+  const unlistedComplete = Object.values(trimmedUnlisted).every(Boolean)
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
-    if (!effectiveId || !removalDate || hasLockbox === undefined) return
+    if (!removalDate || hasLockbox === undefined) return
+    if (unlisted ? !unlistedComplete : !effectiveId) return
     if (hasLockbox && !lockboxCode.trim()) return
 
     setLoading(true)
@@ -91,17 +134,44 @@ export function ScheduleRemovalModal({
       ? `Lockbox to remove — code: ${lockboxCode.trim()}`
       : 'No lockbox to remove.'
 
+    const request = {
+      type: 'removal',
+      requested_date: removalDate,
+      notes: [lockboxNote, notes.trim()].filter(Boolean).join('\n'),
+    }
+
+    // A typed address that's really one on their list (spelled differently,
+    // say "Street" for "St") goes through the listed removal for that sign,
+    // which marks it removal_scheduled and bills any out-of-area pickup half.
+    const listedMatch = unlisted
+      ? installations.find((i) =>
+          sameProperty({ street: i.propertyAddress, city: i.propertyCity, zip: i.propertyZip }, trimmedUnlisted)
+        )
+      : undefined
+    const targetId = listedMatch ? listedMatch.id : unlisted ? null : effectiveId
+    const targetAddress = listedMatch
+      ? `${listedMatch.propertyAddress}, ${listedMatch.propertyCity}`
+      : effectiveAddress
+
     try {
-      const res = await fetch(`/api/installations/${effectiveId}/service-request`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'removal',
-          requested_date: removalDate,
-          notes: [lockboxNote, notes.trim()].filter(Boolean).join('\n'),
-          description: `Removal requested for ${effectiveAddress}`,
-        }),
-      })
+      const res = targetId
+        ? await fetch(`/api/installations/${targetId}/service-request`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ...request,
+              description: `Removal requested for ${targetAddress}`,
+            }),
+          })
+        : await fetch('/api/service-requests', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ...request,
+              description: 'Removal requested for a sign not on the account list',
+              address: trimmedUnlisted,
+            }),
+          })
 
       if (!res.ok) {
         const data = await res.json()
@@ -129,6 +199,10 @@ export function ScheduleRemovalModal({
     setSuccess(false)
     setPickedId('')
     setInstallations([])
+    setInstallationsLoaded(false)
+    setLoadError(false)
+    setUnlistedChosen(false)
+    setUnlistedAddress({ street: '', city: '', state: 'KY', zip: '' })
     onClose()
   }
 
@@ -154,29 +228,106 @@ export function ScheduleRemovalModal({
                 <div className="flex items-center justify-center py-4">
                   <Loader2 className="w-5 h-5 animate-spin text-pink-500" />
                 </div>
-              ) : installations.length === 0 ? (
-                <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
-                  No active installations eligible for removal. If a removal is already
-                  scheduled or the sign was already removed, check Order History for its status.
+              ) : loadError && !unlistedChosen ? (
+                <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-800 space-y-2">
+                  <p>We couldn&apos;t load your signs.</p>
+                  <div className="flex gap-4">
+                    <button
+                      type="button"
+                      onClick={() => setLoadAttempt((n) => n + 1)}
+                      className="font-medium underline"
+                    >
+                      Try again
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setUnlistedChosen(true)}
+                      className="font-medium underline"
+                    >
+                      Enter the address instead
+                    </button>
+                  </div>
+                </div>
+              ) : unlisted ? (
+                <div className="space-y-3">
+                  {installationsLoaded && installations.length === 0 ? (
+                    <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
+                      We don&apos;t have any signs on your list right now. If one of yours is up
+                      and needs to come down, enter its address below. If a removal is already
+                      scheduled or the sign was already removed, check Order History for its status.
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-medium text-gray-700">Where is the sign?</p>
+                      <button
+                        type="button"
+                        onClick={() => { setUnlistedChosen(false); setError(null) }}
+                        className="text-sm text-pink-600 hover:text-pink-700 hover:underline"
+                      >
+                        Pick from my list instead
+                      </button>
+                    </div>
+                  )}
+                  <Input
+                    label="Street Address"
+                    value={unlistedAddress.street}
+                    onChange={(e) => setUnlistedAddress({ ...unlistedAddress, street: e.target.value })}
+                    placeholder="123 Main St"
+                    icon={<MapPin className="w-5 h-5" />}
+                    required
+                  />
+                  <div className="grid grid-cols-3 gap-3">
+                    <Input
+                      label="City"
+                      value={unlistedAddress.city}
+                      onChange={(e) => setUnlistedAddress({ ...unlistedAddress, city: e.target.value })}
+                      placeholder="Lexington"
+                      className="col-span-2"
+                      required
+                    />
+                    <Input
+                      label="State"
+                      value={unlistedAddress.state}
+                      onChange={(e) => setUnlistedAddress({ ...unlistedAddress, state: e.target.value })}
+                      placeholder="KY"
+                      required
+                    />
+                  </div>
+                  <Input
+                    label="ZIP Code"
+                    value={unlistedAddress.zip}
+                    onChange={(e) => setUnlistedAddress({ ...unlistedAddress, zip: e.target.value })}
+                    placeholder="40502"
+                    required
+                  />
                 </div>
               ) : (
-                // Searchable (substring) rather than a native <select>: the
-                // browser's type-ahead only matches from the START of the
-                // label, so typing a house number found the address but a
-                // street name never did — a broker with 50+ listings had to
-                // scroll (Ryan, 2026-08-14).
-                <SearchableSelect
-                  label="Which listing are we removing?"
-                  value={pickedId}
-                  onChange={setPickedId}
-                  options={installations.map((inst) => ({
-                    value: inst.id,
-                    label: `${inst.propertyAddress}, ${inst.propertyCity}`,
-                  }))}
-                  placeholder="Select an installation..."
-                  searchPlaceholder="Type any part of the address — street, number, city…"
-                  emptyText="No listings match"
-                />
+                <div>
+                  {/* Searchable (substring) rather than a native <select>: the
+                      browser's type-ahead only matches from the START of the
+                      label, so typing a house number found the address but a
+                      street name never did — a broker with 50+ listings had to
+                      scroll (Ryan, 2026-08-14). */}
+                  <SearchableSelect
+                    label="Which listing are we removing?"
+                    value={pickedId}
+                    onChange={setPickedId}
+                    options={installations.map((inst) => ({
+                      value: inst.id,
+                      label: `${inst.propertyAddress}, ${inst.propertyCity}`,
+                    }))}
+                    placeholder="Select an installation..."
+                    searchPlaceholder="Type any part of the address — street, number, city…"
+                    emptyText="No listings match"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => { setUnlistedChosen(true); setPickedId(''); setError(null) }}
+                    className="mt-2 text-sm text-pink-600 hover:text-pink-700 hover:underline"
+                  >
+                    My sign isn&apos;t listed. Enter the address
+                  </button>
+                </div>
               )
             ) : (
               <div className="p-4 bg-gray-50 rounded-lg">
@@ -279,7 +430,7 @@ export function ScheduleRemovalModal({
               disabled={
                 loading ||
                 !removalDate ||
-                (pickerMode && !pickedId) ||
+                (unlisted ? !unlistedComplete : pickerMode && !pickedId) ||
                 hasLockbox === undefined ||
                 (hasLockbox && !lockboxCode.trim())
               }

@@ -3,6 +3,8 @@ import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { createServiceRequestNotification } from '@/lib/notifications'
 import { sendServiceRequestCompletedEmail, sendServiceRequestStatusEmail, sendServiceRequestConfirmationEmail } from '@/lib/email'
+import { sameProperty } from '@/lib/installations/address-match'
+import { chargeSecondOutOfAreaFee } from '@/lib/orders/out-of-area-charge'
 
 export async function GET(
   request: NextRequest,
@@ -117,6 +119,38 @@ export async function PUT(
       }
     }
 
+    // Completing a removal booked for a sign that wasn't on the customer's
+    // list: if that customer now has exactly one install at the same address
+    // (rebuilt since, or one the customer didn't spot), link it, so the
+    // install below is marked removed and its rental stops. Whole-address
+    // match (lib/installations/address-match.ts); two or more is ambiguous
+    // and left for admin.
+    let linkedInstallation: { id: string; orderId: string; removalDate: Date | null } | null = null
+    if (
+      status === 'completed' &&
+      serviceRequest.type === 'removal' &&
+      !serviceRequest.installationId &&
+      serviceRequest.unlistedAddress
+    ) {
+      const unlisted = {
+        street: serviceRequest.unlistedAddress,
+        city: serviceRequest.unlistedCity ?? '',
+        zip: serviceRequest.unlistedZip,
+      }
+      const candidates = await prisma.installation.findMany({
+        where: { userId: serviceRequest.userId, status: { not: 'removed' } },
+        select: { id: true, orderId: true, removalDate: true, propertyAddress: true, propertyCity: true, propertyZip: true },
+      })
+      const matches = candidates.filter((i) =>
+        sameProperty({ street: i.propertyAddress, city: i.propertyCity, zip: i.propertyZip }, unlisted)
+      )
+      if (matches.length === 1) {
+        linkedInstallation = { id: matches[0].id, orderId: matches[0].orderId, removalDate: matches[0].removalDate }
+        updateData.installationId = linkedInstallation.id
+      }
+    }
+    const removalInstallationId = serviceRequest.installationId ?? linkedInstallation?.id ?? null
+
     const updated = await prisma.serviceRequest.update({
       where: { id },
       data: updateData,
@@ -141,14 +175,19 @@ export async function PUT(
     })
 
     // If it's a removal request being completed AND it's tied to an existing
-    // installation, mark that installation as removed. Unlisted-address
-    // requests have no installationId, so we skip.
-    if (status === 'completed' && serviceRequest.type === 'removal' && serviceRequest.installationId) {
+    // installation (or was just linked to one above), mark that installation
+    // as removed. Unlisted-address requests with no match are skipped.
+    if (status === 'completed' && serviceRequest.type === 'removal' && removalInstallationId) {
       const removedInstallation = await prisma.installation.update({
-        where: { id: serviceRequest.installationId },
+        where: { id: removalInstallationId },
         data: {
           status: 'removed',
           removedAt: new Date(),
+          // A linked install never went through removal scheduling, so give it
+          // the pickup date the out-of-area pickup invoice line is dated from.
+          ...(linkedInstallation && !linkedInstallation.removalDate
+            ? { removalDate: serviceRequest.requestedDate ?? new Date() }
+            : {}),
         },
         select: { orderId: true },
       })
@@ -167,6 +206,18 @@ export async function PUT(
           // refreshes, and it's done. Exactly the 2026-09-20 report.
           select: { id: true },
         })
+      }
+      // A listed removal bills the second half of a split out-of-area fee
+      // when it's booked; a linked one never was, so it's billed now. Only
+      // acts on a pending half, never throws. Skipped when admin already
+      // billed this request (a trip fee charged or put on an invoice): the
+      // same no-double-billing rule as the SR invoice route, in reverse.
+      const requestAlreadyBilled =
+        serviceRequest.invoiceId != null ||
+        serviceRequest.invoiceStatus === 'paid' ||
+        serviceRequest.invoiceStatus === 'pending_invoice'
+      if (linkedInstallation && !requestAlreadyBilled) {
+        await chargeSecondOutOfAreaFee(linkedInstallation.orderId)
       }
     }
 
