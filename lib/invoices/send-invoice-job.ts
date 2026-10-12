@@ -32,7 +32,7 @@ import { audit, AuditAction } from '@/lib/audit'
 import { sendInvoiceEmail } from '@/lib/email'
 import { buildInvoicePdfBytes } from '@/lib/invoices/invoice-pdf'
 import { loadInvoiceDetailForPdf } from '@/lib/invoices/load-detail'
-import { createInvoiceCheckoutSession } from '@/lib/stripe/server'
+import { createInvoiceCheckoutSession, paymentInFlightMessage, paymentLinkPaymentInFlight, stripe } from '@/lib/stripe/server'
 
 export interface SendInvoiceJobArgs {
   invoiceId: string
@@ -81,6 +81,8 @@ export async function processInvoiceSendJob(args: SendInvoiceJobArgs): Promise<v
       total: true,
       publicPdfToken: true,
       userId: true,
+      checkoutSessionId: true,
+      checkoutUrl: true,
       user: { select: { email: true, fullName: true, name: true, company: true } },
     },
   })
@@ -101,24 +103,64 @@ export async function processInvoiceSendJob(args: SendInvoiceJobArgs): Promise<v
   //    out, just without a Pay button — admin can use Regenerate Pay Link
   //    on the invoice page later. Logged for visibility.
   let checkoutUrl: string | null = null
-  try {
-    const session = await createInvoiceCheckoutSession({
-      invoiceId: invoice.id,
-      invoiceNumber: invoice.invoiceNumber,
-      amountInCents: Math.round(Number(invoice.total) * 100),
-      customerEmail: invoice.user.email,
-      description: `Invoice ${invoice.invoiceNumber} — ${rangeStartIso.slice(0, 10)} to ${rangeEndIso.slice(0, 10)}`,
-      successUrl: `${baseUrl}/invoice-paid?invoice=${invoice.invoiceNumber}`,
-      cancelUrl: `${baseUrl}/invoice-cancelled?invoice=${invoice.invoiceNumber}`,
-    })
-    checkoutUrl = session.url
-    await prisma.invoice.update({
-      where: { id: invoice.id },
-      data: { checkoutSessionId: session.id, checkoutUrl: session.url },
-    })
-  } catch (err) {
-    stripeError = err instanceof Error ? err.message : String(err)
-    console.error(`[invoice-send] ${invoiceId} Stripe Payment Link failed (continuing without):`, err)
+  // A resend must not mint a second live link for the same invoice (the
+  // customer could pay both; the webhook skips the second as already paid).
+  // Reuse the stored link while Stripe says it's active. If Stripe can't be
+  // asked, keep the stored URL rather than risk a duplicate. An inactive link
+  // usually means its one checkout was used: if that payment went through or
+  // is still clearing, don't bill again (stop, flagged for admin). Only a
+  // link whose checkouts all failed, or one turned off by hand, gets a
+  // replacement, under fresh idempotency keys (the original keys would
+  // replay the dead link).
+  const priorLinkId = invoice.checkoutSessionId?.startsWith('plink_') ? invoice.checkoutSessionId : null
+  if (priorLinkId) {
+    let inFlight: string | null = null
+    try {
+      const link = await stripe().paymentLinks.retrieve(priorLinkId)
+      if (link.active) checkoutUrl = link.url
+      else inFlight = await paymentLinkPaymentInFlight(priorLinkId)
+    } catch (err) {
+      console.error(`[invoice-send] ${invoiceId} couldn't check the stored Payment Link; reusing it:`, err)
+      checkoutUrl = invoice.checkoutUrl
+    }
+    if (inFlight) {
+      const reason = paymentInFlightMessage(inFlight)
+      console.warn(`[invoice-send] ${invoiceId} not sent: ${reason}`)
+      await prisma.invoice.update({
+        where: { id: invoiceId },
+        data: { emailStatus: 'failed', emailError: reason, sendingStartedAt: null },
+      }).catch(() => {})
+      await audit({
+        actor: { system: true },
+        action: AuditAction.InvoiceEmailFailed,
+        targetType: 'invoice',
+        targetId: invoiceId,
+        metadata: { invoiceNumber: invoice.invoiceNumber, attemptedRecipient: resolvedRecipientEmail, recipientSource, error: reason, paymentLinkId: priorLinkId },
+      }).catch(() => {})
+      return
+    }
+  }
+  if (!checkoutUrl) {
+    try {
+      const session = await createInvoiceCheckoutSession({
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.invoiceNumber,
+        amountInCents: Math.round(Number(invoice.total) * 100),
+        customerEmail: invoice.user.email,
+        description: `Invoice ${invoice.invoiceNumber} — ${rangeStartIso.slice(0, 10)} to ${rangeEndIso.slice(0, 10)}`,
+        successUrl: `${baseUrl}/invoice-paid?invoice=${invoice.invoiceNumber}`,
+        cancelUrl: `${baseUrl}/invoice-cancelled?invoice=${invoice.invoiceNumber}`,
+        idempotencySuffix: invoice.checkoutSessionId ? `resend-${Date.now().toString(36)}` : undefined,
+      })
+      checkoutUrl = session.url
+      await prisma.invoice.update({
+        where: { id: invoice.id },
+        data: { checkoutSessionId: session.id, checkoutUrl: session.url },
+      })
+    } catch (err) {
+      stripeError = err instanceof Error ? err.message : String(err)
+      console.error(`[invoice-send] ${invoiceId} Stripe Payment Link failed (continuing without):`, err)
+    }
   }
 
   // 4. Generate the PDF (non-fatal). The email still sends without an

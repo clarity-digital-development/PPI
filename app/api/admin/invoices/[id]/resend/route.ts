@@ -101,7 +101,10 @@ export async function POST(
   //    + emailError so the worker can start clean.
   //    Exception: a 'queued'/'sending' row untouched for 10+ minutes is a send
   //    that died (the background job runs at most 5 minutes under waitUntil),
-  //    and nothing else ever clears it, so it can be resent.
+  //    and nothing else ever clears it, so it can be resent. (A 'queued' row
+  //    that holds the email reservation was emailed by the broker bundle route
+  //    before it recorded emailStatus; resending it is the same as resending
+  //    a 'sent' one, which the admin can always do.)
   const staleBefore = new Date(Date.now() - 10 * 60 * 1000)
   const claim = await prisma.invoice.updateMany({
     where: {

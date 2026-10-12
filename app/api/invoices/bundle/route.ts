@@ -398,6 +398,11 @@ export async function POST(request: NextRequest) {
   // Optionally email the accountant. Reservation flag still protects against
   // double-send if the broker double-clicks.
   let sentToEmail: string | null = null
+  // What happened to the email, recorded on the invoice below so the admin
+  // list shows Sent/Skipped/Failed instead of a permanent "Queued" (which the
+  // admin Resend route reads as a dead send).
+  let emailOutcome: 'sent' | 'skipped' | 'failed' | null = sendEmail ? null : 'skipped'
+  let emailFailure: string | null = null
   if (sendEmail) {
     const reserved = await prisma.invoice.updateMany({
       where: { id: result.invoice.id, invoiceEmailSentAt: null },
@@ -412,7 +417,7 @@ export async function POST(request: NextRequest) {
         } catch (pdfErr) {
           console.error('Broker bundle: PDF generation failed; sending without attachment:', pdfErr)
         }
-        await sendInvoiceEmail({
+        const sendResult = await sendInvoiceEmail({
           invoiceId: result.invoice.id,
           invoiceNumber: result.invoice.invoiceNumber,
           customerName: profile.fullName || profile.name || profile.email,
@@ -433,9 +438,18 @@ export async function POST(request: NextRequest) {
           // shouldSendEmail helper fails open in that case (no pref to check).
           recipientUserId: null,
         })
+        // Resend returns { error } instead of throwing (suppressed address,
+        // rate limit, bad recipient); the catch below records the failure.
+        if (sendResult && typeof sendResult === 'object' && 'error' in sendResult && sendResult.error) {
+          const e = sendResult.error as { name?: string; message?: string }
+          throw new Error(e.message || e.name || 'Resend rejected the message')
+        }
         sentToEmail = recipientEmail
+        emailOutcome = 'sent'
       } catch (emailErr) {
         console.error('Broker bundle: invoice email send failed:', emailErr)
+        emailOutcome = 'failed'
+        emailFailure = String((emailErr as Error)?.message ?? emailErr).slice(0, 500)
         await prisma.invoice
           .updateMany({
             where: { id: result.invoice.id, invoiceEmailSentAt: { not: null } },
@@ -444,6 +458,20 @@ export async function POST(request: NextRequest) {
           .catch(() => {})
       }
     }
+  }
+
+  if (emailOutcome) {
+    await prisma.invoice
+      .update({
+        where: { id: result.invoice.id },
+        data: {
+          emailStatus: emailOutcome,
+          emailError: emailFailure,
+          recipientEmail: emailOutcome === 'skipped' ? null : recipientEmail,
+        },
+        select: { id: true },
+      })
+      .catch((err) => console.error('Broker bundle: recording email status failed:', err))
   }
 
   await audit({

@@ -342,6 +342,38 @@ export async function calculateTax(
  * Returns the same shape as the prior checkout-session implementation so
  * callers stay consistent: { id, url, ... }.
  */
+/**
+ * Has someone already paid, or started paying, through this invoice Payment
+ * Link? Each invoice link allows one completed checkout, so a link Stripe shows
+ * as inactive may just have been used: a bank (ACH) payment completes checkout
+ * days before it clears, and the webhook only marks the invoice paid on
+ * payment_intent.succeeded. Issuing a replacement link in that window lets the
+ * customer pay twice. Returns the payment's status when one is paid, clearing
+ * or can't be determined; null when every completed checkout failed.
+ */
+export async function paymentLinkPaymentInFlight(linkId: string): Promise<string | null> {
+  const sessions = await getStripe().checkout.sessions.list({
+    payment_link: linkId,
+    status: 'complete',
+    limit: 10,
+    expand: ['data.payment_intent'],
+  })
+  for (const session of sessions.data) {
+    if (session.payment_status === 'paid') return 'succeeded'
+    const pi = session.payment_intent
+    const status = pi && typeof pi === 'object' ? pi.status : null
+    if (!status) return 'unknown'
+    if (status === 'processing' || status === 'succeeded' || status === 'requires_capture') return status
+  }
+  return null
+}
+
+export function paymentInFlightMessage(status: string): string {
+  return status === 'succeeded'
+    ? 'This invoice was already paid through its Stripe pay link (the payment may not have reached the site yet). Check Stripe before billing again.'
+    : 'A payment through this invoice\'s Stripe pay link is still clearing. Check Stripe before billing again.'
+}
+
 export async function createInvoiceCheckoutSession(opts: {
   invoiceId: string
   invoiceNumber: string

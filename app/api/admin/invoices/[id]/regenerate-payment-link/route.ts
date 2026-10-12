@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { audit, AuditAction } from '@/lib/audit'
-import { createInvoiceCheckoutSession, stripe } from '@/lib/stripe/server'
+import { createInvoiceCheckoutSession, stripe, paymentInFlightMessage, paymentLinkPaymentInFlight } from '@/lib/stripe/server'
 import { sendInvoiceEmail } from '@/lib/email'
 import { buildInvoicePdfBytes } from '@/lib/invoices/invoice-pdf'
 import { loadInvoiceDetailForPdf } from '@/lib/invoices/load-detail'
@@ -66,15 +66,34 @@ export async function POST(
   const recipientEmail: string =
     invoice.recipientEmail || invoice.user.billingEmail || invoice.user.email
 
-  // Best-effort deactivate the old Payment Link so a stale URL can't accept
-  // payment after we've issued a new one. Failure is non-fatal — admin may
-  // have already deactivated it manually in Stripe.
+  // Turn off the old Payment Link so a stale URL can't accept payment after
+  // we've issued a new one. Two things stop the regenerate:
+  // - the old link already took a payment that's paid or still clearing (a
+  //   used link is inactive, and the webhook only marks the invoice paid once
+  //   the money clears) — a new link would let the customer pay twice;
+  // - Stripe won't confirm the old link is off — two live links again.
+  // A link Stripe no longer has (resource_missing) can't take a payment.
   const oldLinkId = invoice.checkoutSessionId
   if (oldLinkId && oldLinkId.startsWith('plink_')) {
     try {
-      await stripe().paymentLinks.update(oldLinkId, { active: false })
+      const old = await stripe().paymentLinks.retrieve(oldLinkId)
+      if (!old.active) {
+        const inFlight = await paymentLinkPaymentInFlight(oldLinkId)
+        if (inFlight) {
+          return NextResponse.json({ error: paymentInFlightMessage(inFlight) }, { status: 409 })
+        }
+      } else {
+        await stripe().paymentLinks.update(oldLinkId, { active: false })
+      }
     } catch (err) {
-      console.warn(`Regenerate: could not deactivate old Payment Link ${oldLinkId}:`, err)
+      const code = (err as { code?: string })?.code
+      if (code !== 'resource_missing') {
+        console.error(`Regenerate: could not check or turn off old Payment Link ${oldLinkId}:`, err)
+        return NextResponse.json(
+          { error: "Couldn't turn off the old Stripe pay link, so no new one was made. Please try again." },
+          { status: 502 },
+        )
+      }
     }
   }
 
@@ -128,7 +147,7 @@ export async function POST(
   let emailSent = false
   try {
     const pdfBytes = buildInvoicePdfBytes(detail)
-    await sendInvoiceEmail({
+    const sendResult = await sendInvoiceEmail({
       invoiceId: invoice.id,
       invoiceNumber: invoice.invoiceNumber,
       customerName: detail.customer.name,
@@ -154,6 +173,11 @@ export async function POST(
       `,
       recipientUserId: invoice.userId,
     })
+    // Resend returns { error } instead of throwing on a rejected send.
+    if (sendResult && typeof sendResult === 'object' && 'error' in sendResult && sendResult.error) {
+      const e = sendResult.error as { name?: string; message?: string }
+      throw new Error(e.message || e.name || 'Resend rejected the message')
+    }
     emailSent = true
   } catch (err) {
     console.error('Regenerate: re-send email failed (link was created successfully):', err)
