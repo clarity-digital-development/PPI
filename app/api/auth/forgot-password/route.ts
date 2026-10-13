@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { sendPasswordResetEmail } from '@/lib/email'
 import crypto from 'crypto'
-import { CODE_PREFIX, redirectedInbox } from '@/lib/passwords/code'
+import { CODE_PREFIX, LINK_PREFIX, redirectedInbox } from '@/lib/passwords/code'
 
 export async function POST(request: NextRequest) {
   const limited = checkRateLimit(request, {
@@ -45,10 +45,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(reply)
     }
 
-    // Delete any existing reset links for this email. Emailed sign-in codes
-    // stay: their rows are what the per-day code limit counts.
+    // Delete any earlier emailed reset links for this email. Emailed sign-in
+    // codes stay (their rows are what the per-day code limit counts), and so
+    // does a link an admin texted: this email may never arrive.
     await prisma.passwordResetToken.deleteMany({
-      where: { email: normalizedEmail, NOT: { token: { startsWith: CODE_PREFIX } } },
+      where: {
+        email: normalizedEmail,
+        NOT: [{ token: { startsWith: CODE_PREFIX } }, { token: { startsWith: LINK_PREFIX } }],
+      },
     })
 
     // Generate a secure token

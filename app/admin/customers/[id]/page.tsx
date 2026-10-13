@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
-import { ArrowLeft, Plus, Minus, Trash2, Package, Tag, Lock, FileBox, FileImage, Pencil, UserX, Archive, Users, X } from 'lucide-react'
+import { ArrowLeft, Plus, Minus, Trash2, Package, Tag, Lock, FileBox, FileImage, Pencil, UserX, Archive, Users, X, KeyRound } from 'lucide-react'
 import { Card, CardContent, Button, Input, Badge, Modal, SearchableSelect } from '@/components/ui'
 import { computeFlatFeePricing } from '@/lib/orders/pricing'
 
@@ -110,6 +110,11 @@ export default function CustomerDetailPage() {
   const [loading, setLoading] = useState(true)
   const [showAddModal, setShowAddModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
+  // One-time "choose your password" link for a customer whose inbox doesn't
+  // get our email; the admin texts it to them.
+  const [passwordLink, setPasswordLink] = useState<{ url: string; expiresAt: string } | null>(null)
+  const [makingLink, setMakingLink] = useState(false)
+  const [linkCopied, setLinkCopied] = useState(false)
   const [showAddMemberModal, setShowAddMemberModal] = useState(false)
   const [memberData, setMemberData] = useState({ name: '', email: '', phone: '' })
   // When set, the modal is in EDIT mode and saves via PATCH to the shared
@@ -384,6 +389,24 @@ export default function CustomerDetailPage() {
       console.error('Error removing team member:', error)
     } finally {
       setRemovingMemberId(null)
+    }
+  }
+
+  async function handleMakePasswordLink() {
+    setMakingLink(true)
+    try {
+      const res = await fetch(`/api/admin/customers/${id}/password-link`, { method: 'POST' })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok || !body.url) {
+        alert(body.error || "Couldn't make a password link. Please try again.")
+        return
+      }
+      setLinkCopied(false)
+      setPasswordLink({ url: body.url, expiresAt: body.expiresAt })
+    } catch {
+      alert("Couldn't make a password link. Please try again.")
+    } finally {
+      setMakingLink(false)
     }
   }
 
@@ -699,6 +722,17 @@ export default function CustomerDetailPage() {
               <Pencil className="w-4 h-4 mr-1" />
               Edit Info
             </Button>
+            {data.customer.role !== 'admin' && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleMakePasswordLink}
+                disabled={makingLink}
+              >
+                <KeyRound className="w-4 h-4 mr-1" />
+                {makingLink ? 'Making link…' : 'Password Link'}
+              </Button>
+            )}
             <Button
               variant="outline"
               size="sm"
@@ -1789,6 +1823,51 @@ export default function CustomerDetailPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* One-time password link */}
+      <Modal
+        isOpen={!!passwordLink}
+        onClose={() => setPasswordLink(null)}
+        title="Password link"
+      >
+        {passwordLink && (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-700">
+              Text or email this link to {data.customer.full_name || data.customer.email}. It lets them choose a
+              password once, until{' '}
+              {new Date(passwordLink.expiresAt).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}.
+              Then they sign in with <strong>{data.customer.email}</strong> and that password.
+            </p>
+            <input
+              readOnly
+              value={passwordLink.url}
+              onFocus={(e) => e.currentTarget.select()}
+              className="w-full rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-800"
+            />
+            <p className="text-xs text-gray-500">
+              Anyone with the link can set this account&apos;s password, so only send it to the customer. Making a new link
+              cancels this one.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setPasswordLink(null)}>
+                Close
+              </Button>
+              <Button
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(passwordLink.url)
+                    setLinkCopied(true)
+                  } catch {
+                    alert('Copy failed. Select the link and copy it instead.')
+                  }
+                }}
+              >
+                {linkCopied ? 'Copied' : 'Copy link'}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {/* Edit Customer Modal */}
       <Modal

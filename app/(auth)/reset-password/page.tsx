@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Lock, Eye, EyeOff, CheckCircle, AlertCircle } from 'lucide-react'
 import { Card, CardContent, Button, Input } from '@/components/ui'
+import { validatePassword } from '@/lib/passwords/rules'
 
 function ResetPasswordContent() {
   const router = useRouter()
@@ -53,8 +54,9 @@ function ResetPasswordContent() {
       return
     }
 
-    if (formData.password.length < 8) {
-      setError('Password must be at least 8 characters')
+    const rules = validatePassword(formData.password)
+    if (!rules.valid) {
+      setError(rules.errors[0])
       return
     }
 
@@ -179,7 +181,7 @@ function ResetPasswordContent() {
           </div>
 
           <p className="text-xs text-gray-500">
-            Password must be at least 8 characters long
+            At least 8 characters, with an uppercase letter, a lowercase letter and a number
           </p>
 
           <Button

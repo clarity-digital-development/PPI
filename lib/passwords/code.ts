@@ -26,6 +26,10 @@ export const MAX_WRONG_PER_DAY = 15
 export const DAY_MS = 24 * 60 * 60 * 1000
 export const RESEND_COOLDOWN_MS = 60 * 1000
 export const CODE_PREFIX = 'code:'
+// Reset links an admin texts to a customer (app/api/admin/customers/[id]/
+// password-link). /reset-password redeems them; /forgot-password leaves them
+// alone, so asking for an emailed link (which may bounce) doesn't cancel one.
+export const LINK_PREFIX = 'link-'
 
 export function normalizeEmail(raw: unknown): string | null {
   if (typeof raw !== 'string') return null

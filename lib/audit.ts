@@ -160,5 +160,8 @@ export const AuditAction = {
   PostRentalOverrideToggle:  'post_rental.override.toggle',
   PostRentalDisableToggle:   'post_rental.disable.toggle',
   PostRentalStopped:         'post_rental.stopped',
+  // Admin made a one-time "choose your password" link to send a customer
+  // whose inbox doesn't get our email.
+  PasswordLinkCreate: 'user.password_link',
 } as const
 export type AuditActionName = (typeof AuditAction)[keyof typeof AuditAction]

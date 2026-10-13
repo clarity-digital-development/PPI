@@ -575,10 +575,22 @@ export async function PUT(
       }
     }
 
+    const prevEmail =
+      updateData.email !== undefined
+        ? (await prisma.user.findUnique({ where: { id }, select: { email: true } }))?.email ?? null
+        : null
+
     const customer = await prisma.user.update({
       where: { id },
       data: updateData,
     })
+
+    // Reset links and sign-in codes are keyed by address, not account: once
+    // the address leaves this account they must not work for whoever has it
+    // next.
+    if (prevEmail && prevEmail !== customer.email) {
+      await prisma.passwordResetToken.deleteMany({ where: { email: prevEmail } })
+    }
 
     if (pendingTeamUpdate) {
       await prisma.team.update({
@@ -795,9 +807,12 @@ export async function DELETE(
       return NextResponse.json({ error: 'Cannot delete your own account' }, { status: 400 })
     }
 
-    await prisma.user.delete({
+    const removed = await prisma.user.delete({
       where: { id },
+      select: { email: true },
     })
+    // Same as an email change: links and codes for the address die with it.
+    await prisma.passwordResetToken.deleteMany({ where: { email: removed.email } })
 
     return NextResponse.json({ success: true })
   } catch (error) {
