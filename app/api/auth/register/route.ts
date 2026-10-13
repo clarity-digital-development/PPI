@@ -29,6 +29,14 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // The crew calls agents from the dispatch sheet, so a phone is required.
+    if (typeof phone !== 'string' || phone.replace(/\D/g, '').length < 10) {
+      return NextResponse.json(
+        { error: 'Please enter a phone number with area code.' },
+        { status: 400 }
+      )
+    }
+
     // Validate email format
     if (!validateEmail(email)) {
       return NextResponse.json(

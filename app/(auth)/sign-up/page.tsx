@@ -139,6 +139,8 @@ export default function SignUpPage() {
             onChange={(e) =>
               setFormData({ ...formData, phone: e.target.value })
             }
+            autoComplete="tel"
+            required
           />
 
           <Input
