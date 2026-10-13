@@ -1,6 +1,7 @@
 import { Resend } from 'resend'
 import { shouldSendEmail, logSuppressed, type UserEmailPrefs } from '@/lib/email-preferences'
 import { decodeAndCompressDataUri } from '@/lib/images/compress'
+import { redirectedInbox } from '@/lib/passwords/code'
 
 // Cap for the photo attached to the admin order notification. Well under
 // Resend's message limit, and compression normally lands an order of
@@ -719,6 +720,9 @@ export async function sendPasswordResetEmail(
 ) {
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'https://pinkposts.com'
   const resetUrl = `${baseUrl}/reset-password?token=${resetToken}`
+  // admin@ / test@ have no mailbox: the link goes to the shop inbox, naming the login.
+  const inbox = redirectedInbox(email)
+  const forLogin = inbox ? ` for the ${email} login` : ''
 
   const html = `
     <!DOCTYPE html>
@@ -735,7 +739,7 @@ export async function sendPasswordResetEmail(
         </div>
 
         <p style="color: #333;">Hi,</p>
-        <p style="color: #333;">We received a request to reset your password. Click the button below to create a new password:</p>
+        <p style="color: #333;">We received a request to reset your password${forLogin}. Click the button below to create a new password:</p>
 
         <div style="text-align: center; margin: 32px 0;">
           <a href="${resetUrl}" style="background-color: #E84A7A; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block;">Reset Password</a>
@@ -754,8 +758,8 @@ export async function sendPasswordResetEmail(
 
   return getResend().emails.send({
     from: 'Pink Posts Installations <noreply@pinkposts.com>',
-    to: email,
-    subject: 'Reset Your Password - Pink Posts Installations',
+    to: inbox ?? email,
+    subject: `Reset Your Password${inbox ? ` (${email})` : ''} - Pink Posts Installations`,
     html,
   })
 }
@@ -766,9 +770,12 @@ export async function sendPasswordResetEmail(
  * new site, which have no password yet.
  */
 export async function sendPasswordCodeEmail(email: string, code: string, firstSignIn: boolean) {
-  const intro = firstSignIn
+  // admin@ / test@ have no mailbox: the code goes to the shop inbox, naming the login.
+  const inbox = redirectedInbox(email)
+  const intro = (firstSignIn
     ? "We've moved Pink Posts to a new system. Your account and saved card came with it; you just need to choose a new password."
-    : 'Here is the code to choose a new password for your Pink Posts account.'
+    : 'Here is the code to choose a new password for your Pink Posts account.')
+    + (inbox ? ` This code is for signing in as ${email}.` : '')
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'https://pinkposts.com'
   // Opens the sign-in page on the code step (the code itself is never in a link).
   const enterUrl = `${baseUrl}/sign-in?new=1&step=code&email=${encodeURIComponent(email)}`
@@ -802,8 +809,8 @@ export async function sendPasswordCodeEmail(email: string, code: string, firstSi
   `
   return getResend().emails.send({
     from: 'Pink Posts Installations <noreply@pinkposts.com>',
-    to: email,
-    subject: `${code} is your Pink Posts code`,
+    to: inbox ?? email,
+    subject: `${code} is your Pink Posts code${inbox ? ` for ${email}` : ''}`,
     html,
     text: `${intro} Enter this code on the sign-in page: ${code}\n\n${enterUrl}\n\nThe code works for 15 minutes. If you didn't ask for it, you can ignore this email.`,
   })

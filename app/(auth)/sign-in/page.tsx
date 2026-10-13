@@ -71,7 +71,7 @@ function SignInForm() {
   async function requestCode(
     firstSignIn: boolean,
     opts: { quiet?: boolean; resend?: boolean } = {},
-  ): Promise<{ codeSent: boolean; alreadySent: boolean } | null> {
+  ): Promise<{ codeSent: boolean; alreadySent: boolean; sentTo?: string } | null> {
     const res = await fetch('/api/auth/password-code', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -83,7 +83,13 @@ function SignInForm() {
       return null
     }
     if (data.codeSent && !data.alreadySent) setResendIn(RESEND_SECONDS)
-    return { codeSent: !!data.codeSent, alreadySent: !!data.alreadySent }
+    return { codeSent: !!data.codeSent, alreadySent: !!data.alreadySent, sentTo: data.sentTo }
+  }
+
+  // The shop's own logins (admin@, test@) have no mailbox, so the server sends
+  // their codes and links to the shop inbox and says which one.
+  function inboxText(sentTo?: string) {
+    return sentTo ? `${sentTo} (the inbox for ${email})` : email
   }
 
   async function sendResetLink() {
@@ -97,7 +103,12 @@ function SignInForm() {
         body: JSON.stringify({ email }),
       })
       if (!res.ok) throw new Error()
-      setInfo(`If there's an account for ${email}, we've emailed it a link to choose a new password.`)
+      const data = await res.json().catch(() => ({}))
+      setInfo(
+        data.sentTo
+          ? `If there's an account for ${email}, we've emailed a link to choose a new password to ${data.sentTo}.`
+          : `If there's an account for ${email}, we've emailed it a link to choose a new password.`,
+      )
     } catch {
       setError("We couldn't send the link. Please try again.")
     } finally {
@@ -121,7 +132,7 @@ function SignInForm() {
           setNewStep('code')
           setPassword('')
           setInfo(
-            `Welcome to the new Pink Posts site. Your account came over, but it needs a new password. We emailed a 6-digit code to ${email}.`,
+            `Welcome to the new Pink Posts site. Your account came over, but it needs a new password. We emailed a 6-digit code to ${inboxText(sent.sentTo)}.`,
           )
         } else {
           setError('Invalid email or password')
@@ -148,8 +159,10 @@ function SignInForm() {
         setNewStep('code')
         setInfo(
           sent.alreadySent && !resend
-            ? `We already emailed a code to ${email}. It can take a minute to arrive, so check spam too.`
-            : `If there's an account for ${email}, we've emailed it a 6-digit code.`,
+            ? `We already emailed a code to ${inboxText(sent.sentTo)}. It can take a minute to arrive, so check spam too.`
+            : sent.sentTo
+              ? `If there's an account for ${email}, we've emailed a 6-digit code to ${sent.sentTo}.`
+              : `If there's an account for ${email}, we've emailed it a 6-digit code.`,
         )
       }
     } catch {

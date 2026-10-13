@@ -53,6 +53,18 @@ export function codeMatches(storedToken: string, email: string, code: string): b
   return expected.length === actual.length && timingSafeEqual(expected, actual)
 }
 
+// Pink Posts' own logins with no mailbox behind them (admin@ is the original
+// admin account, test@ the shop's test customer). Their codes and reset links
+// go to the shop inbox instead, or nobody could ever receive them.
+const SHOP_INBOX = 'contact@pinkposts.com'
+const NO_MAILBOX = new Set(['admin@pinkposts.com', 'test@pinkposts.com'])
+
+// Where sign-in mail for this login actually goes; null when it's the login
+// itself.
+export function redirectedInbox(email: string): string | null {
+  return NO_MAILBOX.has(email.toLowerCase().trim()) ? SHOP_INBOX : null
+}
+
 // Advisory-lock key shared by issuing and checking codes for one email.
 export function codeLockKey(email: string): string {
   return `password-code:${email}`

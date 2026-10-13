@@ -13,6 +13,7 @@ import {
   codeToken,
   newCode,
   normalizeEmail,
+  redirectedInbox,
 } from '@/lib/passwords/code'
 
 // POST /api/auth/password-code — email a 6-digit code for choosing a new
@@ -43,11 +44,14 @@ export async function POST(request: NextRequest) {
     }
     const firstSignIn = body?.firstSignIn === true
     const resend = body?.resend === true
+    // Named whether or not the account exists, so it says nothing extra.
+    const inbox = redirectedInbox(email)
+    const sentTo = inbox ? { sentTo: inbox } : {}
 
     const user = await prisma.user.findUnique({ where: { email }, select: { id: true, password: true } })
     const eligible = !!user && (!firstSignIn || !user.password)
     if (!eligible) {
-      return NextResponse.json(firstSignIn ? { codeSent: false } : { codeSent: true })
+      return NextResponse.json(firstSignIn ? { codeSent: false } : { codeSent: true, ...sentTo })
     }
 
     const code = newCode()
@@ -78,7 +82,7 @@ export async function POST(request: NextRequest) {
     })
 
     if (outcome.kind === 'kept' || outcome.kind === 'cooldown') {
-      return NextResponse.json({ codeSent: true, alreadySent: true })
+      return NextResponse.json({ codeSent: true, alreadySent: true, ...sentTo })
     }
     if (outcome.kind === 'cap') {
       return NextResponse.json(
@@ -105,7 +109,7 @@ export async function POST(request: NextRequest) {
       data: { expires: new Date() },
     })
 
-    return NextResponse.json({ codeSent: true })
+    return NextResponse.json({ codeSent: true, ...sentTo })
   } catch (error) {
     console.error('[password-code] send failed:', error)
     return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })

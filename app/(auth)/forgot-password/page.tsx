@@ -10,6 +10,8 @@ export default function ForgotPasswordPage() {
   const [error, setError] = useState('')
   const [isSubmitted, setIsSubmitted] = useState(false)
   const [email, setEmail] = useState('')
+  // Set for the shop's own logins (admin@, test@), whose link goes to the shop inbox.
+  const [sentTo, setSentTo] = useState('')
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -31,6 +33,7 @@ export default function ForgotPasswordPage() {
         return
       }
 
+      setSentTo(typeof data.sentTo === 'string' ? data.sentTo : '')
       setIsSubmitted(true)
     } catch {
       setError('An error occurred. Please try again.')
@@ -49,7 +52,8 @@ export default function ForgotPasswordPage() {
             </div>
             <h1 className="text-2xl font-bold text-gray-900">Check Your Email</h1>
             <p className="mt-2 text-gray-600">
-              If an account exists for <strong>{email}</strong>, you will receive a password reset link shortly.
+              If an account exists for <strong>{email}</strong>, you will receive a password reset link shortly
+              {sentTo ? <> at <strong>{sentTo}</strong></> : null}.
             </p>
             <p className="mt-4 text-sm text-gray-500">
               Didn&apos;t receive the email? Check your spam folder or try again.
