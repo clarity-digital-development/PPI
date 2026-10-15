@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import { signIn } from 'next-auth/react'
 import { Mail, Lock, User, Phone, Building, Eye, EyeOff } from 'lucide-react'
 import { Card, CardContent, Button, Input } from '@/components/ui'
+import { HONEYPOT_FIELD } from '@/lib/auth/signup-guard'
 
 export default function SignUpPage() {
   const router = useRouter()
@@ -20,6 +21,8 @@ export default function SignUpPage() {
     password: '',
     confirmPassword: '',
   })
+  // Hidden field only bots fill in (lib/auth/signup-guard.ts).
+  const [honeypot, setHoneypot] = useState('')
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -51,6 +54,7 @@ export default function SignUpPage() {
           fullName: formData.fullName,
           phone: formData.phone,
           company: formData.companyName,
+          [HONEYPOT_FIELD]: honeypot,
         }),
       })
 
@@ -106,6 +110,20 @@ export default function SignUpPage() {
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Off-screen, not display:none, so bots still find and fill it. */}
+          <div aria-hidden="true" style={{ position: 'absolute', left: '-10000px', top: 'auto', width: 1, height: 1, overflow: 'hidden' }}>
+            <label>
+              Website
+              <input
+                type="text"
+                name={HONEYPOT_FIELD}
+                tabIndex={-1}
+                autoComplete="off"
+                value={honeypot}
+                onChange={(e) => setHoneypot(e.target.value)}
+              />
+            </label>
+          </div>
           <Input
             label="Full Name"
             type="text"

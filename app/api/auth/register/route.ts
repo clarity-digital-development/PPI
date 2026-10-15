@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs'
 import { createWelcomeNotification } from '@/lib/notifications'
 import { checkRateLimit, rateLimitPresets } from '@/lib/rate-limit'
 import { validatePassword } from '@/lib/passwords/rules'
+import { HONEYPOT_FIELD, botSignupReason } from '@/lib/auth/signup-guard'
 
 function validateEmail(email: string): boolean {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -22,9 +23,20 @@ export async function POST(request: NextRequest) {
     const { email, password, fullName, phone, company } = body
 
     // Validate required fields
-    if (!email || !password || !fullName) {
+    if (!email || !password || !fullName || typeof email !== 'string' || typeof password !== 'string' || typeof fullName !== 'string') {
       return NextResponse.json(
         { error: 'Email, password, and full name are required' },
+        { status: 400 }
+      )
+    }
+
+    // Bot sign-ups (lib/auth/signup-guard.ts). A person who somehow trips
+    // this gets a way to reach us instead of a silent failure.
+    const botReason = botSignupReason({ fullName, email, honeypot: body[HONEYPOT_FIELD] })
+    if (botReason) {
+      console.warn(`[register] blocked a likely bot sign-up (${botReason})`)
+      return NextResponse.json(
+        { error: "We couldn't create this account. Please call or text us and we'll set it up for you." },
         { status: 400 }
       )
     }
