@@ -43,6 +43,8 @@ export async function GET(
         serviceRequests = await prisma.serviceRequest.findMany({
           where: { installationId: id },
           orderBy: { createdAt: 'desc' },
+          // The office's notes are for the crew, not the customer.
+          omit: { adminNotes: true },
         })
       }
     } catch {

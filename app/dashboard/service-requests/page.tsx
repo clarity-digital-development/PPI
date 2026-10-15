@@ -29,7 +29,6 @@ interface ServiceRequest {
   description: string | null
   requestedDate: string | null
   notes: string | null
-  adminNotes: string | null
   completedAt: string | null
   createdAt: string
   updatedAt: string
@@ -352,14 +351,6 @@ export default function ServiceRequestsPage() {
                   </div>
                 )}
               </div>
-
-              {/* Notes from admin */}
-              {request.adminNotes && (
-                <div className="mt-3 pt-3 border-t border-gray-100">
-                  <p className="text-xs text-gray-500 mb-1">Admin Notes:</p>
-                  <p className="text-sm text-gray-700">{request.adminNotes}</p>
-                </div>
-              )}
 
               {/* Customer actions — only while the request is still active */}
               {isActive(request.status) && (

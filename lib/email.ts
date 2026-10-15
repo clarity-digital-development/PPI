@@ -1654,6 +1654,7 @@ function renderDispatchServiceText(j: DispatchServiceJob, n: number): string {
   if (j.listingAgent) out.push(`   For agent: ${j.listingAgent.name}${j.listingAgent.phone ? ` (${j.listingAgent.phone})` : ''}`)
   if (j.description) out.push(`   Request: ${j.description}`)
   if (j.notes) out.push(`   Notes: ${j.notes}`)
+  if (j.officeNotes) out.push(`   Office notes: ${j.officeNotes}`)
   if (j.installedHere) {
     out.push(`   What was installed here (${j.installedHere.orderNumber}):`)
     for (const l of j.installedHere.lines) out.push(`     - ${dispatchLineText(l)}`)
@@ -1721,6 +1722,11 @@ function renderDispatchJobHtml(j: DispatchJob, n: number): string {
   const notes = j.notes
     ? `<div style="background-color: #FFFBEB; border-left: 4px solid #F59E0B; border-radius: 4px; padding: 10px 12px; margin: 12px 0 0;"><p style="margin: 0 0 4px; color: #92400E; font-weight: bold; font-size: 13px;">Notes</p><p style="margin: 0; color: #333; white-space: pre-wrap;">${escapeHtml(j.notes)}</p></div>`
     : ''
+  // The office's notes for the crew (admin notes on a service request).
+  const officeNotes =
+    j.kind === 'service_request' && j.officeNotes
+      ? `<div style="background-color: #FFF0F3; border-left: 4px solid #E84A7A; border-radius: 4px; padding: 10px 12px; margin: 12px 0 0;"><p style="margin: 0 0 4px; color: #9B1C47; font-weight: bold; font-size: 13px;">Office notes</p><p style="margin: 0; color: #333; white-space: pre-wrap;">${escapeHtml(j.officeNotes)}</p></div>`
+      : ''
   const lockboxes = j.kind === 'service_request' ? renderExistingLockboxesHtml(j.lockboxesOnSite) : ''
   // THE PHOTO SITS INSIDE ITS OWN JOB CARD. As a plain attachment every
   // mail client stacked the photos at the bottom of the message, where
@@ -1736,6 +1742,7 @@ function renderDispatchJobHtml(j: DispatchJob, n: number): string {
       <p style="margin: 0 0 8px; font-size: 16px; font-weight: bold; color: #333;">${title}</p>
       <table style="border-collapse: collapse; font-size: 14px; width: 100%; table-layout: fixed;">${rows.join('')}</table>
       ${notes}
+      ${officeNotes}
       ${lockboxes}
       ${photo}
     </div>`

@@ -61,6 +61,7 @@ const jobs: DispatchJob[] = redactAllStrings<DispatchJob[]>([
     listingAgent: { name: 'Pat Team Agent', phone: '502-555-0142' },
     description: 'Remove sign — agent says the $40 was already paid',
     notes: null,
+    officeNotes: 'Shackle code 4471 on the box. Bring the rider back to storage; she still owes $25.',
     installedHere: { orderNumber: 'PPI-TEST-0000', lines: [{ description: 'Black Vinyl Post (install & pickup)', quantity: 1 }] },
     ridersOnSite: ['For Sale', 'Price Reduced'],
     lockboxesOnSite: [{ type: 'Mechanical (Rental)', serialNumber: null, code: '1228' }],

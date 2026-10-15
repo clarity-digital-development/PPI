@@ -66,6 +66,7 @@ export const DISPATCH_SR_SELECT = {
   status: true,
   description: true,
   notes: true,
+  adminNotes: true,
   requestedDate: true,
   unlistedAddress: true,
   unlistedCity: true,
@@ -104,7 +105,8 @@ export const DISPATCH_SR_SELECT = {
   },
 } satisfies Prisma.ServiceRequestSelect
 // Deliberately NOT selected: invoiceAmount, invoiceStatus,
-// invoicePaymentIntentId, invoicePaidAt, invoiceId, adminNotes (internal).
+// invoicePaymentIntentId, invoicePaidAt, invoiceId. adminNotes IS: they're the
+// office's notes for the crew, and this email only goes to the crew.
 
 function mapsUrl(a: { line1: string; city: string; state: string; zip: string }): string {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${a.line1}, ${a.city}, ${a.state} ${a.zip}`)}`
@@ -269,6 +271,7 @@ export async function loadDispatchJobs(input: {
       listingAgent,
       description: cleanServiceDescription(s.description ?? null, unlisted),
       notes: s.notes ?? null,
+      officeNotes: s.adminNotes?.trim() || null,
       installedHere: inst?.order && inst.order.orderItems.length
         ? { orderNumber: inst.order.orderNumber, lines: inst.order.orderItems.map((it) => ({ description: it.description, quantity: it.quantity })) }
         : null,

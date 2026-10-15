@@ -110,6 +110,8 @@ export interface DispatchServiceJob {
   listingAgent: { name: string; phone: string | null } | null
   description: string | null
   notes: string | null
+  /** The office's notes for the crew (admin notes on the request). */
+  officeNotes: string | null
   installedHere: { orderNumber: string; lines: DispatchLine[] } | null
   ridersOnSite: string[]
   lockboxesOnSite: DispatchLockbox[]

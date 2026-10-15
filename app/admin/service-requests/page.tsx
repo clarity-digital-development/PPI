@@ -244,6 +244,13 @@ export default function ServiceRequestsPage() {
   const [showModal, setShowModal] = useState(false)
   const [updating, setUpdating] = useState(false)
   const [adminNotes, setAdminNotes] = useState('')
+  // Notes save on their own (they used to ride along only with a status
+  // button) and print on the crew's dispatch email.
+  const [savingNotes, setSavingNotes] = useState(false)
+  const [notesMessage, setNotesMessage] = useState<string | null>(null)
+  // Which request the popup shows, so a save that lands after a close/reopen
+  // only updates the popup it belongs to.
+  const openRequestIdRef = useRef<string | null>(null)
   const [scheduledDate, setScheduledDate] = useState('')
   const [invoiceAmount, setInvoiceAmount] = useState('')
   const [invoicing, setInvoicing] = useState(false)
@@ -310,7 +317,9 @@ export default function ServiceRequestsPage() {
 
   const handleViewRequest = (request: ServiceRequest) => {
     setSelectedRequest(request)
+    openRequestIdRef.current = request.id
     setAdminNotes(request.adminNotes || '')
+    setNotesMessage(null)
     setScheduledDate(request.requestedDate ? request.requestedDate.split('T')[0] : '')
     setInvoiceAmount(request.invoiceAmount != null ? String(request.invoiceAmount) : '')
     setInvoiceError(null)
@@ -375,6 +384,35 @@ export default function ServiceRequestsPage() {
     }
   }
 
+  const handleSaveNotes = async () => {
+    if (!selectedRequest || savingNotes) return
+    const srId = selectedRequest.id
+    const text = adminNotes
+    setSavingNotes(true)
+    setNotesMessage(null)
+    try {
+      const res = await fetch(`/api/admin/service-requests/${srId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ admin_notes: text }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.serviceRequest) throw new Error(data.error || 'Save failed')
+      setRequests((prev) => prev.map((r) => (r.id === srId ? mergeServiceRequest(r, data.serviceRequest) : r)))
+      setSelectedRequest((prev) => (prev && prev.id === srId ? mergeServiceRequest(prev, data.serviceRequest) : prev))
+      if (openRequestIdRef.current === srId) {
+        // A close/reopen mid-save loaded the old list row; the box was locked,
+        // so nothing typed since is lost.
+        setAdminNotes(data.serviceRequest.adminNotes ?? text)
+        setNotesMessage('Saved')
+      }
+    } catch {
+      if (openRequestIdRef.current === srId) setNotesMessage("Couldn't save. Please try again.")
+    } finally {
+      setSavingNotes(false)
+    }
+  }
+
   const handleUpdateStatus = async (newStatus: string) => {
     if (!selectedRequest) return
 
@@ -392,6 +430,8 @@ export default function ServiceRequestsPage() {
 
       if (res.ok) {
         const data = await res.json()
+        // This also saved the notes, so an earlier notes error is out of date.
+        setNotesMessage(null)
         const updated = mergeServiceRequest(selectedRequest, data.serviceRequest)
         setRequests((prev) =>
           prev.map((r) => (r.id === selectedRequest.id ? mergeServiceRequest(r, data.serviceRequest) : r))
@@ -895,16 +935,41 @@ export default function ServiceRequestsPage() {
               />
 
               <div className="mt-4">
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Admin Notes
+                <label htmlFor="sr-admin-notes" className="block text-sm font-medium text-gray-700 mb-1">
+                  Notes for the crew
                 </label>
                 <textarea
+                  id="sr-admin-notes"
                   value={adminNotes}
-                  onChange={(e) => setAdminNotes(e.target.value)}
+                  disabled={savingNotes}
+                  onChange={(e) => {
+                    setAdminNotes(e.target.value)
+                    setNotesMessage(null)
+                  }}
                   className="w-full px-4 py-3 rounded-lg border border-gray-200 focus:ring-2 focus:ring-pink-500 focus:border-transparent transition-all resize-none"
                   rows={3}
-                  placeholder="Internal notes about this request..."
+                  placeholder="Codes, what to pick up, where it goes..."
                 />
+                <div className="mt-2 flex items-center justify-between gap-3">
+                  <p className="text-xs text-gray-500">
+                    Prints on the installer&apos;s dispatch email. The customer doesn&apos;t see these.
+                  </p>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {notesMessage && (
+                      <span className={notesMessage === 'Saved' ? 'text-xs text-green-600' : 'text-xs text-red-600'}>
+                        {notesMessage}
+                      </span>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleSaveNotes}
+                      disabled={savingNotes || adminNotes === (selectedRequest.adminNotes || '')}
+                    >
+                      {savingNotes ? 'Saving…' : 'Save notes'}
+                    </Button>
+                  </div>
+                </div>
               </div>
             </div>
 

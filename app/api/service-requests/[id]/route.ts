@@ -91,6 +91,8 @@ export async function PATCH(
       const cancelled = await prisma.serviceRequest.update({
         where: { id },
         data: { status: 'cancelled' },
+        // The office's notes are for the crew, not the customer.
+        omit: { adminNotes: true },
         include: {
           installation: {
             select: {
@@ -219,6 +221,7 @@ export async function PATCH(
     const updated = await prisma.serviceRequest.update({
       where: { id },
       data: updateData,
+      omit: { adminNotes: true },
       include: {
         installation: {
           select: {

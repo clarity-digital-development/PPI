@@ -374,7 +374,6 @@ export async function GET(request: NextRequest) {
         description: sr.description,
         requestedDate: sr.requestedDate?.toISOString() || null,
         notes: sr.notes,
-        adminNotes: sr.adminNotes,
         completedAt: sr.completedAt?.toISOString() || null,
         createdAt: sr.createdAt.toISOString(),
         updatedAt: sr.updatedAt.toISOString(),
