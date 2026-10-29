@@ -33,6 +33,7 @@ export async function GET(
         expMonth: pm.expMonth,
         expYear: pm.expYear,
         isDefault: pm.isDefault,
+        nickname: pm.nickname,
       })),
     })
   } catch (error) {

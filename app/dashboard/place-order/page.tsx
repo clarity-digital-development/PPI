@@ -81,6 +81,7 @@ function PlaceOrderPageInner() {
     id: string
     card_brand: string | null
     card_last4: string | null
+    nickname?: string | null
     is_default: boolean
   }> | undefined>()
 

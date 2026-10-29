@@ -170,6 +170,7 @@ interface PaymentMethod {
   id: string
   brand: string
   last4: string
+  nickname?: string | null
   isDefault: boolean
 }
 
@@ -1286,7 +1287,7 @@ export default function AdminOrderDetailPage() {
                         >
                           {paymentMethods.map((pm) => (
                             <option key={pm.id} value={pm.id}>
-                              {pm.brand.toUpperCase()} •••• {pm.last4}
+                              {pm.nickname ? `${pm.nickname} · ` : ''}{pm.brand.toUpperCase()} •••• {pm.last4}
                               {pm.isDefault ? ' (Default)' : ''}
                             </option>
                           ))}

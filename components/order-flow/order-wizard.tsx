@@ -99,6 +99,7 @@ export interface OrderWizardProps {
     id: string
     card_brand: string | null
     card_last4: string | null
+    nickname?: string | null
     is_default: boolean
   }>
   // When set, the order is placed on behalf of this user (admin / team_admin use).

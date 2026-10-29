@@ -13,6 +13,7 @@ interface PaymentMethod {
   expMonth: number
   expYear: number
   isDefault: boolean
+  nickname: string | null
 }
 
 interface Order {
@@ -112,6 +113,18 @@ export default function BillingPage() {
     }
   }
 
+  // Throws on failure so the card's rename box stays open with the text.
+  const handleRename = async (paymentMethodId: string, nickname: string) => {
+    const res = await fetch(`/api/stripe/payment-methods/${paymentMethodId}/nickname`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nickname }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || "Couldn't save the nickname.")
+    setPaymentMethods((prev) => prev.map((pm) => (pm.id === paymentMethodId ? { ...pm, nickname: data.nickname ?? null } : pm)))
+  }
+
   const handleAddCardSuccess = () => {
     setShowAddCard(false)
     fetchPaymentMethods()
@@ -181,6 +194,7 @@ export default function BillingPage() {
                       paymentMethod={pm}
                       onDelete={handleDeleteCard}
                       onSetDefault={handleSetDefault}
+                      onRename={handleRename}
                     />
                   ))}
                 </div>

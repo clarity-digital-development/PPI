@@ -1860,7 +1860,8 @@ export function ReviewStep({
                     : 'border-gray-200 hover:border-gray-300'
                 )}
               >
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  {pm.nickname && <span className="font-medium text-gray-900 truncate">{pm.nickname}</span>}
                   <span className="text-sm font-medium text-gray-700 uppercase">
                     {pm.card_brand}••••
                   </span>

@@ -25,6 +25,7 @@ interface PaymentMethod {
   id: string
   card_brand: string | null
   card_last4: string | null
+  nickname?: string | null
   is_default: boolean
 }
 
@@ -525,7 +526,7 @@ export default function CartPage() {
                   placeholder=""
                   options={paymentMethods.map(pm => ({
                     value: pm.id,
-                    label: `${pm.card_brand?.toUpperCase() || 'Card'} •••• ${pm.card_last4}${pm.is_default ? ' (default)' : ''}`,
+                    label: `${pm.nickname ? `${pm.nickname} · ` : ''}${pm.card_brand?.toUpperCase() || 'Card'} •••• ${pm.card_last4}${pm.is_default ? ' (default)' : ''}`,
                   }))}
                 />
               )}

@@ -26,6 +26,7 @@ export async function GET(request: NextRequest) {
       card_brand: pm.brand,
       card_last4: pm.last4,
       is_default: pm.isDefault,
+      nickname: pm.nickname,
     }))
 
     return NextResponse.json({ paymentMethods: transformedMethods })

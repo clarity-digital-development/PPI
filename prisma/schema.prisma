@@ -1011,6 +1011,9 @@ model PaymentMethod {
   expMonth              Int      @map("exp_month")
   expYear               Int      @map("exp_year")
   isDefault             Boolean  @default(false) @map("is_default")
+  // The owner's label, e.g. "Ashley's card", so a broker paying with several
+  // agents' cards can tell them apart (Ryan, 2026-10-26).
+  nickname              String?
   createdAt             DateTime @default(now()) @map("created_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)

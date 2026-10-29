@@ -36,12 +36,13 @@ export async function GET() {
     // Get local payment methods for default status
     const localPaymentMethods = await prisma.paymentMethod.findMany({
       where: { userId: session.user.id },
-      select: { stripePaymentMethodId: true, isDefault: true },
+      select: { stripePaymentMethodId: true, isDefault: true, nickname: true },
     })
 
     const localDefaults = new Map(
       localPaymentMethods.map((pm) => [pm.stripePaymentMethodId, pm.isDefault])
     )
+    const nicknames = new Map(localPaymentMethods.map((pm) => [pm.stripePaymentMethodId, pm.nickname]))
 
     // Format response
     const paymentMethods = stripePaymentMethods.map((pm) => ({
@@ -51,6 +52,7 @@ export async function GET() {
       expMonth: pm.card?.exp_month || 0,
       expYear: pm.card?.exp_year || 0,
       isDefault: pm.id === defaultPaymentMethodId || localDefaults.get(pm.id) || false,
+      nickname: nicknames.get(pm.id) ?? null,
     }))
 
     return NextResponse.json({ paymentMethods })
