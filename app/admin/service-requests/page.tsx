@@ -327,6 +327,39 @@ export default function ServiceRequestsPage() {
     setShowModal(true)
   }
 
+  // Take a charge that's waiting for the next invoice back off (Ryan,
+  // 2026-10-28: an amount can't be set to $0).
+  const [removingCharge, setRemovingCharge] = useState(false)
+  const handleRemoveCharge = async () => {
+    if (!selectedRequest || removingCharge) return
+    const amt = Number(selectedRequest.invoiceAmount ?? 0)
+    if (!window.confirm(`Take the $${amt.toFixed(2)} charge off this customer's next invoice?`)) return
+    const srId = selectedRequest.id
+    setRemovingCharge(true)
+    setInvoiceError(null)
+    try {
+      const res = await fetch(`/api/admin/service-requests/${srId}/invoice`, { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.serviceRequest) throw new Error(data.error || "Couldn't remove the charge.")
+      setRequests((prev) => prev.map((r) => (r.id === srId ? mergeServiceRequest(r, data.serviceRequest) : r)))
+      setSelectedRequest((prev) => (prev && prev.id === srId ? mergeServiceRequest(prev, data.serviceRequest) : prev))
+      setInvoiceAmount('')
+      fetchRequests() // refresh counts
+    } catch (err) {
+      setInvoiceError(err instanceof Error ? err.message : "Couldn't remove the charge.")
+    } finally {
+      setRemovingCharge(false)
+    }
+  }
+
+  // Closing on a completed trip that still has no charge asks first, so a
+  // trip isn't left unbilled by accident (Ryan, 2026-10-28).
+  const closeModal = () => {
+    if (needsInvoiceAmount && !window.confirm('This trip is complete but has no charge. Close without adding one?')) return
+    setShowModal(false)
+    setNeedsInvoiceAmount(false)
+  }
+
   const handleSendInvoice = async () => {
     if (!selectedRequest) return
     const amt = Number(invoiceAmount)
@@ -437,11 +470,12 @@ export default function ServiceRequestsPage() {
           prev.map((r) => (r.id === selectedRequest.id ? mergeServiceRequest(r, data.serviceRequest) : r))
         )
 
-        // Auto-prompt: if admin just marked an invoice-billing SR completed
-        // and no invoice amount is set yet, keep the modal open + nudge
-        // them to enter the billing amount instead of closing and leaving
-        // the SR completed-but-unbilled. Effect hook above handles the
-        // focus + scroll once needsInvoiceAmount flips true.
+        // Auto-prompt: if admin just marked a service trip completed and no
+        // charge is set yet, keep the modal open + nudge them to enter one
+        // instead of closing and leaving the trip completed-but-unbilled.
+        // Every customer, not only invoice accounts: card customers' trips
+        // were being left uncharged too (Ryan, 2026-10-28). Effect hook
+        // above handles the focus + scroll once needsInvoiceAmount flips true.
         // Removals are skipped: the pickup is paid through the order (and its
         // out-of-area half collects itself), so nudging for an amount there
         // invites billing the trip twice. That includes unlisted-address
@@ -450,7 +484,6 @@ export default function ServiceRequestsPage() {
         // entered by hand.
         const shouldPrompt =
           newStatus === 'completed' &&
-          updated.user?.invoiceBilling &&
           updated.type !== 'removal' &&
           (updated.invoiceAmount == null || Number(updated.invoiceAmount) <= 0) &&
           updated.invoiceStatus !== 'paid' &&
@@ -776,7 +809,7 @@ export default function ServiceRequestsPage() {
       {/* Detail Modal */}
       <Modal
         isOpen={showModal}
-        onClose={() => { setShowModal(false); setNeedsInvoiceAmount(false) }}
+        onClose={closeModal}
         title="Service Request Details"
       >
         {selectedRequest && (
@@ -1019,7 +1052,7 @@ export default function ServiceRequestsPage() {
                     {' '}<Link href="/admin/invoices" className="underline font-medium">Bundle &amp; send invoices →</Link>
                   </div>
                   <p className="text-xs text-gray-500">
-                    Need to update the amount before bundling? Re-enter below and click again — the SR will stay in the pending pile.
+                    Need to change it before bundling? Enter a new amount and click Update amount, or Remove charge to take it off.
                   </p>
                   {pickupWarning}
                   <div className="flex items-end gap-2">
@@ -1033,7 +1066,7 @@ export default function ServiceRequestsPage() {
                         icon={<DollarSign className="w-5 h-5" />}
                       />
                     </div>
-                    <Button onClick={handleSendInvoice} disabled={invoicing || !invoiceAmount || Number(invoiceAmount) <= 0}>
+                    <Button onClick={handleSendInvoice} disabled={invoicing || removingCharge || !invoiceAmount || Number(invoiceAmount) <= 0}>
                       {invoicing ? (
                         <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Updating…</>
                       ) : (
@@ -1041,29 +1074,38 @@ export default function ServiceRequestsPage() {
                       )}
                     </Button>
                   </div>
+                  <button
+                    type="button"
+                    onClick={handleRemoveCharge}
+                    disabled={removingCharge || invoicing}
+                    className="text-sm text-red-600 hover:text-red-700 underline disabled:opacity-50"
+                  >
+                    {removingCharge ? 'Removing…' : 'Remove charge'}
+                  </button>
                   {invoiceError && <p className="text-sm text-red-600">{invoiceError}</p>}
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {/* Auto-prompt nudge — fires once when admin transitions
-                      an invoice-billing SR to 'completed' without setting
-                      an amount, so they don't leave the modal with the SR
-                      completed-but-unbilled. Clears when amount submits. */}
+                  {/* Auto-prompt nudge — fires once when admin marks a
+                      service trip 'completed' without a charge, so they
+                      don't leave the modal with it completed-but-unbilled.
+                      Clears when an amount submits or they pick No charge. */}
                   {needsInvoiceAmount && (
                     <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
                       <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                       <div className="flex-1">
-                        <p className="font-medium">Set invoice amount before closing</p>
+                        <p className="font-medium">Add a charge for this trip?</p>
                         <p className="text-xs mt-0.5">
-                          This trip is marked complete. Enter the amount below to add it to this customer&apos;s next bundled invoice — otherwise it stays unbilled.
+                          This trip is marked complete. Enter the amount below to{' '}
+                          {isInvoiceBilling ? 'add it to their next invoice' : 'charge their card on file'}, or click No charge if it&apos;s free.
                         </p>
                       </div>
                       <button
                         type="button"
                         onClick={() => setNeedsInvoiceAmount(false)}
-                        className="text-amber-700 hover:text-amber-900 text-xs underline"
+                        className="text-amber-700 hover:text-amber-900 text-xs underline whitespace-nowrap"
                       >
-                        Skip
+                        No charge
                       </button>
                     </div>
                   )}

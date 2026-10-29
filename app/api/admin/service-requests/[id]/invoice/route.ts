@@ -4,6 +4,7 @@ import { getCurrentUser } from '@/lib/auth-utils'
 import { chargePaymentMethod } from '@/lib/stripe'
 import { getStripeErrorMessage } from '@/lib/stripe/server'
 import { createNotification } from '@/lib/notifications'
+import { chargeSecondOutOfAreaFee } from '@/lib/orders/out-of-area-charge'
 
 // POST /api/admin/service-requests/[id]/invoice
 // Admin bills a variable amount for a service trip (they're not always a flat
@@ -237,6 +238,87 @@ export async function POST(
     }
   } catch (error) {
     console.error('Error invoicing service request:', error)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
+
+// DELETE /api/admin/service-requests/[id]/invoice
+// Takes a trip charge that's waiting for the customer's next invoice back off
+// (Ryan, 2026-10-28: "it won't let me change the amount to $0"). Only a
+// queued amount can come off: a card charge has been collected, and once the
+// charge is on an invoice it's changed on the invoice instead.
+export async function DELETE(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const user = await getCurrentUser()
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+    if (user.role !== 'admin') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+
+    const { id } = await params
+    const before = await prisma.serviceRequest.findUnique({
+      where: { id },
+      select: {
+        userId: true,
+        invoiceAmount: true,
+        type: true,
+        status: true,
+        unlistedAddress: true,
+        installation: { select: { status: true, orderId: true } },
+      },
+    })
+    if (!before) {
+      return NextResponse.json({ error: 'Service request not found' }, { status: 404 })
+    }
+
+    // Conditional, so a bundle that claimed this charge a moment ago wins.
+    const cleared = await prisma.serviceRequest.updateMany({
+      where: { id, invoiceId: null, invoiceStatus: 'pending_invoice' },
+      data: { invoiceAmount: null, invoiceStatus: null },
+    })
+    if (cleared.count !== 1) {
+      return NextResponse.json(
+        { error: "This charge is already on an invoice or isn't waiting for one. Refresh to see it." },
+        { status: 409 }
+      )
+    }
+    // An unlisted removal linked to its install at completion skipped the
+    // order's out-of-area pickup half because this charge covered the trip
+    // (admin PUT, requestAlreadyBilled). With the charge gone, collect the
+    // half the way completion would have. Acts only on a 'pending' half and
+    // never throws.
+    if (
+      before.type === 'removal' &&
+      before.status === 'completed' &&
+      before.unlistedAddress &&
+      before.installation?.status === 'removed'
+    ) {
+      await chargeSecondOutOfAreaFee(before.installation.orderId)
+    }
+
+    const updated = await prisma.serviceRequest.findUnique({ where: { id } })
+
+    // Adding the charge told the customer it was coming; say it isn't.
+    try {
+      await createNotification({
+        userId: before.userId,
+        type: 'service_request_acknowledged',
+        title: 'Service charge removed',
+        message: `The $${Number(before.invoiceAmount ?? 0).toFixed(2)} service charge was taken off your next invoice.`,
+        link: '/dashboard/service-requests',
+      })
+    } catch (notifErr) {
+      console.error('Removed-charge notification failed:', notifErr)
+    }
+
+    return NextResponse.json({ serviceRequest: updated })
+  } catch (error) {
+    console.error('Error removing service request charge:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
