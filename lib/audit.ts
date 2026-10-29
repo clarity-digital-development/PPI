@@ -141,6 +141,8 @@ export const AuditAction = {
   ServiceAreaFeeWaived: 'service_area.fee_waived',
   // Admin tagged an order with its crew area (lib/orders/areas.ts).
   OrderAreaSet: 'order.area_set',
+  // Admin tagged a service request with its crew area.
+  ServiceRequestAreaSet: 'service_request.area_set',
   // Policy-notice acceptance — legal trail proving each non-exempt user
   // saw and acknowledged the out-of-area fee + post-rental clarification.
   PolicyNoticeAccepted: 'policy_notice.accepted',

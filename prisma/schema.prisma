@@ -971,6 +971,11 @@ model ServiceRequest {
   unlistedCity           String?              @map("unlisted_city")
   unlistedState          String?              @map("unlisted_state")
   unlistedZip            String?              @map("unlisted_zip")
+  // Crew area picked by hand on the admin list (lib/orders/areas.ts). Null =
+  // follow the area on the request's order, so most requests never need one;
+  // trips to an address without an order are the ones that do (Ryan,
+  // 2026-10-29).
+  area                   String?
   createdAt              DateTime             @default(now()) @map("created_at")
   updatedAt              DateTime             @updatedAt @map("updated_at")
 

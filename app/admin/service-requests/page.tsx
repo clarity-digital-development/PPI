@@ -31,11 +31,21 @@ import { DateInput } from '@/components/ui/DateInput'
 import { useDispatchSelection } from '@/components/admin/dispatch/useDispatchSelection'
 import { DispatchBar } from '@/components/admin/dispatch/DispatchBar'
 import { DispatchEmailModal } from '@/components/admin/dispatch/DispatchEmailModal'
+import { ORDER_AREAS, isOrderArea } from '@/lib/orders/areas'
 
 // Match the orders admin list page size — Ryan asked for the SR list to
 // paginate "like orders" (2026-07-06) so he can find old service requests
 // past the historical first-50 cap.
 const PAGE_SIZE = 25
+
+// Crew area filter (Ryan, 2026-10-29), like the orders list: '' = all,
+// 'none' = no area yet. Remembered between visits the way orders does.
+const AREA_FILTER_KEY = 'ppi:admin-service-requests:area'
+const areaFilterOptions = [
+  { value: '', label: 'All Areas' },
+  ...ORDER_AREAS.map((a) => ({ value: a.value, label: a.label })),
+  { value: 'none', label: 'No Area Yet' },
+]
 
 interface ServiceRequest {
   id: string
@@ -50,6 +60,8 @@ interface ServiceRequest {
   invoiceAmount: number | string | null
   invoiceStatus: 'paid' | 'pending_invoice' | 'failed' | null
   invoicePaidAt: string | null
+  // Picked by hand; null = follow the order's area (effectiveArea below).
+  area?: string | null
   user: {
     id: string
     email: string
@@ -70,6 +82,7 @@ interface ServiceRequest {
     order?: {
       id: string
       orderNumber: string
+      area?: string | null
       status?: string
       placedForAgentName?: string | null
       // Out-of-area pickup half (see ooaPickupOf below).
@@ -199,6 +212,10 @@ function ooaPickupAlreadyWhere(p: OOAPickup): string {
 
 const formatCents = (cents: number) => `$${(cents / 100).toFixed(2)}`
 
+// The request's own area if one was picked, otherwise its order's — the same
+// rule the list's area filter uses (lib/orders/areas.ts).
+const effectiveArea = (r: ServiceRequest) => r.area ?? r.installation?.order?.area ?? null
+
 // The status PUT returns a slimmer user/installation than the list GET (no
 // invoiceBilling, phone, company, or order). A plain spread swapped those in
 // wholesale, which silently killed the completed-without-amount nudge
@@ -238,6 +255,10 @@ export default function ServiceRequestsPage() {
   // Installer dispatch: requested-day filter ('' | 'unscheduled' | YYYY-MM-DD)
   // plus the cross-page selection shared with /admin/orders.
   const [filterDate, setFilterDate] = useState<string>('')
+  const [filterArea, setFilterArea] = useState<string>('')
+  // The saved area is read before the first fetch so the full list doesn't
+  // flash in first.
+  const [areaReady, setAreaReady] = useState(false)
   const selection = useDispatchSelection()
   const [dispatchOpen, setDispatchOpen] = useState(false)
   const [selectedRequest, setSelectedRequest] = useState<ServiceRequest | null>(null)
@@ -276,44 +297,104 @@ export default function ServiceRequestsPage() {
   // may not exist, and the client-side page state would show empty despite
   // matching records existing on page 0.
   useEffect(() => {
-    setPage(0)
-  }, [filterStatus, filterType, filterInvoiceStatus, filterDate])
-
-  useEffect(() => {
-    fetchRequests()
-    // fetchRequests is defined at component scope and closes over the same
-    // deps — safe to omit from the array. Adding it triggers a fresh
-    // reference every render, which loops. Matches the pre-existing pattern
-    // used elsewhere in this file for the same reason.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterStatus, filterType, filterInvoiceStatus, filterDate, page])
-
-  const fetchRequests = async () => {
-    setLoading(true)
     try {
-      const params = new URLSearchParams()
-      if (filterStatus) params.set('status', filterStatus)
-      if (filterType) params.set('type', filterType)
-      if (filterInvoiceStatus) params.set('invoiceStatus', filterInvoiceStatus)
-      if (filterDate) params.set('requested_date', filterDate)
-      params.set('limit', String(PAGE_SIZE))
-      params.set('offset', String(page * PAGE_SIZE))
+      const saved = window.localStorage.getItem(AREA_FILTER_KEY)
+      if (saved === 'none' || isOrderArea(saved)) setFilterArea(saved)
+    } catch {
+      /* storage blocked: start on All Areas */
+    }
+    setAreaReady(true)
+  }, [])
 
-      const res = await fetch(`/api/admin/service-requests?${params.toString()}`)
-      if (res.ok) {
-        const data = await res.json()
-        setRequests(data.serviceRequests)
-        setCounts(data.counts)
-        setTotal(typeof data.total === 'number' ? data.total : (data.serviceRequests?.length ?? 0))
-      }
-    } catch (error) {
-      console.error('Error fetching service requests:', error)
-    } finally {
-      setLoading(false)
+  const changeArea = (value: string) => {
+    setFilterArea(value)
+    try {
+      if (value) window.localStorage.setItem(AREA_FILTER_KEY, value)
+      else window.localStorage.removeItem(AREA_FILTER_KEY)
+    } catch {
+      /* storage blocked: the filter still applies for this visit */
     }
   }
 
+  useEffect(() => {
+    setPage(0)
+  }, [filterStatus, filterType, filterInvoiceStatus, filterDate, filterArea])
+
+  // Every load runs here, so it always uses the current page and filters, and
+  // a newer load cancels an older one still in flight (a filter change used
+  // to race the page reset). fetchRequests() just asks for a reload; quiet
+  // reloads keep the list on screen instead of swapping it for the spinner.
+  const [reloadKey, setReloadKey] = useState(0)
+  const quietReloadRef = useRef(false)
+  const fetchRequests = (opts?: { quiet?: boolean }) => {
+    if (opts?.quiet) quietReloadRef.current = true
+    setReloadKey((k) => k + 1)
+  }
+
+  useEffect(() => {
+    if (!areaReady) return
+    const quiet = quietReloadRef.current
+    quietReloadRef.current = false
+    const ac = new AbortController()
+    if (!quiet) setLoading(true)
+    ;(async () => {
+      try {
+        const params = new URLSearchParams()
+        if (filterStatus) params.set('status', filterStatus)
+        if (filterType) params.set('type', filterType)
+        if (filterInvoiceStatus) params.set('invoiceStatus', filterInvoiceStatus)
+        if (filterDate) params.set('requested_date', filterDate)
+        if (filterArea) params.set('area', filterArea)
+        params.set('limit', String(PAGE_SIZE))
+        params.set('offset', String(page * PAGE_SIZE))
+
+        const res = await fetch(`/api/admin/service-requests?${params.toString()}`, { signal: ac.signal })
+        if (res.ok) {
+          const data = await res.json()
+          if (ac.signal.aborted) return
+          const newTotal = typeof data.total === 'number' ? data.total : (data.serviceRequests?.length ?? 0)
+          setRequests(data.serviceRequests)
+          setCounts(data.counts)
+          setTotal(newTotal)
+          // The last row on the last page just left the filter (e.g. it got
+          // an area while showing No Area Yet): step back to a page that
+          // still has rows.
+          const lastPage = Math.max(0, Math.ceil(newTotal / PAGE_SIZE) - 1)
+          if (page > lastPage) setPage(lastPage)
+        }
+      } catch (error) {
+        if (!ac.signal.aborted) console.error('Error fetching service requests:', error)
+      } finally {
+        if (!ac.signal.aborted) setLoading(false)
+      }
+    })()
+    return () => ac.abort()
+  }, [filterStatus, filterType, filterInvoiceStatus, filterDate, filterArea, areaReady, page, reloadKey])
+
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+
+  // Same as the orders list: internal only, the customer isn't emailed.
+  // Picking the blank option clears a hand-picked area, so the request
+  // follows its order's area again.
+  const updateRequestArea = async (srId: string, newArea: string) => {
+    const area = newArea || null
+    const prev = requests.find((r) => r.id === srId)?.area ?? null
+    const setArea = (value: string | null) =>
+      setRequests((list) => list.map((r) => (r.id === srId ? { ...r, area: value } : r)))
+    setArea(area)
+    try {
+      const res = await fetch(`/api/admin/service-requests/${srId}/area`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ area }),
+      })
+      if (!res.ok) throw new Error('Area update failed')
+      fetchRequests({ quiet: true }) // the tiles and an area-filtered list both change
+    } catch (error) {
+      console.error('Error updating service request area:', error)
+      setArea(prev)
+    }
+  }
 
   const handleViewRequest = (request: ServiceRequest) => {
     setSelectedRequest(request)
@@ -611,6 +692,15 @@ export default function ServiceRequestsPage() {
           <div className="flex flex-wrap gap-4">
             <div className="w-48">
               <Select
+                label="Area"
+                value={filterArea}
+                onChange={(e) => changeArea(e.target.value)}
+                options={areaFilterOptions}
+                placeholder=""
+              />
+            </div>
+            <div className="w-48">
+              <Select
                 label="Type"
                 value={filterType}
                 onChange={(e) => setFilterType(e.target.value)}
@@ -638,7 +728,7 @@ export default function ServiceRequestsPage() {
             >
               {filterDate === 'unscheduled' ? 'Unscheduled · clear' : 'Unscheduled'}
             </Button>
-            {(filterStatus || filterType || filterDate) && (
+            {(filterStatus || filterType || filterDate || filterArea) && (
               <Button
                 variant="outline"
                 className="self-end"
@@ -646,6 +736,7 @@ export default function ServiceRequestsPage() {
                   setFilterStatus('')
                   setFilterType('')
                   setFilterDate('')
+                  changeArea('')
                 }}
               >
                 Clear Filters
@@ -750,6 +841,26 @@ export default function ServiceRequestsPage() {
                   </div>
 
                   <div className="flex items-center gap-2">
+                    {(() => {
+                      const area = effectiveArea(request)
+                      // Following the order's area: the blank option would
+                      // just snap back to it, so it isn't offered.
+                      const followsOrder = !request.area && !!request.installation?.order?.area
+                      return (
+                        <select
+                          value={area ?? ''}
+                          onChange={(e) => updateRequestArea(request.id, e.target.value)}
+                          aria-label="Crew area for this request"
+                          title={followsOrder ? "Crew area, from this request's order. Internal only, the customer isn't emailed" : "Crew area. Internal only, the customer isn't emailed"}
+                          className={`text-sm border rounded px-2 py-1 mr-2 ${area ? 'border-gray-200' : 'border-dashed border-gray-300 text-gray-400'}`}
+                        >
+                          {!followsOrder && <option value="">Area…</option>}
+                          {ORDER_AREAS.map((a) => (
+                            <option key={a.value} value={a.value}>{a.label}</option>
+                          ))}
+                        </select>
+                      )
+                    })()}
                     {request.requestedDate && (
                       <div className="flex items-center gap-1 text-sm text-gray-500 mr-4">
                         <Calendar className="w-4 h-4" />

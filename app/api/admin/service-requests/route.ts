@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { INSTALLABLE_ITEM_TYPES } from '@/lib/dispatch/types'
+import { serviceRequestAreaWhere } from '@/lib/orders/areas'
 
 export async function GET(request: NextRequest) {
   try {
@@ -28,6 +29,10 @@ export async function GET(request: NextRequest) {
         : requestedDateParam && /^\d{4}-\d{2}-\d{2}$/.test(requestedDateParam)
           ? { requestedDate: { gte: new Date(`${requestedDateParam}T00:00:00.000Z`), lte: new Date(`${requestedDateParam}T23:59:59.999Z`) } }
           : {}
+    // Crew area (Ryan, 2026-10-29), like the orders list. It narrows the
+    // status tiles too, so each area sees its own counts.
+    const areaWhere = serviceRequestAreaWhere(searchParams.get('area'))
+    const areaClause = areaWhere ? { AND: [areaWhere] } : {}
     const limit = parseInt(searchParams.get('limit') || '50')
     const offset = parseInt(searchParams.get('offset') || '0')
 
@@ -45,6 +50,7 @@ export async function GET(request: NextRequest) {
       // to only SRs queued for the next bundled invoice.
       ...(invoiceStatus ? { invoiceStatus } : {}),
       ...requestedDateWhere,
+      ...areaClause,
     }
 
     let filteredTotal = 0
@@ -78,6 +84,7 @@ export async function GET(request: NextRequest) {
                 select: {
                   id: true,
                   orderNumber: true,
+                  area: true,
                   // Out-of-area pickup half (Ryan, 2026-09-28: "pending out
                   // of area pickup" visibility). Removal requests show where
                   // it stands, and the Invoice action warns before billing
@@ -121,6 +128,7 @@ export async function GET(request: NextRequest) {
       // Get counts for dashboard
       const counts = await prisma.serviceRequest.groupBy({
         by: ['status'],
+        where: areaClause,
         _count: true,
       })
 
@@ -133,7 +141,7 @@ export async function GET(request: NextRequest) {
       // Independent of workflow status because admin can mark an SR
       // pending_invoice both before and after marking it completed.
       pendingInvoiceCount = await prisma.serviceRequest.count({
-        where: { invoiceStatus: 'pending_invoice' },
+        where: { invoiceStatus: 'pending_invoice', ...areaClause },
       })
     } catch {
       // Table may not exist yet if migration hasn't run

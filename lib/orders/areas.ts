@@ -20,3 +20,18 @@ export function isOrderArea(v: unknown): v is OrderArea {
 export function orderAreaLabel(v: string | null | undefined): string | null {
   return ORDER_AREAS.find((a) => a.value === v)?.label ?? null
 }
+
+// A service request's area is its own tag if one was picked, otherwise its
+// order's (Ryan, 2026-10-29: the service requests list filters by area too).
+export function serviceRequestAreaWhere(filter: string | null) {
+  if (filter === 'none') {
+    return {
+      area: null,
+      OR: [{ installationId: null }, { installation: { order: { area: null } } }],
+    }
+  }
+  if (isOrderArea(filter)) {
+    return { OR: [{ area: filter }, { area: null, installation: { order: { area: filter } } }] }
+  }
+  return null
+}

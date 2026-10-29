@@ -379,6 +379,10 @@ function AdminOrdersPageInner() {
               options={areaFilterOptions}
               value={areaFilter}
               onChange={(e) => changeArea(e.target.value as AreaFilter)}
+              // Without this the shared Select adds its own disabled ''
+              // option ahead of "All Areas", and the box reads "Select an
+              // option".
+              placeholder=""
             />
           </div>
           <div className="w-full sm:w-48">
@@ -386,6 +390,7 @@ function AdminOrdersPageInner() {
               options={statusOptions}
               value={statusFilter}
               onChange={(e) => changeStatus(e.target.value as StatusFilter)}
+              placeholder=""
             />
           </div>
         </div>
