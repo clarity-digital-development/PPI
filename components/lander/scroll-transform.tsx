@@ -596,7 +596,11 @@ export function ScrollTransform() {
   }
 
   return (
-    <section ref={trackRef} className="relative h-[340svh]" aria-label="A wire-stake sign swapped for a premium post">
+    // Phones: the section after this one slides up over the stage's bottom
+    // 5.5rem (the room kept for the order bar), so that white strip doesn't
+    // show as a gap once the scene lets go. The pinned scene is unchanged:
+    // the strip is behind the order bar the whole time it's pinned.
+    <section ref={trackRef} className="relative h-[340svh] max-md:-mb-[5.5rem]" aria-label="A wire-stake sign swapped for a premium post">
       <div className="sticky top-0 flex h-[100svh] flex-col overflow-hidden">
         <SkyBackdrop p={scrollYProgress} still={false} />
 
