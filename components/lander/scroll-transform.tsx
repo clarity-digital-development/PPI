@@ -619,7 +619,10 @@ export function ScrollTransform() {
           </div>
         </div>
 
-        {/* On phones the scene ends above the sticky order bar */}
+        {/* On phones the scene ends above the sticky order bar. The space
+            under it is white, so it doesn't show as a strip of sky once the
+            scene scrolls away. */}
+        <div aria-hidden className="absolute inset-x-0 bottom-0 h-[5.5rem] bg-white md:hidden" />
         <div className="relative mb-[5.5rem] flex-1 md:mb-0">
           <Scene p={scrollYProgress} still={false} />
         </div>
