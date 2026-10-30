@@ -103,6 +103,18 @@
   mask-image: linear-gradient(180deg, #000 55%, transparent 96%);
 }
 
+/* Subpage header: the pink glow from the top, faded to pure white over the
+   bottom half so it runs into the white section below without an edge. */
+.page-header {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0) 45%, #ffffff 100%),
+    radial-gradient(90% 130% at 50% -20%, #ffc2d4 0%, #ffe4ee 40%, #ffffff 75%);
+}
+.page-header.lander-grain::after {
+  -webkit-mask-image: linear-gradient(180deg, #000 35%, transparent 92%);
+  mask-image: linear-gradient(180deg, #000 35%, transparent 92%);
+}
+
 /* Soft pink field with two lights, for bands that want texture. */
 .hero-mesh {
   background:

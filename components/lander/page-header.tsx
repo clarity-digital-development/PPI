@@ -1,10 +1,12 @@
 import type { ReactNode } from 'react'
 
 // Top of each marketing subpage: the page's headline in the sign lettering
-// on a soft pink glow, a smaller echo of the homepage hero.
+// on a soft pink glow, a smaller echo of the homepage hero. The glow and the
+// grain both fade to white at the bottom, so there's no edge where the
+// white section below begins.
 export function PageHeader({ title, lede, children }: { title: ReactNode; lede: ReactNode; children?: ReactNode }) {
   return (
-    <section className="lander-grain relative isolate overflow-hidden bg-[radial-gradient(90%_130%_at_50%_-20%,#ffc2d4_0%,#ffe4ee_40%,#ffffff_75%)]">
+    <section className="page-header lander-grain relative isolate overflow-hidden">
       <div className="relative mx-auto max-w-6xl px-4 pb-[clamp(2.5rem,6vw,4.5rem)] pt-[clamp(3rem,8vw,6rem)] sm:px-8">
         <h1 className="max-w-[13ch] font-display text-[clamp(3.2rem,9vw,7rem)] font-black leading-[0.88] tracking-[-0.01em] text-plum text-balance">
           {title}
