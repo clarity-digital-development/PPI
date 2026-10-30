@@ -118,14 +118,13 @@ export function AddOns() {
 
         <ul className="mt-16 grid gap-4 md:mt-24 md:grid-cols-3 md:gap-7">
           {LOCKBOXES.map((box) => (
-            <li
-              key={box.name}
-              className="grid grid-cols-[7rem_1fr] overflow-hidden rounded-[6px] border-2 border-[#f2d4df] bg-white md:grid-cols-1"
-            >
-              <div className="relative aspect-square">
-                <Image src={box.image} alt={box.alt} fill sizes="(min-width: 768px) 30vw, 7rem" className="object-cover" />
+            <li key={box.name} className="grid grid-cols-[7.5rem_1fr] rounded-[6px] border-2 border-[#f2d4df] bg-white md:grid-cols-1">
+              {/* The photo fills its side of the card edge to edge, framed in
+                  a darker pink that sits over the card's own border. */}
+              <div className="relative -my-[2px] -ml-[2px] min-h-[7.5rem] overflow-hidden rounded-l-[6px] border-2 border-pink-500 md:-mx-[2px] md:-mt-[2px] md:mb-0 md:aspect-square md:rounded-l-none md:rounded-t-[6px]">
+                <Image src={box.image} alt={box.alt} fill sizes="(min-width: 768px) 30vw, 7.5rem" className="object-cover" />
               </div>
-              <div className="flex items-start gap-3 p-4 md:border-t-2 md:border-[#f2d4df] md:p-5">
+              <div className="flex items-start gap-3 p-4 md:p-5">
                 <div className="min-w-0 flex-1">
                   <p className="font-display text-[1.45rem] font-extrabold leading-none text-plum md:text-[1.6rem]">{box.name}</p>
                   <p className="mt-2 text-[0.92rem] leading-snug text-plum/70">{box.note}</p>

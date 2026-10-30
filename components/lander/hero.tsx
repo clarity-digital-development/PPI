@@ -26,7 +26,7 @@ export function Hero() {
   return (
     <MotionConfig reducedMotion="user">
       <section className="hero-dome lander-grain relative isolate overflow-hidden">
-        <div className="relative mx-auto flex min-h-[calc(100svh-5rem)] max-w-[90rem] flex-col [--post-x:6%] sm:[--post-x:14%] lg:[--post-x:25%] [--post-w:clamp(34px,4.8vw,74px)] [--arm-h:clamp(26px,3.5vw,54px)]">
+        <div className="relative mx-auto flex min-h-[calc(100svh-5rem)] max-w-[90rem] flex-col [@media(orientation:portrait)]:min-h-0 [@media(orientation:portrait)]:pb-[clamp(2.5rem,8vw,4rem)] [--post-x:6%] sm:[--post-x:14%] lg:[--post-x:25%] [--post-w:clamp(34px,4.8vw,74px)] [--arm-h:clamp(26px,3.5vw,54px)]">
           {/* Post: in front of the lettering, down to the ground */}
           <motion.div
             aria-hidden
@@ -91,9 +91,11 @@ export function Hero() {
 
           {/* The company name under the sign, lined up with its left edge, so
               the post never cuts through it. It takes whatever height the sign
-              leaves on screen, so the whole hero fits above the fold. */}
+              leaves on screen, so the whole hero fits above the fold. On wide
+              screens it sits at the bottom of a full-height hero; on portrait
+              screens the hero ends just below it instead of leaving a gap. */}
           <motion.h1
-            className="relative z-10 mt-auto pt-[clamp(1.5rem,3vw,2.5rem)] pr-[4%] pl-[calc(var(--post-x)+var(--post-w)+0.75rem)] lg:pl-[calc(var(--post-x)+var(--post-w)+5rem)] font-display font-black uppercase leading-[0.84] tracking-[-0.01em] text-raspberry"
+            className="relative z-10 mt-auto pt-[clamp(1.5rem,3vw,2.5rem)] [@media(orientation:portrait)]:pt-[clamp(2rem,6vw,3.5rem)] pr-[4%] pl-[calc(var(--post-x)+var(--post-w)+0.75rem)] lg:pl-[calc(var(--post-x)+var(--post-w)+5rem)] font-display font-black uppercase leading-[0.84] tracking-[-0.01em] text-raspberry"
             initial={{ opacity: 0, y: 24 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.3, duration: 0.7, ease: EASE }}
