@@ -1,6 +1,7 @@
-// Same questions and answers as the old homepage, as native disclosure
-// widgets so they work without JavaScript and with a keyboard.
-const QUESTIONS = [
+// Questions and answers as native disclosure widgets, so they work without
+// JavaScript and with a keyboard. The homepage shows the first five; the FAQ
+// page shows them all.
+export const QUESTIONS = [
   {
     q: 'How quickly can you install my sign?',
     a: 'We offer next day installation for orders placed before 4pm. We strive for same day installations for an expedite fee if possible. We can also schedule installations for a specific date.',
@@ -23,6 +24,52 @@ const QUESTIONS = [
   },
 ]
 
+export const MORE_QUESTIONS = [
+  {
+    q: 'Do I need new signs for your posts?',
+    a: "No. We convert the signs you already have to hang on our posts, so there's nothing new to order.",
+  },
+  {
+    q: 'Can you install a post I already own?',
+    a: "Yes. We install your post and pick it up when the listing sells, for $59, the same as one of ours.",
+  },
+  {
+    q: 'How do I get my post picked up?',
+    a: 'When the listing sells, schedule the pickup from your dashboard. We can hang a SOLD rider on it first.',
+  },
+]
+
+export function FaqList({ items }: { items: { q: string; a: string }[] }) {
+  return (
+    <div className="divide-y-2 divide-blush border-y-2 border-blush">
+      {items.map((item) => (
+        <details key={item.q} className="group py-5">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-6 font-display text-2xl font-extrabold text-plum focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-pink-600 [&::-webkit-details-marker]:hidden">
+            {item.q}
+            <span aria-hidden className="relative h-5 w-5 shrink-0">
+              <span className="absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 bg-pink-600" />
+              <span className="absolute inset-y-0 left-1/2 w-[3px] -translate-x-1/2 bg-pink-600 transition-transform duration-200 group-open:scale-y-0" />
+            </span>
+          </summary>
+          <p className="mt-3 max-w-[60ch] leading-relaxed text-plum/80">{item.a}</p>
+        </details>
+      ))}
+    </div>
+  )
+}
+
+export function CallUs() {
+  return (
+    <>
+      Something else? Call or text{' '}
+      <a href="tel:+18593958188" className="whitespace-nowrap font-semibold text-pink-600 underline decoration-2 underline-offset-4">
+        859-395-8188
+      </a>
+      .
+    </>
+  )
+}
+
 export function Faq() {
   return (
     <section className="bg-white py-[clamp(4.5rem,11vw,9rem)]">
@@ -32,27 +79,10 @@ export function Faq() {
             Questions agents ask
           </h2>
           <p className="mt-5 text-lg text-plum/75">
-            Something else? Call or text{' '}
-            <a href="tel:+18593958188" className="font-semibold text-pink-600 underline decoration-2 underline-offset-4">
-              859-395-8188
-            </a>
-            .
+            <CallUs />
           </p>
         </div>
-        <div className="divide-y-2 divide-blush border-y-2 border-blush">
-          {QUESTIONS.map((item) => (
-            <details key={item.q} className="group py-5">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-6 font-display text-2xl font-extrabold text-plum focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-pink-600 [&::-webkit-details-marker]:hidden">
-                {item.q}
-                <span aria-hidden className="relative h-5 w-5 shrink-0">
-                  <span className="absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 bg-pink-600" />
-                  <span className="absolute inset-y-0 left-1/2 w-[3px] -translate-x-1/2 bg-pink-600 transition-transform duration-200 group-open:scale-y-0" />
-                </span>
-              </summary>
-              <p className="mt-3 max-w-[60ch] leading-relaxed text-plum/80">{item.a}</p>
-            </details>
-          ))}
-        </div>
+        <FaqList items={QUESTIONS} />
       </div>
     </section>
   )
