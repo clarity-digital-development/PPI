@@ -108,18 +108,15 @@ export function Hero() {
           </motion.h1>
 
           {/* Portrait screens: the roadrunner from the logo pops up from the
-              bottom right once the sign has settled and waves. It sits behind
-              the sign and is sized to the room left under it. */}
+              bottom right once the sign has settled. It sits behind the sign,
+              is sized to the room left under it, and fades out at the bottom
+              like the post's foot. */}
           <motion.div
             aria-hidden
-            className="pointer-events-none absolute bottom-0 right-[5%] z-10 hidden h-[clamp(84px,calc(100svh-540px),220px)] portrait:block"
-            style={{ originX: 0.5, originY: 1 }}
+            className="hero-bird pointer-events-none absolute bottom-0 right-[5%] z-10 hidden h-[clamp(84px,calc(100svh-540px),220px)] portrait:block"
             initial={{ y: '105%' }}
-            animate={{ y: 0, rotate: [0, 0, -6, 4, -5, 0] }}
-            transition={{
-              y: { delay: 2.1, type: 'spring', stiffness: 260, damping: 18 },
-              rotate: { delay: 2.1, duration: 2.2, times: [0, 0.3, 0.45, 0.6, 0.78, 1], ease: 'easeInOut' },
-            }}
+            animate={{ y: 0 }}
+            transition={{ delay: 2.1, type: 'spring', stiffness: 260, damping: 18 }}
           >
             <Image src="/images/lander/roadrunner-wave.webp" alt="" width={640} height={591} sizes="240px" className="h-full w-auto" />
           </motion.div>

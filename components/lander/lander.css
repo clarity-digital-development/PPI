@@ -127,6 +127,15 @@
     inset -1px 0 0 rgba(107, 24, 49, 0.35),
     22px 6px 40px -18px rgba(107, 24, 49, 0.55);
 }
+/* The roadrunner in the portrait hero fades out over the same band at the
+   bottom of the hero as the post's foot (18% of a post that runs the height
+   of the screen), so both dissolve into the next section together. Capped
+   at 45% of his height so he stays solid on short phones. */
+.hero-bird {
+  -webkit-mask-image: linear-gradient(0deg, transparent 0, #000 min(calc((100svh - 6.5rem) * 0.18), 45%));
+  mask-image: linear-gradient(0deg, transparent 0, #000 min(calc((100svh - 6.5rem) * 0.18), 45%));
+}
+
 /* Low chamfered cap: two sloped faces over the post's two faces. */
 .pp-cap {
   height: calc(var(--post-w) * 0.24);
