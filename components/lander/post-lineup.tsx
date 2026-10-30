@@ -54,6 +54,14 @@ export function PostLineup() {
           ))}
         </div>
 
+        {/* Agents often assume they need new signs for our posts. */}
+        <div className="mt-10 rounded-[6px] bg-blush px-5 py-6 text-center sm:px-8 md:flex md:items-center md:justify-center md:gap-8 md:text-left">
+          <p className="font-display text-[clamp(1.8rem,3.2vw,2.4rem)] font-extrabold leading-none text-plum">Keep the signs you have.</p>
+          <p className="mt-2 text-plum/80 md:mt-0 md:max-w-md md:text-lg">
+            No need to order new ones. We convert your signs to hang on our posts.
+          </p>
+        </div>
+
         <p className="mt-8 text-center text-plum/75">
           Need a metal frame or wood panel post?{' '}
           <Link href="/posts" className="font-semibold text-pink-600 underline decoration-2 underline-offset-4 hover:text-raspberry">

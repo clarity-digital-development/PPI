@@ -568,7 +568,7 @@ function SkyBackdrop({ p, still }: { p: MotionValue<number>; still: boolean }) {
   )
 }
 
-const HEADING = 'font-display text-[clamp(2.1rem,4.2vw,3.6rem)] font-extrabold leading-[0.9] text-plum'
+const HEADING = 'font-display text-[clamp(2.1rem,4.2vw,3.6rem)] font-extrabold leading-[0.9] text-plum text-balance'
 const BODY = 'mt-3 text-base sm:text-lg text-plum/80 md:mt-0'
 
 export function ScrollTransform() {
@@ -582,10 +582,10 @@ export function ScrollTransform() {
 
   if (still) {
     return (
-      <section ref={trackRef} className="relative flex h-[85svh] min-h-[560px] flex-col overflow-hidden" aria-label="A premium post, installed">
+      <section ref={trackRef} className="relative flex h-[85svh] min-h-[560px] flex-col overflow-hidden" aria-label="A premium 6-foot post, installed">
         <SkyBackdrop p={scrollYProgress} still />
         <div className="relative mx-auto w-full max-w-6xl px-4 pt-12 sm:px-8 md:grid md:grid-cols-[1fr_minmax(0,24rem)] md:items-end md:gap-10">
-          <p className={HEADING}>Yours gets a premium post.</p>
+          <p className={HEADING}>Yours gets a premium <span className="whitespace-nowrap">6-foot</span> post.</p>
           <p className={BODY}>Set straight, kept up, and picked up when it sells. If a storm knocks it down, we put it back free.</p>
         </div>
         <div className="relative mt-6 flex-1">
@@ -605,7 +605,7 @@ export function ScrollTransform() {
         <div className="relative z-10 mx-auto w-full max-w-6xl px-4 pb-3 pt-[calc(5rem+1.25rem)] sm:px-8 md:pt-[calc(5rem+1.75rem)]">
           <div className="relative min-h-[9.5rem] md:min-h-[6.5rem]">
             <motion.div style={{ opacity: firstCaption }} className="absolute inset-x-0 top-0 md:grid md:grid-cols-[1fr_minmax(0,24rem)] md:items-end md:gap-10">
-              <p className={HEADING}>Most listings get a wire stake.</p>
+              <p className={HEADING}>Many listings get a wire stake.</p>
               <p className={BODY}>It leans, it fades, and the first storm takes it down.</p>
             </motion.div>
             <motion.div style={{ opacity: middleCaption }} className="absolute inset-x-0 top-0 md:grid md:grid-cols-[1fr_minmax(0,24rem)] md:items-end md:gap-10">
@@ -613,7 +613,7 @@ export function ScrollTransform() {
               <p className={BODY}>Order by 4pm and we&apos;re out the next day to put your post in.</p>
             </motion.div>
             <motion.div style={{ opacity: lastCaption }} className="absolute inset-x-0 top-0 md:grid md:grid-cols-[1fr_minmax(0,24rem)] md:items-end md:gap-10">
-              <p className={HEADING}>Yours gets a premium post.</p>
+              <p className={HEADING}>Yours gets a premium <span className="whitespace-nowrap">6-foot</span> post.</p>
               <p className={BODY}>Set straight, kept up, and picked up when it sells. If a storm knocks it down, we put it back free.</p>
             </motion.div>
           </div>

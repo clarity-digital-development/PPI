@@ -1,5 +1,6 @@
 import { Hero } from '@/components/lander/hero'
 import { ScrollTransform } from '@/components/lander/scroll-transform'
+import { BiggerSigns } from '@/components/lander/bigger-signs'
 import { PostLineup } from '@/components/lander/post-lineup'
 import { HowItWorks } from '@/components/lander/how-it-works'
 import { AddOns } from '@/components/lander/add-ons'
@@ -14,6 +15,7 @@ export default function HomePage() {
       <Hero />
       <PostLineup />
       <ScrollTransform />
+      <BiggerSigns />
       <HowItWorks />
       <AddOns />
       <WhyAgents />
