@@ -60,7 +60,10 @@
   html,
   body {
     max-width: 100vw;
-    overflow-x: hidden;
+    /* clip, not hidden: hidden turns body into a scroll container that
+       never scrolls, which silently breaks every position: sticky (the
+       navbar, the lander's scroll scene). */
+    overflow-x: clip;
     font-family: var(--font-poppins), 'Poppins', sans-serif;
   }
 
