@@ -58,6 +58,9 @@ export async function GET(request: NextRequest) {
               { propertyAddress: { contains: search, mode: 'insensitive' as const } },
               { propertyCity: { contains: search, mode: 'insensitive' as const } },
               { propertyZip: { contains: search, mode: 'insensitive' as const } },
+              // Order number too (Ryan, Slack 2026-10-30), so a post can be
+              // looked up straight from an order number on a list or invoice.
+              { order: { orderNumber: { contains: search, mode: 'insensitive' as const } } },
             ],
           }
         : {}),
