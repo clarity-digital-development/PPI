@@ -130,6 +130,10 @@ export function RiderStep({ formData, updateFormData, inventory }: StepProps) {
     updateFormData({ riders: riderSelections })
   }, [updateFormData, customerInventory])
 
+  const handlePickupLocationChange = useCallback((location: string) => {
+    updateFormData({ rider_pickup_location: location })
+  }, [updateFormData])
+
   return (
     <div className="space-y-8">
       <RiderSelector
@@ -138,6 +142,8 @@ export function RiderStep({ formData, updateFormData, inventory }: StepProps) {
         customerInventory={customerInventory}
         rentalPrice={PRICING.rider_rental}
         installPrice={PRICING.rider_install}
+        pickupLocation={formData.rider_pickup_location}
+        onPickupLocationChange={handlePickupLocationChange}
       />
 
       {/* Wire Frame Signs */}

@@ -73,4 +73,8 @@ export interface RiderSelectorProps {
   installPrice?: number
   maxSelections?: number
   disabled?: boolean
+  // Where we collect the "Pickup/At property" riders. With the handler set,
+  // picking one asks for it in a pop-up (Ryan, 2026-10-29).
+  pickupLocation?: string
+  onPickupLocationChange?: (location: string) => void
 }

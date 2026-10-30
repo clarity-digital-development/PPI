@@ -134,6 +134,10 @@ export function SecondPostStep({ formData, updateFormData, inventory, pickupFee,
     updateFormData({ second_post_riders: riderSelections })
   }, [updateFormData, customerInventory])
 
+  const handlePickupLocationChange = useCallback((location: string) => {
+    updateFormData({ second_post_rider_pickup_location: location })
+  }, [updateFormData])
+
   const hasStoredSigns = inventory?.signs && inventory.signs.length > 0
 
   // Grouped by description + source, never handing out the sign the main
@@ -309,6 +313,8 @@ export function SecondPostStep({ formData, updateFormData, inventory, pickupFee,
               customerInventory={customerInventory}
               rentalPrice={PRICING.rider_rental}
               installPrice={PRICING.rider_install}
+              pickupLocation={formData.second_post_rider_pickup_location}
+              onPickupLocationChange={handlePickupLocationChange}
             />
           </Collapsible>
 

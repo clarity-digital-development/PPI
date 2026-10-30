@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent } from 'react'
 import Link from 'next/link'
-import { Info, Plus } from 'lucide-react'
+import { Info, Plus, MapPin } from 'lucide-react'
+import { Modal } from '@/components/ui'
 import {
   RiderSourceToggle,
   PopularRiders,
@@ -21,6 +22,8 @@ export function RiderSelector({
   rentalPrice = RIDER_PRICING.rental,
   installPrice = RIDER_PRICING.install,
   disabled = false,
+  pickupLocation,
+  onPickupLocationChange,
 }: RiderSelectorProps) {
   const {
     selectedRiders,
@@ -59,6 +62,67 @@ export function RiderSelector({
   useEffect(() => {
     onSelectionChange(selectedRiders)
   }, [selectedRiders, onSelectionChange])
+
+  // Agents kept picking riders on the Pickup/At property tab when they meant
+  // to rent ours (Ryan, 2026-10-29: "for every single one of these"). Every
+  // pickup rider added asks where it is, filled in with the last answer, and
+  // points to Rent Riders. Riders already on an order being edited don't ask:
+  // the count starts from what's there. An Acres or Car Garage rider is added
+  // on the first digit typed, so it asks when the agent leaves that box
+  // rather than taking the rest of the number into the pop-up.
+  const asksPickupLocation = !!onPickupLocationChange
+  const pickupCount = selectedRiders.filter(r => r.source === 'at_property').length
+  const [pickupPromptOpen, setPickupPromptOpen] = useState(false)
+  const [pickupDraft, setPickupDraft] = useState('')
+  const lastPickupCount = useRef(pickupCount)
+  const pickupLocationRef = useRef(pickupLocation)
+  pickupLocationRef.current = pickupLocation
+  // The rider the open pop-up is about ("I meant to rent" takes it off), and
+  // an Acres/Car Garage rider still waiting for its box to lose focus.
+  const promptRiderId = useRef<string | null>(null)
+  const promptAfterTyping = useRef<string | null>(null)
+
+  const openPickupPrompt = useCallback((instanceId: string) => {
+    promptRiderId.current = instanceId
+    setPickupDraft(pickupLocationRef.current ?? '')
+    setPickupPromptOpen(true)
+  }, [])
+
+  useEffect(() => {
+    const pickups = selectedRiders.filter(r => r.source === 'at_property')
+    const added = pickups.length > lastPickupCount.current
+    lastPickupCount.current = pickups.length
+    if (!asksPickupLocation || !added) return
+    const newest = pickups[pickups.length - 1]
+    if (RIDERS.find(r => r.id === newest.riderId)?.requiresInput) {
+      promptAfterTyping.current = newest.instanceId
+    } else {
+      openPickupPrompt(newest.instanceId)
+    }
+  }, [selectedRiders, asksPickupLocation, openPickupPrompt])
+
+  const handleCustomInputBlur = () => {
+    const waiting = promptAfterTyping.current
+    promptAfterTyping.current = null
+    // Cleared the box before leaving it: nothing was added, nothing to ask.
+    if (waiting && selectedRiders.some(r => r.instanceId === waiting)) openPickupPrompt(waiting)
+  }
+  const pickupFieldId = useId()
+
+  const savePickupLocation = (e: FormEvent) => {
+    e.preventDefault()
+    if (!pickupDraft.trim()) return
+    onPickupLocationChange?.(pickupDraft.trim())
+    setPickupPromptOpen(false)
+  }
+
+  // "I meant to rent": take the rider they just picked back off and switch to
+  // Rent Riders so they can pick it there.
+  const switchToRental = () => {
+    if (promptRiderId.current) removeRider(promptRiderId.current)
+    setSource('rental')
+    setPickupPromptOpen(false)
+  }
 
   const hasInventory = customerInventory.length > 0
 
@@ -269,6 +333,7 @@ export function RiderSelector({
                       isSelected={isSelected}
                       value={customValue || null}
                       onChange={(value) => updateAcres(rider.id, value)}
+                      onBlur={handleCustomInputBlur}
                       price={getDisplayPrice(rider.id)}
                       source={source}
                       isRiderAvailable={isRiderAvailable}
@@ -280,6 +345,75 @@ export function RiderSelector({
           )}
         </>
       )}
+
+      {asksPickupLocation && pickupCount > 0 && (
+        <div className="p-4 border border-pink-200 bg-pink-50 rounded-lg space-y-2">
+          <label htmlFor={pickupFieldId} className="flex items-center gap-2 text-sm font-medium text-gray-900">
+            <MapPin className="w-4 h-4 text-pink-500" />
+            Where do we pick up your {pickupCount === 1 ? 'rider' : 'riders'}?
+          </label>
+          <input
+            id={pickupFieldId}
+            type="text"
+            value={pickupLocation ?? ''}
+            onChange={(e) => onPickupLocationChange?.(e.target.value)}
+            placeholder="e.g. At the property, or 123 Main St, Lexington"
+            maxLength={200}
+            className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pink-500 focus:border-transparent"
+          />
+          <p className="text-xs text-gray-600">
+            Meant to rent one of our riders? Choose Rent Riders at the top of this page.
+          </p>
+        </div>
+      )}
+
+      <Modal
+        isOpen={pickupPromptOpen}
+        onClose={() => setPickupPromptOpen(false)}
+        title="Where do we pick up this rider?"
+      >
+        <form onSubmit={savePickupLocation} className="space-y-4">
+          <p className="text-sm text-gray-600">
+            You chose <span className="font-semibold text-gray-900">Pickup/At property</span>, which is for
+            riders you already have. We&apos;ll collect it and install it for ${installPrice}.
+          </p>
+          <div>
+            <label htmlFor={`${pickupFieldId}-prompt`} className="block text-sm font-medium text-gray-700 mb-1">
+              Where is it?
+            </label>
+            <input
+              id={`${pickupFieldId}-prompt`}
+              type="text"
+              value={pickupDraft}
+              onChange={(e) => setPickupDraft(e.target.value)}
+              placeholder="e.g. At the property, or 123 Main St, Lexington"
+              maxLength={200}
+              autoFocus
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pink-500 focus:border-transparent"
+            />
+          </div>
+          <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">
+            Meant to rent one of our riders? Choose Rent Riders at the top of this page, or use the
+            button below.
+          </p>
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+            <button
+              type="button"
+              onClick={switchToRental}
+              className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              I meant to rent
+            </button>
+            <button
+              type="submit"
+              disabled={!pickupDraft.trim()}
+              className="px-4 py-2 rounded-lg bg-pink-500 text-white text-sm font-medium hover:bg-pink-600 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Save location
+            </button>
+          </div>
+        </form>
+      </Modal>
 
       {/* Selected Riders Summary */}
       <SelectedRidersList

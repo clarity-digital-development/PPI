@@ -12,6 +12,7 @@ interface CustomRiderInputProps {
   isSelected: boolean
   value: number | null
   onChange: (value: number | null) => void
+  onBlur?: () => void
   price: number
   source: RiderSource
   isRiderAvailable: (rider: RiderOption) => boolean
@@ -27,6 +28,7 @@ export function CustomRiderInput({
   isSelected,
   value,
   onChange,
+  onBlur,
   price,
   source,
   isRiderAvailable,
@@ -35,11 +37,18 @@ export function CustomRiderInput({
   const Icon = ICONS[rider.icon || 'Mountain'] || Mountain
   const isDisabled = source === 'owned' && !isRiderAvailable(rider)
 
-  // Sync input value when external value changes
+  // Sync input value when external value changes. A rider taken off from
+  // outside (Remove, Clear All, "I meant to rent") empties the box too, so a
+  // leftover number doesn't look like it's still on the order.
   useEffect(() => {
-    if (value !== null && value.toString() !== inputValue) {
-      setInputValue(value.toString())
+    if (value !== null) {
+      if (value.toString() !== inputValue) setInputValue(value.toString())
+    } else if (inputValue !== '') {
+      setInputValue('')
     }
+    // Only on outside changes to `value`: re-running on every keystroke would
+    // wipe a half-typed number like "2." that hasn't parsed yet.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value])
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -102,6 +111,7 @@ export function CustomRiderInput({
                 step={rider.id === 'custom-car-garage' ? '1' : '0.1'}
                 value={inputValue}
                 onChange={handleInputChange}
+                onBlur={onBlur}
                 placeholder={rider.id === 'custom-car-garage' ? 'Enter # of cars' : 'Enter acres'}
                 className="flex-1 max-w-[150px]"
                 disabled={isDisabled}

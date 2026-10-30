@@ -17,6 +17,7 @@ import { categoryToSignLocation, pickupAddressFromDescription, type SignLocation
 import { lockedPickupFeeDecision } from './pickup-fee'
 import { lockboxIdentityFromDescription } from './lockbox-description'
 import { parseCustomRiderLabel } from '@/components/order-flow/RiderSelector/constants'
+import { splitPickupLocation } from './rider-pickup'
 
 export interface OrderItemLike {
   itemType: string
@@ -95,8 +96,9 @@ function nameToSlug(name: string): string {
 // Parse a MAIN-post rider item: "Rider Rental: For Sale",
 // "Rider Install: Coming Soon (from storage)", "Rider Install: 5 Acres (pickup)",
 // "Rider Install: Custom: Love It/Buy It (pickup)"
-function parseMainRider(item: OrderItemLike): RiderSelection {
-  let body = item.description.replace(/^Rider (Rental|Install):\s*/i, '')
+function parseMainRider(item: OrderItemLike, index = 0): RiderSelection {
+  // "… (pickup) — pick up at: <where>" — the location is read separately.
+  let body = splitPickupLocation(item.description).description.replace(/^Rider (Rental|Install):\s*/i, '')
   // Accept either "(pickup)" (current) or "(at property)" (legacy) as the
   // pickup/at-property marker so older orders still round-trip correctly.
   const atProperty = /\((pickup|at property)\)\s*$/i.test(body)
@@ -113,7 +115,9 @@ function parseMainRider(item: OrderItemLike): RiderSelection {
   const customMatch = body.match(/^Custom:\s*(.+)$/i)
   if (customMatch) {
     return {
-      rider_type: `custom-text-restored-${item.description.length}-${customMatch[1].length}`,
+      // Position in the list, not text lengths: two names of the same length
+      // got one id and the edit wizard dropped one of them.
+      rider_type: `custom-text-restored-main-${index}`,
       is_rental: source === 'rental',
       source,
       quantity: 1,
@@ -144,8 +148,8 @@ function parseMainRider(item: OrderItemLike): RiderSelection {
 
 // Parse a SECOND-post rider item: "Second Post Rider: <slug>[ (<custom>)][ suffix]"
 // (the second-post builder uses the raw slug in the description, not a Title-cased name)
-function parseSecondPostRider(item: OrderItemLike): RiderSelection {
-  let body = item.description.replace(/^Second Post Rider:\s*/i, '')
+function parseSecondPostRider(item: OrderItemLike, index = 0): RiderSelection {
+  let body = splitPickupLocation(item.description).description.replace(/^Second Post Rider:\s*/i, '')
   // Accept either "(pickup)" (current) or "(at property)" (legacy) marker.
   const atProperty = /\((pickup|at property)\)\s*$/i.test(body)
   // Drop trailing source suffix and any "(custom)" annotation; the slug is the
@@ -163,7 +167,7 @@ function parseSecondPostRider(item: OrderItemLike): RiderSelection {
   const customMatch = body.match(/^Custom:\s*(.+)$/i)
   if (customMatch) {
     return {
-      rider_type: `custom-text-restored-${item.description.length}-${customMatch[1].length}`,
+      rider_type: `custom-text-restored-second-${index}`,
       is_rental: source === 'rental',
       source,
       quantity: 1,
@@ -245,9 +249,12 @@ export function orderToFormData(order: OrderLike): OrderFormData {
   }
 
   // ---- Main riders ----
-  const riders: RiderSelection[] = items
-    .filter(i => i.itemType === 'rider' && !isSecondPost(i.description))
-    .map(parseMainRider)
+  const mainRiderItems = items.filter(i => i.itemType === 'rider' && !isSecondPost(i.description))
+  const riders: RiderSelection[] = mainRiderItems.map((item, i) => parseMainRider(item, i))
+  // One answer covers every pickup rider on the post.
+  const rider_pickup_location = mainRiderItems
+    .map(i => splitPickupLocation(i.description).location)
+    .find(Boolean)
 
   // ---- Lockbox ----
   const lockboxItem = items.find(i => i.itemType === 'lockbox')
@@ -328,9 +335,11 @@ export function orderToFormData(order: OrderLike): OrderFormData {
       second_post_pickup_address = loc.address
     }
   }
-  const second_post_riders: RiderSelection[] = items
-    .filter(i => i.itemType === 'rider' && isSecondPost(i.description))
-    .map(parseSecondPostRider)
+  const secondPostRiderItems = items.filter(i => i.itemType === 'rider' && isSecondPost(i.description))
+  const second_post_riders: RiderSelection[] = secondPostRiderItems.map((item, i) => parseSecondPostRider(item, i))
+  const second_post_rider_pickup_location = secondPostRiderItems
+    .map(i => splitPickupLocation(i.description).location)
+    .find(Boolean)
   const spWireFrame = items.find(i => i.itemType === 'wire_frame_sign' && isSecondPost(i.description))
   const second_post_wire_frame_quantity = spWireFrame ? spWireFrame.quantity : 0
   const spSolar = items.find(i => i.itemType === 'solar_lighting' && isSecondPost(i.description))
@@ -383,6 +392,7 @@ export function orderToFormData(order: OrderLike): OrderFormData {
     sign_pickup_address,
     // Riders
     riders,
+    rider_pickup_location,
     // Wire frame + solar
     wire_frame_quantity,
     wire_frame_notes,
@@ -395,6 +405,7 @@ export function orderToFormData(order: OrderLike): OrderFormData {
     second_post_sign_location,
     second_post_pickup_address,
     second_post_riders,
+    second_post_rider_pickup_location,
     second_post_wire_frame_quantity,
     second_post_solar_lighting_quantity,
     // Lockbox

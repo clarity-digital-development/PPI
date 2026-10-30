@@ -177,7 +177,7 @@ export async function sendOrderConfirmationEmail({
     .map(
       (item) =>
         `<tr>
-          <td style="padding: 8px; border-bottom: 1px solid #eee;">${item.description}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #eee;">${escapeHtml(item.description)}</td>
           <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: center;">${item.quantity}</td>
           <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: right;">$${item.total_price.toFixed(2)}</td>
         </tr>`

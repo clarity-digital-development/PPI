@@ -57,6 +57,7 @@ const defaultFormData: OrderFormData = {
   sign_pickup_address: '',
   // Riders
   riders: [],
+  rider_pickup_location: undefined,
   // Wire Frame Signs
   wire_frame_quantity: 0,
   wire_frame_notes: undefined,
@@ -70,6 +71,7 @@ const defaultFormData: OrderFormData = {
   second_post_sign_location: undefined,
   second_post_pickup_address: '',
   second_post_riders: [],
+  second_post_rider_pickup_location: undefined,
   second_post_wire_frame_quantity: 0,
   second_post_solar_lighting_quantity: 0,
   // Lockbox

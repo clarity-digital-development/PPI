@@ -15,6 +15,7 @@ import { FLAT_FEE_BASE, computeOrderPricing, computeDiscountableSubtotal, type O
 import { PICKUP_FEE_DESCRIPTION, sanitizePickupAddress, signInstallDescription, signLocationToCategory } from '@/lib/orders/sign-descriptions'
 import { mainSignIsPickup, secondSignIsPickup, signChoiceProblem } from '../sign-choice'
 import { customRiderLabel } from '../RiderSelector/constants'
+import { withPickupLocation } from '@/lib/orders/rider-pickup'
 
 // Post type values are now the display names themselves
 
@@ -169,7 +170,7 @@ export function ReviewStep({
     const description = source === 'rental'
       ? `Rider Rental: ${name}`
       : source === 'at_property'
-        ? `Rider Install: ${name} (pickup)`
+        ? withPickupLocation(`Rider Install: ${name} (pickup)`, formData.rider_pickup_location)
         : `Rider Install: ${name} (from storage)`
     orderItems.push({
       description,
@@ -1120,7 +1121,7 @@ export function ReviewStep({
         const description = source === 'rental'
           ? `Rider Rental: ${name}`
           : source === 'at_property'
-            ? `Rider Install: ${name} (pickup)`
+            ? withPickupLocation(`Rider Install: ${name} (pickup)`, formData.rider_pickup_location)
             : `Rider Install: ${name} (from storage)`
         const itemCategory: 'rental' | 'owned' | 'storage' = source === 'rental'
           ? 'rental'
@@ -1267,7 +1268,9 @@ export function ReviewStep({
           items.push({
             item_type: 'rider',
             item_category: source === 'rental' ? 'rental' : 'owned',
-            description: `Second Post Rider: ${displayName}${suffix}`,
+            description: source === 'at_property'
+              ? withPickupLocation(`Second Post Rider: ${displayName}${suffix}`, formData.second_post_rider_pickup_location)
+              : `Second Post Rider: ${displayName}${suffix}`,
             quantity: 1,
             unit_price: price,
             total_price: price,

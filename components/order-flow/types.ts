@@ -51,6 +51,9 @@ export interface OrderFormData {
 
   // Rider Selection
   riders: RiderSelection[]
+  // Where the crew collects the "Pickup/At property" riders: free text, asked
+  // in a pop-up when one is picked (lib/orders/rider-pickup.ts).
+  rider_pickup_location?: string
 
   // Lockbox Selection
   lockbox_option: 'sentrilock' | 'mechanical_own' | 'mechanical_rent' | 'at_property' | 'none'
@@ -74,6 +77,7 @@ export interface OrderFormData {
   second_post_sign_location?: SignLocation
   second_post_pickup_address?: string
   second_post_riders: RiderSelection[]
+  second_post_rider_pickup_location?: string
   second_post_wire_frame_quantity: number
   second_post_solar_lighting_quantity: number
 
