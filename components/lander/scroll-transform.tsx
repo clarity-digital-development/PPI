@@ -582,10 +582,10 @@ export function ScrollTransform() {
 
   if (still) {
     return (
-      <section ref={trackRef} className="relative flex h-[85svh] min-h-[560px] flex-col overflow-hidden" aria-label="The pink post, installed">
+      <section ref={trackRef} className="relative flex h-[85svh] min-h-[560px] flex-col overflow-hidden" aria-label="A premium post, installed">
         <SkyBackdrop p={scrollYProgress} still />
         <div className="relative mx-auto w-full max-w-6xl px-4 pt-12 sm:px-8 md:grid md:grid-cols-[1fr_minmax(0,24rem)] md:items-end md:gap-10">
-          <p className={HEADING}>Yours gets the pink post.</p>
+          <p className={HEADING}>Yours gets a premium post.</p>
           <p className={BODY}>Set straight, kept up, and picked up when it sells. If a storm knocks it down, we put it back free.</p>
         </div>
         <div className="relative mt-6 flex-1">
@@ -596,7 +596,7 @@ export function ScrollTransform() {
   }
 
   return (
-    <section ref={trackRef} className="relative h-[340svh]" aria-label="A wire-stake sign swapped for the pink post">
+    <section ref={trackRef} className="relative h-[340svh]" aria-label="A wire-stake sign swapped for a premium post">
       <div className="sticky top-0 flex h-[100svh] flex-col overflow-hidden">
         <SkyBackdrop p={scrollYProgress} still={false} />
 
@@ -613,7 +613,7 @@ export function ScrollTransform() {
               <p className={BODY}>Order by 4pm and we&apos;re out the next day to put your post in.</p>
             </motion.div>
             <motion.div style={{ opacity: lastCaption }} className="absolute inset-x-0 top-0 md:grid md:grid-cols-[1fr_minmax(0,24rem)] md:items-end md:gap-10">
-              <p className={HEADING}>Yours gets the pink post.</p>
+              <p className={HEADING}>Yours gets a premium post.</p>
               <p className={BODY}>Set straight, kept up, and picked up when it sells. If a storm knocks it down, we put it back free.</p>
             </motion.div>
           </div>
