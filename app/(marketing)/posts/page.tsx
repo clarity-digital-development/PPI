@@ -15,6 +15,7 @@ export const metadata: Metadata = {
 // from what agents are charged.
 const VINYL = [
   {
+    id: 'white',
     name: 'White vinyl',
     price: PRICING.posts['White Vinyl Post'],
     image: '/images/posts/white-post.png',
@@ -22,6 +23,7 @@ const VINYL = [
     note: 'Classic and clean. Goes with any house.',
   },
   {
+    id: 'pink',
     name: 'Signature pink',
     price: PRICING.posts['Signature Pink Post'],
     image: '/images/posts/pink-post.png',
@@ -30,6 +32,7 @@ const VINYL = [
     featured: true,
   },
   {
+    id: 'black',
     name: 'Black vinyl',
     price: PRICING.posts['Black Vinyl Post'],
     image: '/images/posts/black-post.png',
@@ -40,6 +43,7 @@ const VINYL = [
 
 const OTHER_POSTS = [
   {
+    id: 'metal-frame',
     name: 'Metal frame',
     price: PRICING.posts['Metal Frame Sign'],
     image: '/images/posts/metal-frame.jpg',
@@ -47,6 +51,7 @@ const OTHER_POSTS = [
     body: 'An angle iron frame with a powder-coated finish. Holds 18 by 24 inch signs.',
   },
   {
+    id: 'wood-panel',
     name: 'Wood panel post',
     price: PRICING.posts['Wood Panel Post'],
     image: '/images/posts/wood-panel-post.jpg',
@@ -54,6 +59,7 @@ const OTHER_POSTS = [
     body: `A 4 by 6 foot commercial panel post with two beams. We can build the sign panel for $${PRICING.wood_panel_sign_build}, plus $${PRICING.wood_panel_materials} if we supply the materials.`,
   },
   {
+    id: 'own-post',
     name: 'Your own post',
     price: PRICING.posts['My Own Post'],
     body: 'Already have a post? We install it and pick it up when the listing sells, the same as one of ours.',
@@ -75,7 +81,8 @@ export default function PostsPage() {
             {VINYL.map((post) => (
               <figure
                 key={post.name}
-                className={`overflow-hidden rounded-[6px] border-2 bg-white ${
+                id={post.id}
+                className={`scroll-mt-24 overflow-hidden rounded-[6px] border-2 bg-white ${
                   post.featured
                     ? 'order-first border-pink-500 shadow-[0_24px_40px_-28px_rgba(199,50,94,0.7)] md:order-none'
                     : 'border-[#f2d4df]'
@@ -110,7 +117,7 @@ export default function PostsPage() {
           </h2>
           <ul className="mt-10 grid gap-5 md:grid-cols-3 md:gap-7">
             {OTHER_POSTS.map((post) => (
-              <li key={post.name} className="flex flex-col overflow-hidden rounded-[6px] border-2 border-[#f2d4df] bg-white">
+              <li key={post.name} id={post.id} className="flex scroll-mt-24 flex-col overflow-hidden rounded-[6px] border-2 border-[#f2d4df] bg-white">
                 {post.image ? (
                   <div className="relative -mx-[2px] -mt-[2px] aspect-[4/3] overflow-hidden rounded-t-[6px] border-2 border-pink-500">
                     <Image src={post.image} alt={post.alt} fill sizes="(min-width: 768px) 30vw, 100vw" className="object-cover" />

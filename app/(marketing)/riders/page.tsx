@@ -99,7 +99,8 @@ export default function RidersPage() {
         </div>
       </section>
 
-      <section className="bg-blush py-[clamp(3.5rem,8vw,6rem)]">
+      {/* #terms: the order form's rider step links straight here */}
+      <section id="terms" className="scroll-mt-20 bg-blush py-[clamp(3.5rem,8vw,6rem)]">
         <div className="mx-auto grid max-w-6xl gap-8 px-4 sm:px-8 md:grid-cols-[13rem_1fr] md:gap-10">
           <h2 className="font-display text-[2rem] font-extrabold leading-none text-plum">Good to know</h2>
           <FactList items={TERMS} />
