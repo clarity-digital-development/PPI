@@ -22,13 +22,13 @@ const Footer = () => {
   const currentYear = new Date().getFullYear()
 
   return (
-    <footer className="bg-gray-900 text-gray-300">
+    <footer className="bg-plum text-white/75">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 md:py-16">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-8 lg:gap-12">
           {/* Brand Column */}
           <div className="col-span-2 md:col-span-1">
             <Logo variant="light" size="md" />
-            <p className="mt-4 text-sm text-gray-400">
+            <p className="mt-4 text-sm text-white/60">
               Central Kentucky&apos;s trusted yard sign installation service for real
               estate professionals.
             </p>
@@ -101,8 +101,8 @@ const Footer = () => {
         </div>
 
         {/* Bottom Bar */}
-        <div className="mt-12 pt-8 border-t border-gray-800 text-center">
-          <p className="text-sm text-gray-400">
+        <div className="mt-12 pt-8 border-t border-white/10 text-center">
+          <p className="text-sm text-white/60">
             &copy; {currentYear} Pink Posts Installations. All rights reserved.
           </p>
         </div>

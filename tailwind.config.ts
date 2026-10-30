@@ -22,6 +22,11 @@ const config: Config = {
           800: '#891D3D',
           900: '#6B1831',
         },
+        // Marketing site (lander redesign)
+        raspberry: '#9E1748',
+        plum: '#2B0A1A',
+        blush: '#FFE4EE',
+        bloom: '#FF3D81',
         // Accents
         gold: '#D4AF37',
         'rose-gold': '#B76E79',
@@ -31,6 +36,8 @@ const config: Config = {
       },
       fontFamily: {
         sans: ['var(--font-poppins)', 'Poppins', 'sans-serif'],
+        display: ['var(--font-display)', 'Impact', 'sans-serif'],
+        body: ['var(--font-body)', 'system-ui', 'sans-serif'],
       },
       fontSize: {
         xs: '0.75rem',    // 12px

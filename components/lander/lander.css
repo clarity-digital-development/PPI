@@ -1,0 +1,239 @@
+/* Marketing site redesign. Loaded by app/(marketing)/layout.tsx. */
+
+/* Paper-like grain over a section. The section needs `relative`. */
+.lander-grain::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .55  0 0 0 0 .08  0 0 0 0 .28  0 0 0 .55 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  opacity: 0.16;
+  mix-blend-mode: multiply;
+}
+
+/* Hero field: mostly white, held in a very rounded dome that rises to just
+   under the top edge, so there's white above the sign. Pink covers the top
+   and runs down the sides: to about halfway on wide screens, to the top
+   quarter on phones, where a taller dome would read as a narrow arch. */
+.hero-dome {
+  background:
+    /* fades to pure white at the bottom, into the posts section */
+    linear-gradient(180deg, rgba(255, 255, 255, 0) 78%, #ffffff 100%),
+    radial-gradient(ellipse 82.5% 98% at 50% 100%, #ffffff 0%, #ffffff 94%, rgba(255, 255, 255, 0) 100%),
+    linear-gradient(180deg, #ff86a9 0%, #ffa1bd 50%, #ffc9d8 100%);
+}
+@media (min-width: 768px) {
+  .hero-dome {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0) 78%, #ffffff 100%),
+      radial-gradient(ellipse 65% 97% at 56% 100%, #ffffff 0%, #ffffff 92%, rgba(255, 255, 255, 0) 100%),
+      linear-gradient(180deg, #ff86a9 0%, #ffa1bd 50%, #ffc9d8 100%);
+  }
+}
+
+/* "Pink Post / Installations" under the sign. Each line is as big as the
+   width allows, but never taller than the height the sign leaves on screen
+   (--hero-fixed is the navbar plus everything above the wordmark), so the
+   hero always fits above the fold. */
+.hero-mark-1,
+.hero-mark-2 {
+  --hero-fixed: 485px;
+  --mark: clamp(2.6rem, calc((100svh - var(--hero-fixed)) / 1.45), 18.4vw);
+}
+@media (min-width: 640px) {
+  .hero-mark-1,
+  .hero-mark-2 {
+    --hero-fixed: 560px;
+  }
+}
+@media (min-width: 1024px) {
+  .hero-mark-1,
+  .hero-mark-2 {
+    --hero-fixed: 600px;
+    --mark: clamp(2.6rem, calc((100svh - var(--hero-fixed)) / 1.45), 15.5vw);
+  }
+}
+.hero-mark-1 {
+  font-size: var(--mark);
+}
+.hero-mark-2 {
+  font-size: calc(var(--mark) * 0.67);
+}
+
+/* Portrait screens: the name leads the hero, so it's sized by width alone.
+   Installations stands on the arm: the line box is pulled down so the
+   letters' feet land on the arm's top face, with a soft contact shadow. */
+@media (orientation: portrait) {
+  .hero-mark-1,
+  .hero-mark-2 {
+    --mark: clamp(2.6rem, 18.4vw, 9.5rem);
+  }
+  .hero-wordmark {
+    margin-bottom: calc(var(--arm-h) * -0.32);
+    filter: drop-shadow(0 5px 3px rgba(107, 24, 49, 0.28));
+  }
+  .hero-sign .ring-btn > span {
+    min-height: clamp(48px, 6.6svh, 60px);
+  }
+}
+
+/* On a phone the sign's two buttons share one row. */
+@media (max-width: 639px) {
+  .hero-sign .ring-btn > span {
+    padding: 0 0.5rem;
+    font-size: 0.95rem;
+  }
+}
+
+/* Portrait screens: the name sits at the top on white, so the pink moves to
+   a soft glow behind the lower half of the sign. */
+@media (orientation: portrait) {
+  .hero-dome {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0) 82%, #ffffff 100%),
+      radial-gradient(ellipse 115% 50% at 58% 54%, rgba(255, 134, 169, 0.62) 0%, rgba(255, 161, 189, 0.3) 52%, rgba(255, 255, 255, 0) 100%),
+      #ffffff;
+  }
+}
+
+/* The grain fades out with the hero, so the seam into the white posts
+   section doesn't show. */
+.hero-dome.lander-grain::after {
+  -webkit-mask-image: linear-gradient(180deg, #000 55%, transparent 96%);
+  mask-image: linear-gradient(180deg, #000 55%, transparent 96%);
+}
+
+/* Subpage header: the pink glow from the top, faded to pure white over the
+   bottom half so it runs into the white section below without an edge. */
+.page-header {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0) 45%, #ffffff 100%),
+    radial-gradient(90% 130% at 50% -20%, #ffc2d4 0%, #ffe4ee 40%, #ffffff 75%);
+}
+.page-header.lander-grain::after {
+  -webkit-mask-image: linear-gradient(180deg, #000 35%, transparent 92%);
+  mask-image: linear-gradient(180deg, #000 35%, transparent 92%);
+}
+
+/* Soft pink field with two lights, for bands that want texture. */
+.hero-mesh {
+  background:
+    radial-gradient(55% 45% at 88% 8%, rgba(255, 61, 129, 0.16), transparent 62%),
+    radial-gradient(45% 40% at 6% 34%, rgba(232, 74, 122, 0.12), transparent 60%),
+    radial-gradient(80% 55% at 50% 112%, rgba(255, 157, 181, 0.55), transparent 72%),
+    linear-gradient(180deg, #fff8fb 0%, #ffffff 42%, #ffe4ee 100%);
+}
+
+/* The post: square painted timber like the real ones. Two flat faces meet
+   at a hard edge, the lit front and the shaded side, with a faint grain.
+   Its foot dissolves into the white where the hero meets the next section. */
+.pp-post {
+  -webkit-mask-image: linear-gradient(180deg, #000 82%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 82%, transparent 100%);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(107, 24, 49, 0.05)),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.045) 0 1px, transparent 1px 7px),
+    linear-gradient(90deg, #f27a9d 0, #ec5f89 6%, #e84a7a 56%, #cf3a68 56%, #c23562 100%);
+  box-shadow:
+    inset 1px 0 0 rgba(255, 255, 255, 0.35),
+    inset -1px 0 0 rgba(107, 24, 49, 0.35),
+    22px 6px 40px -18px rgba(107, 24, 49, 0.55);
+}
+/* The roadrunner in the portrait hero fades out over the same band at the
+   bottom of the hero as the post's foot (18% of a post that runs the height
+   of the screen), so both dissolve into the next section together. Capped
+   at 45% of his height so he stays solid on short phones. */
+.hero-bird {
+  -webkit-mask-image: linear-gradient(0deg, transparent 0, #000 min(calc((100svh - 6.5rem) * 0.18), 45%));
+  mask-image: linear-gradient(0deg, transparent 0, #000 min(calc((100svh - 6.5rem) * 0.18), 45%));
+}
+
+/* Low chamfered cap: two sloped faces over the post's two faces. */
+.pp-cap {
+  height: calc(var(--post-w) * 0.24);
+  background: linear-gradient(90deg, #f68cab 0, #f27a9d 56%, #d94a76 56%, #cd3f6c 100%);
+  clip-path: polygon(16% 0, 76% 0, 100% 100%, 0 100%);
+}
+/* Arm: square section, so its top face shows as a lighter band; the far
+   end is cut at an angle like the real arm. */
+.pp-arm {
+  background:
+    repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.04) 0 1px, transparent 1px 6px),
+    linear-gradient(180deg, #f58fae 0, #f27a9d 22%, #e84a7a 22%, #de4373 100%);
+  clip-path: polygon(0 0, 100% 0, 100% 55%, calc(100% - 0.55 * var(--arm-h)) 100%, 0 100%);
+  filter: drop-shadow(0 2px 0 rgba(107, 24, 49, 0.35)) drop-shadow(0 14px 16px rgba(107, 24, 49, 0.3));
+}
+
+/* Buttons on the sign: a pink ring that slowly travels around the edge so
+   they read as the things to press. */
+@property --ring-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+.ring-btn {
+  --ring-angle: 0deg;
+  display: inline-flex;
+  border-radius: 9999px;
+  padding: 3px;
+  background: conic-gradient(from var(--ring-angle), #ff3d81, #ffc2d1 25%, #9e1748 50%, #ffc2d1 75%, #ff3d81);
+  box-shadow: 0 12px 24px -12px rgba(158, 23, 72, 0.6), 0 2px 4px rgba(43, 10, 26, 0.12);
+  animation: ring-travel 3.6s linear infinite;
+  transition: transform 160ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 160ms;
+}
+.ring-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 28px -12px rgba(158, 23, 72, 0.7), 0 2px 4px rgba(43, 10, 26, 0.14);
+}
+.ring-btn:active {
+  transform: translateY(0);
+}
+.ring-btn:focus-visible {
+  outline: 3px solid #2b0a1a;
+  outline-offset: 3px;
+}
+.ring-btn > span {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  border-radius: 9999px;
+  padding: 0 1.75rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+@keyframes ring-travel {
+  to {
+    --ring-angle: 360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ring-btn {
+    animation: none;
+  }
+}
+
+/* Sparkles around the new pink post at the end of the scroll scene. */
+.pp-twinkle {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: pp-twinkle 1.7s ease-in-out infinite;
+}
+@keyframes pp-twinkle {
+  0%,
+  100% {
+    transform: scale(0.55) rotate(0deg);
+    opacity: 0.55;
+  }
+  50% {
+    transform: scale(1) rotate(20deg);
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pp-twinkle {
+    animation: none;
+  }
+}
