@@ -2,9 +2,9 @@ import Image from 'next/image'
 import Link from 'next/link'
 
 const POSTS = [
-  { name: 'White vinyl', price: 59, image: '/images/posts/white-post.png', alt: 'White vinyl colonial sign post in a front yard' },
-  { name: 'Signature pink', price: 65, image: '/images/posts/pink-post.png', alt: 'The signature pink colonial sign post in a front yard', featured: true },
-  { name: 'Black vinyl', price: 59, image: '/images/posts/black-post.png', alt: 'Black vinyl colonial sign post in a front yard' },
+  { name: 'White vinyl', image: '/images/posts/white-post.png', alt: 'White vinyl colonial sign post in a front yard' },
+  { name: 'Signature pink', image: '/images/posts/pink-post.png', alt: 'The signature pink colonial sign post in a front yard', featured: true },
+  { name: 'Black vinyl', image: '/images/posts/black-post.png', alt: 'Black vinyl colonial sign post in a front yard' },
 ]
 
 // The three posts as a lineup, the pink one standing taller in the middle.
@@ -28,20 +28,19 @@ export function PostLineup() {
               key={post.name}
               className={post.featured ? 'order-first md:order-none' : undefined}
             >
-              <div className={`relative aspect-[4/3] overflow-hidden rounded-[4px] bg-blush ${post.featured ? 'md:aspect-[3/4.3]' : 'md:aspect-[3/4]'}`}>
+              {/* Trimmed to the top of the post, like the old cards, so the
+                  row stays short. */}
+              <div className={`relative h-60 overflow-hidden rounded-[4px] bg-blush ${post.featured ? 'md:h-80' : 'md:h-72'}`}>
                 <Image
                   src={post.image}
                   alt={post.alt}
                   fill
                   sizes="(min-width: 768px) 30vw, 100vw"
-                  className="object-cover object-[50%_24%] md:object-[50%_18%]"
+                  className="object-cover object-[50%_15%]"
                 />
               </div>
-              <figcaption className="mt-4 flex items-baseline justify-between gap-3">
-                <span className={`font-display font-extrabold text-plum ${post.featured ? 'text-3xl' : 'text-2xl'}`}>{post.name}</span>
-                <span className={`font-display font-black tabular-nums ${post.featured ? 'text-5xl text-pink-600' : 'text-4xl text-plum'}`}>
-                  ${post.price}
-                </span>
+              <figcaption className={`mt-4 font-display text-[1.75rem] font-extrabold leading-none ${post.featured ? 'text-pink-600' : 'text-plum'}`}>
+                {post.name}
               </figcaption>
             </figure>
           ))}
