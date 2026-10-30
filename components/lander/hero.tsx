@@ -121,7 +121,7 @@ export function Hero() {
               rotate: { delay: 2.1, duration: 2.2, times: [0, 0.3, 0.45, 0.6, 0.78, 1], ease: 'easeInOut' },
             }}
           >
-            <Image src="/images/lander/roadrunner-wave.webp" alt="" width={640} height={618} sizes="230px" className="h-full w-auto" />
+            <Image src="/images/lander/roadrunner-wave.webp" alt="" width={640} height={591} sizes="240px" className="h-full w-auto" />
           </motion.div>
         </div>
       </section>
