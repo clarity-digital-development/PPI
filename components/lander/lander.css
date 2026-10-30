@@ -11,14 +11,61 @@
   mix-blend-mode: multiply;
 }
 
-/* Hero field: mostly white, held in a very rounded dome. Pink covers the
-   top and runs down both sides to about halfway. */
+/* Hero field: mostly white, held in a very rounded dome that rises to just
+   under the top edge, so there's white above the sign. Pink covers the top
+   and runs down the sides: to about halfway on wide screens, to the top
+   quarter on phones, where a taller dome would read as a narrow arch. */
 .hero-dome {
   background:
     /* fades to pure white at the bottom, into the posts section */
     linear-gradient(180deg, rgba(255, 255, 255, 0) 78%, #ffffff 100%),
-    radial-gradient(ellipse 86% 128% at 56% 100%, #ffffff 0%, #ffffff 62%, rgba(255, 255, 255, 0) 79%),
+    radial-gradient(ellipse 82.5% 98% at 50% 100%, #ffffff 0%, #ffffff 94%, rgba(255, 255, 255, 0) 100%),
     linear-gradient(180deg, #ff86a9 0%, #ffa1bd 50%, #ffc9d8 100%);
+}
+@media (min-width: 768px) {
+  .hero-dome {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0) 78%, #ffffff 100%),
+      radial-gradient(ellipse 65% 97% at 56% 100%, #ffffff 0%, #ffffff 92%, rgba(255, 255, 255, 0) 100%),
+      linear-gradient(180deg, #ff86a9 0%, #ffa1bd 50%, #ffc9d8 100%);
+  }
+}
+
+/* "Pink Post / Installations" under the sign. Each line is as big as the
+   width allows, but never taller than the height the sign leaves on screen
+   (--hero-fixed is the navbar plus everything above the wordmark), so the
+   hero always fits above the fold. */
+.hero-mark-1,
+.hero-mark-2 {
+  --hero-fixed: 485px;
+  --mark: clamp(2.6rem, calc((100svh - var(--hero-fixed)) / 1.45), 18.4vw);
+}
+@media (min-width: 640px) {
+  .hero-mark-1,
+  .hero-mark-2 {
+    --hero-fixed: 560px;
+  }
+}
+@media (min-width: 1024px) {
+  .hero-mark-1,
+  .hero-mark-2 {
+    --hero-fixed: 600px;
+    --mark: clamp(2.6rem, calc((100svh - var(--hero-fixed)) / 1.45), 15.5vw);
+  }
+}
+.hero-mark-1 {
+  font-size: var(--mark);
+}
+.hero-mark-2 {
+  font-size: calc(var(--mark) * 0.67);
+}
+
+/* On a phone the sign's two buttons share one row. */
+@media (max-width: 639px) {
+  .hero-sign .ring-btn > span {
+    padding: 0 0.5rem;
+    font-size: 0.95rem;
+  }
 }
 
 /* The grain fades out with the hero, so the seam into the white posts
@@ -115,6 +162,29 @@
 
 @media (prefers-reduced-motion: reduce) {
   .ring-btn {
+    animation: none;
+  }
+}
+
+/* Sparkles around the new pink post at the end of the scroll scene. */
+.pp-twinkle {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: pp-twinkle 1.7s ease-in-out infinite;
+}
+@keyframes pp-twinkle {
+  0%,
+  100% {
+    transform: scale(0.55) rotate(0deg);
+    opacity: 0.55;
+  }
+  50% {
+    transform: scale(1) rotate(20deg);
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pp-twinkle {
     animation: none;
   }
 }
