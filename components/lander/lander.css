@@ -60,11 +60,39 @@
   font-size: calc(var(--mark) * 0.67);
 }
 
+/* Portrait screens: the name leads the hero, so it's sized by width alone.
+   Installations stands on the arm: the line box is pulled down so the
+   letters' feet land on the arm's top face, with a soft contact shadow. */
+@media (orientation: portrait) {
+  .hero-mark-1,
+  .hero-mark-2 {
+    --mark: clamp(2.6rem, 18.4vw, 9.5rem);
+  }
+  .hero-wordmark {
+    margin-bottom: calc(var(--arm-h) * -0.32);
+    filter: drop-shadow(0 5px 3px rgba(107, 24, 49, 0.28));
+  }
+  .hero-sign .ring-btn > span {
+    min-height: clamp(48px, 6.6svh, 60px);
+  }
+}
+
 /* On a phone the sign's two buttons share one row. */
 @media (max-width: 639px) {
   .hero-sign .ring-btn > span {
     padding: 0 0.5rem;
     font-size: 0.95rem;
+  }
+}
+
+/* Portrait screens: the name sits at the top on white, so the pink moves to
+   a soft glow behind the lower half of the sign. */
+@media (orientation: portrait) {
+  .hero-dome {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0) 82%, #ffffff 100%),
+      radial-gradient(ellipse 115% 50% at 58% 54%, rgba(255, 134, 169, 0.62) 0%, rgba(255, 161, 189, 0.3) 52%, rgba(255, 255, 255, 0) 100%),
+      #ffffff;
   }
 }
 

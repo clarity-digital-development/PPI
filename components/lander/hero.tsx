@@ -18,19 +18,21 @@ function Hook() {
 
 // The hero is the product: a signature pink post, built like the real one
 // (cap, arm near the top, sign on two hooks), planted in front of the company
-// name. The post rises, the arm reaches out, and the sign drops onto its
-// hooks and settles. That's the page's one load-time moment; reduced-motion
+// name. On wide screens the name sits under the sign; on portrait screens it
+// moves to the top and stands on the arm, with the post running up beside it
+// and the sign hanging below. The post rises, the arm reaches out, and the
+// sign drops onto its hooks and settles. That's the page's one load-time moment; reduced-motion
 // visitors get the still scene (MotionConfig skips the movement for them,
 // and the server and browser render the same markup either way).
 export function Hero() {
   return (
     <MotionConfig reducedMotion="user">
       <section className="hero-dome lander-grain relative isolate overflow-hidden">
-        <div className="relative mx-auto flex min-h-[calc(100svh-5rem)] max-w-[90rem] flex-col [@media(orientation:portrait)]:min-h-0 [@media(orientation:portrait)]:pb-[clamp(2.5rem,8vw,4rem)] [--post-x:6%] sm:[--post-x:14%] lg:[--post-x:25%] [--post-w:clamp(34px,4.8vw,74px)] [--arm-h:clamp(26px,3.5vw,54px)]">
+        <div className="relative mx-auto flex min-h-[calc(100svh-5rem)] max-w-[90rem] flex-col [--top:clamp(1rem,4vw,2rem)] [--post-x:6%] sm:[--post-x:14%] lg:[--post-x:25%] [--post-w:clamp(34px,4.8vw,74px)] [--arm-h:clamp(26px,3.5vw,54px)]">
           {/* Post: in front of the lettering, down to the ground */}
           <motion.div
             aria-hidden
-            className="absolute z-30 top-[clamp(1.25rem,3vw,2.25rem)] bottom-0 left-[var(--post-x)] w-[var(--post-w)] flex flex-col"
+            className="absolute z-30 top-[clamp(1.25rem,3vw,2.25rem)] portrait:top-[var(--top)] bottom-0 left-[var(--post-x)] w-[var(--post-w)] flex flex-col"
             initial={{ y: '100%' }}
             animate={{ y: 0 }}
             transition={{ duration: 0.9, ease: EASE }}
@@ -39,7 +41,7 @@ export function Hero() {
             <div className="pp-post flex-1" />
           </motion.div>
 
-          <div className="relative z-20 pt-[calc(clamp(1.25rem,3vw,2.25rem)+var(--post-w)*0.24+var(--post-w)*0.45)]">
+          <div className="relative z-20 pt-[calc(clamp(1.25rem,3vw,2.25rem)+var(--post-w)*0.24+var(--post-w)*0.45)] portrait:pt-0">
             {/* Arm: a stub's width left of the post, reaching right */}
             <motion.div
               aria-hidden
@@ -68,12 +70,12 @@ export function Hero() {
                 <Hook />
               </div>
               <div className="hero-sign rounded-[6px] bg-white p-1.5 shadow-[0_34px_60px_-28px_rgba(107,24,49,0.55),0_4px_10px_rgba(43,10,26,0.08)]">
-                <div className="rounded-[3px] border-2 border-pink-500 px-4 py-5 sm:px-9 sm:py-8">
-                  <p className="font-display font-extrabold text-plum text-[clamp(1.8rem,3.9vw,3.4rem)] leading-[0.98] tracking-[-0.01em] text-balance">
+                <div className="rounded-[3px] border-2 border-pink-500 px-4 py-5 sm:px-9 sm:py-8 portrait:py-[clamp(1.25rem,3.2svh,2.25rem)]">
+                  <p className="font-display font-extrabold text-plum text-[clamp(1.8rem,3.9vw,3.4rem)] portrait:text-[clamp(1.8rem,4.6svh,3.2rem)] leading-[0.98] tracking-[-0.01em] text-balance">
                     We do the dirty work, so you can close{' '}
                     <span className="whitespace-nowrap text-pink-600">more deals</span>.
                   </p>
-                  <p className="mt-3 text-[0.95rem] leading-relaxed text-plum/80 text-balance sm:mt-4 sm:text-lg">
+                  <p className="mt-3 text-[0.95rem] leading-relaxed text-plum/80 text-balance sm:mt-4 sm:text-lg portrait:text-[clamp(0.95rem,2.2svh,1.2rem)]">
                     Yard sign posts from $59, installed and picked up for you.
                   </p>
                   <div className="mt-5 grid grid-cols-2 gap-2 sm:mt-6 sm:flex sm:gap-3">
@@ -89,19 +91,19 @@ export function Hero() {
             </motion.div>
           </div>
 
-          {/* The company name under the sign, lined up with its left edge, so
-              the post never cuts through it. It takes whatever height the sign
-              leaves on screen, so the whole hero fits above the fold. On wide
-              screens it sits at the bottom of a full-height hero; on portrait
-              screens the hero ends just below it instead of leaving a gap. */}
+          {/* The company name, lined up with the sign's left edge so the post
+              never cuts through it. Wide screens: under the sign, taking
+              whatever height the sign leaves so the hero fits above the fold.
+              Portrait screens: first, with Installations standing on the arm,
+              drawn over it so the letters sit on its top face. */}
           <motion.h1
-            className="relative z-10 mt-auto pt-[clamp(1.5rem,3vw,2.5rem)] [@media(orientation:portrait)]:pt-[clamp(2rem,6vw,3.5rem)] pr-[4%] pl-[calc(var(--post-x)+var(--post-w)+0.75rem)] lg:pl-[calc(var(--post-x)+var(--post-w)+5rem)] font-display font-black uppercase leading-[0.84] tracking-[-0.01em] text-raspberry"
+            className="hero-wordmark relative z-10 mt-auto pt-[clamp(1.5rem,3vw,2.5rem)] portrait:order-first portrait:z-[25] portrait:mt-0 portrait:pt-[var(--top)] pr-[4%] pl-[calc(var(--post-x)+var(--post-w)+0.75rem)] lg:pl-[calc(var(--post-x)+var(--post-w)+5rem)] font-display font-black uppercase leading-[0.84] tracking-[-0.01em] text-raspberry"
             initial={{ opacity: 0, y: 24 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.3, duration: 0.7, ease: EASE }}
           >
             <span className="hero-mark-1 block whitespace-nowrap">Pink Post</span>
-            <span className="hero-mark-2 block whitespace-nowrap pb-[0.08em]">Installations</span>
+            <span className="hero-mark-2 block whitespace-nowrap pb-[0.08em] portrait:pb-0">Installations</span>
           </motion.h1>
         </div>
       </section>
