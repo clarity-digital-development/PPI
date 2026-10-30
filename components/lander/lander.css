@@ -1,0 +1,120 @@
+/* Marketing site redesign. Loaded by app/(marketing)/layout.tsx. */
+
+/* Paper-like grain over a section. The section needs `relative`. */
+.lander-grain::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .55  0 0 0 0 .08  0 0 0 0 .28  0 0 0 .55 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  opacity: 0.16;
+  mix-blend-mode: multiply;
+}
+
+/* Hero field: mostly white, held in a very rounded dome. Pink covers the
+   top and runs down both sides to about halfway. */
+.hero-dome {
+  background:
+    /* fades to pure white at the bottom, into the posts section */
+    linear-gradient(180deg, rgba(255, 255, 255, 0) 78%, #ffffff 100%),
+    radial-gradient(ellipse 86% 128% at 56% 100%, #ffffff 0%, #ffffff 62%, rgba(255, 255, 255, 0) 79%),
+    linear-gradient(180deg, #ff86a9 0%, #ffa1bd 50%, #ffc9d8 100%);
+}
+
+/* The grain fades out with the hero, so the seam into the white posts
+   section doesn't show. */
+.hero-dome.lander-grain::after {
+  -webkit-mask-image: linear-gradient(180deg, #000 55%, transparent 96%);
+  mask-image: linear-gradient(180deg, #000 55%, transparent 96%);
+}
+
+/* Soft pink field with two lights, for bands that want texture. */
+.hero-mesh {
+  background:
+    radial-gradient(55% 45% at 88% 8%, rgba(255, 61, 129, 0.16), transparent 62%),
+    radial-gradient(45% 40% at 6% 34%, rgba(232, 74, 122, 0.12), transparent 60%),
+    radial-gradient(80% 55% at 50% 112%, rgba(255, 157, 181, 0.55), transparent 72%),
+    linear-gradient(180deg, #fff8fb 0%, #ffffff 42%, #ffe4ee 100%);
+}
+
+/* The post: square painted timber like the real ones. Two flat faces meet
+   at a hard edge, the lit front and the shaded side, with a faint grain.
+   Its foot dissolves into the white where the hero meets the next section. */
+.pp-post {
+  -webkit-mask-image: linear-gradient(180deg, #000 82%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 82%, transparent 100%);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(107, 24, 49, 0.05)),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.045) 0 1px, transparent 1px 7px),
+    linear-gradient(90deg, #f27a9d 0, #ec5f89 6%, #e84a7a 56%, #cf3a68 56%, #c23562 100%);
+  box-shadow:
+    inset 1px 0 0 rgba(255, 255, 255, 0.35),
+    inset -1px 0 0 rgba(107, 24, 49, 0.35),
+    22px 6px 40px -18px rgba(107, 24, 49, 0.55);
+}
+/* Low chamfered cap: two sloped faces over the post's two faces. */
+.pp-cap {
+  height: calc(var(--post-w) * 0.24);
+  background: linear-gradient(90deg, #f68cab 0, #f27a9d 56%, #d94a76 56%, #cd3f6c 100%);
+  clip-path: polygon(16% 0, 76% 0, 100% 100%, 0 100%);
+}
+/* Arm: square section, so its top face shows as a lighter band; the far
+   end is cut at an angle like the real arm. */
+.pp-arm {
+  background:
+    repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.04) 0 1px, transparent 1px 6px),
+    linear-gradient(180deg, #f58fae 0, #f27a9d 22%, #e84a7a 22%, #de4373 100%);
+  clip-path: polygon(0 0, 100% 0, 100% 55%, calc(100% - 0.55 * var(--arm-h)) 100%, 0 100%);
+  filter: drop-shadow(0 2px 0 rgba(107, 24, 49, 0.35)) drop-shadow(0 14px 16px rgba(107, 24, 49, 0.3));
+}
+
+/* Buttons on the sign: a pink ring that slowly travels around the edge so
+   they read as the things to press. */
+@property --ring-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+.ring-btn {
+  --ring-angle: 0deg;
+  display: inline-flex;
+  border-radius: 9999px;
+  padding: 3px;
+  background: conic-gradient(from var(--ring-angle), #ff3d81, #ffc2d1 25%, #9e1748 50%, #ffc2d1 75%, #ff3d81);
+  box-shadow: 0 12px 24px -12px rgba(158, 23, 72, 0.6), 0 2px 4px rgba(43, 10, 26, 0.12);
+  animation: ring-travel 3.6s linear infinite;
+  transition: transform 160ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 160ms;
+}
+.ring-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 28px -12px rgba(158, 23, 72, 0.7), 0 2px 4px rgba(43, 10, 26, 0.14);
+}
+.ring-btn:active {
+  transform: translateY(0);
+}
+.ring-btn:focus-visible {
+  outline: 3px solid #2b0a1a;
+  outline-offset: 3px;
+}
+.ring-btn > span {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  border-radius: 9999px;
+  padding: 0 1.75rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+@keyframes ring-travel {
+  to {
+    --ring-angle: 360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ring-btn {
+    animation: none;
+  }
+}
