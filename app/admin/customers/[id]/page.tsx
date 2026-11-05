@@ -58,10 +58,10 @@ interface CustomerData {
       otherItems: Array<{ id: string; description: string; assignedToMemberId: string | null }>
     }
     deployed?: {
-      signs: Array<{ id: string; description: string; assignedToMemberId: string | null }>
-      riders: Array<{ id: string; rider_type: string; assignedToMemberId: string | null }>
-      lockboxes: Array<{ id: string; lockbox_type: string; lockbox_code: string | null; assignedToMemberId: string | null }>
-      brochureBoxes: Array<{ id: string; description: string | null; assignedToMemberId: string | null }>
+      signs: Array<{ id: string; description: string; assignedToMemberId: string | null; location: DeployedLocation | null }>
+      riders: Array<{ id: string; rider_type: string; assignedToMemberId: string | null; location: DeployedLocation | null }>
+      lockboxes: Array<{ id: string; lockbox_type: string; lockbox_code: string | null; assignedToMemberId: string | null; location: DeployedLocation | null }>
+      brochureBoxes: Array<{ id: string; description: string | null; assignedToMemberId: string | null; location: DeployedLocation | null }>
     }
   }
   orders: Array<{
@@ -79,6 +79,38 @@ interface CustomerData {
     status: string
     installation_date: string
   }>
+}
+
+// Where a deployed item went: the newest live order that used it. Lets the
+// admin tell the sign a crew just brought back from an identical one still
+// standing on a post (Ryan 2026-11-05).
+interface DeployedLocation {
+  address: string
+  city: string
+  order_number: string
+  state: 'up' | 'upcoming' | 'picked_up'
+  picked_up_at: string | null
+}
+
+function DeployedWhere({ location }: { location: DeployedLocation | null }) {
+  if (!location) {
+    // Unknown, not "safe": items brought over from before the move have no
+    // order on record, including some still on posts.
+    return <p className="w-full text-xs text-gray-500">No order on record for this one</p>
+  }
+  const place = `${location.address}, ${location.city}`
+  if (location.state === 'picked_up') {
+    const when = location.picked_up_at
+      ? ` ${new Date(location.picked_up_at).toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}`
+      : ''
+    return <p className="w-full text-xs text-green-700">Picked up{when} from {place}</p>
+  }
+  return (
+    <p className="w-full text-xs text-amber-800 font-medium">
+      {location.state === 'up' ? 'Still up at ' : 'Going out on '}
+      {place} ({location.order_number})
+    </p>
+  )
 }
 
 // Small pill that labels a deployed inventory row with the agent it was
@@ -600,7 +632,23 @@ export default function CustomerDetailPage() {
     }
   }
 
-  async function handleReturnToStorage(type: 'sign' | 'rider' | 'lockbox' | 'brochure_box', itemId: string) {
+  async function handleReturnToStorage(
+    type: 'sign' | 'rider' | 'lockbox' | 'brochure_box',
+    itemId: string,
+    location: DeployedLocation | null,
+  ) {
+    // Returning an item whose post is still standing is how installed signs
+    // and lockboxes ended up counted as in storage. Allowed (the paperwork can
+    // be wrong), but never by accident.
+    if (location && location.state !== 'picked_up') {
+      const where = `${location.address}, ${location.city}`
+      const status = location.state === 'up'
+        ? `is still up at ${where}`
+        : `is booked to go out on ${where}`
+      if (!window.confirm(
+        `This item ${status} (order ${location.order_number}).\n\nOnly return it if it is physically back with you. Return it anyway?`
+      )) return
+    }
     try {
       const res = await fetch(`/api/admin/customers/${id}/inventory`, {
         method: 'PATCH',
@@ -1725,8 +1773,9 @@ export default function CustomerDetailPage() {
                     <span className="text-xs text-amber-700 font-medium uppercase mr-2">Sign</span>
                     <span className="text-gray-900">{item.description}</span>
                     {useGroupedView && <AgentPill memberId={item.assignedToMemberId} memberNameById={memberNameById} />}
+                    <DeployedWhere location={item.location} />
                   </div>
-                  <Button size="sm" variant="outline" onClick={() => handleReturnToStorage('sign', item.id)}>
+                  <Button size="sm" variant="outline" onClick={() => handleReturnToStorage('sign', item.id, item.location)}>
                     Return to inventory
                   </Button>
                 </div>
@@ -1737,8 +1786,9 @@ export default function CustomerDetailPage() {
                     <span className="text-xs text-amber-700 font-medium uppercase mr-2">Rider</span>
                     <span className="text-gray-900">{item.rider_type}</span>
                     {useGroupedView && <AgentPill memberId={item.assignedToMemberId} memberNameById={memberNameById} />}
+                    <DeployedWhere location={item.location} />
                   </div>
-                  <Button size="sm" variant="outline" onClick={() => handleReturnToStorage('rider', item.id)}>
+                  <Button size="sm" variant="outline" onClick={() => handleReturnToStorage('rider', item.id, item.location)}>
                     Return to inventory
                   </Button>
                 </div>
@@ -1751,8 +1801,9 @@ export default function CustomerDetailPage() {
                       {item.lockbox_type}{item.lockbox_code ? ` — code ${item.lockbox_code}` : ''}
                     </span>
                     {useGroupedView && <AgentPill memberId={item.assignedToMemberId} memberNameById={memberNameById} />}
+                    <DeployedWhere location={item.location} />
                   </div>
-                  <Button size="sm" variant="outline" onClick={() => handleReturnToStorage('lockbox', item.id)}>
+                  <Button size="sm" variant="outline" onClick={() => handleReturnToStorage('lockbox', item.id, item.location)}>
                     Return to inventory
                   </Button>
                 </div>
@@ -1763,8 +1814,9 @@ export default function CustomerDetailPage() {
                     <span className="text-xs text-amber-700 font-medium uppercase mr-2">Brochure Box</span>
                     <span className="text-gray-900">{item.description || 'Brochure box'}</span>
                     {useGroupedView && <AgentPill memberId={item.assignedToMemberId} memberNameById={memberNameById} />}
+                    <DeployedWhere location={item.location} />
                   </div>
-                  <Button size="sm" variant="outline" onClick={() => handleReturnToStorage('brochure_box', item.id)}>
+                  <Button size="sm" variant="outline" onClick={() => handleReturnToStorage('brochure_box', item.id, item.location)}>
                     Return to inventory
                   </Button>
                 </div>

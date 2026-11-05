@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser, isAdminOrTeamAdmin, canActOnBehalfOf } from '@/lib/auth-utils'
 import { audit, AuditAction } from '@/lib/audit'
@@ -138,11 +139,127 @@ export async function GET(
     // inStorage/heldByHoldId/heldUntil mutate on deployment), so the agent who
     // originally owned the inventory survives. The UI uses it to render an agent
     // pill so two "For Sale Sign" rows from different agents are distinguishable.
+    //
+    // Each row also carries WHERE the item went: the newest live order that
+    // used it, and whether that post is still up. Without it, a customer with
+    // two identical signs gave no way to tell the one still on a post from the
+    // one a crew just brought back, and returning the wrong one put an
+    // installed sign and lockbox back in storage (Ryan 2026-11-05, Ashley
+    // Barreto / 2396 Geranium Lane). Queried by item id, not via ordersRaw:
+    // brokerage-pool items are used on orders that belong to the AGENT.
+    const deployedIds = {
+      sign: signsOutOfStorage.map(s => s.id),
+      rider: ridersOutOfStorage.map(r => r.id),
+      lockbox: lockboxesOutOfStorage.map(l => l.id),
+      brochure_box: brochureBoxesOutOfStorage.map(b => b.id),
+    }
+    const usedOn: Prisma.OrderItemWhereInput[] = []
+    if (deployedIds.sign.length) usedOn.push({ customerSignId: { in: deployedIds.sign } })
+    if (deployedIds.rider.length) usedOn.push({ customerRiderId: { in: deployedIds.rider } })
+    if (deployedIds.lockbox.length) usedOn.push({ customerLockboxId: { in: deployedIds.lockbox } })
+    if (deployedIds.brochure_box.length) usedOn.push({ customerBrochureBoxId: { in: deployedIds.brochure_box } })
+    // No payment-status filter: an order whose completion charge failed still
+    // gets its post installed, and a refund doesn't take a standing post down.
+    // Cancelled orders that never went up are skipped in the loop below.
+    const usageRows = usedOn.length
+      ? await prisma.orderItem.findMany({
+          where: { OR: usedOn },
+          select: {
+            customerSignId: true,
+            customerRiderId: true,
+            customerLockboxId: true,
+            customerBrochureBoxId: true,
+            order: {
+              select: {
+                orderNumber: true,
+                createdAt: true,
+                status: true,
+                propertyAddress: true,
+                propertyCity: true,
+                installation: { select: { status: true, propertyAddress: true, propertyCity: true, removedAt: true } },
+              },
+            },
+          },
+        })
+      : []
+    type DeployedLocation = {
+      address: string
+      city: string
+      order_number: string
+      // up: the post is standing with this item on it. upcoming: the order
+      // hasn't been installed yet. picked_up: that post came down, so the item
+      // should be back with the crew and is safe to return.
+      state: 'up' | 'upcoming' | 'picked_up'
+      picked_up_at: string | null
+    }
+    const newestUse = new Map<string, { at: Date; loc: DeployedLocation }>()
+    const recordUse = (key: string, at: Date, loc: DeployedLocation) => {
+      const prev = newestUse.get(key)
+      if (!prev || at > prev.at) newestUse.set(key, { at, loc })
+    }
+    for (const row of usageRows) {
+      const o = row.order
+      const inst = o.installation
+      // A cancelled order that never went up says nothing about where the
+      // item is now. One cancelled AFTER install still has a standing post.
+      if (o.status === 'cancelled' && !inst) continue
+      const state: DeployedLocation['state'] = inst
+        ? inst.status === 'removed' ? 'picked_up' : 'up'
+        : o.status === 'completed' ? 'up' : 'upcoming'
+      const loc: DeployedLocation = {
+        address: inst?.propertyAddress ?? o.propertyAddress,
+        city: inst?.propertyCity ?? o.propertyCity,
+        order_number: o.orderNumber,
+        state,
+        picked_up_at: inst?.removedAt?.toISOString() ?? null,
+      }
+      const keys = [
+        row.customerSignId && `sign:${row.customerSignId}`,
+        row.customerRiderId && `rider:${row.customerRiderId}`,
+        row.customerLockboxId && `lockbox:${row.customerLockboxId}`,
+        row.customerBrochureBoxId && `brochure_box:${row.customerBrochureBoxId}`,
+      ].filter((k): k is string => !!k)
+      for (const key of keys) recordUse(key, o.createdAt, loc)
+    }
+    // Lockboxes on posts rebuilt after the move have no order line pointing at
+    // them, but the rebuilt installation does (InstallationLockbox).
+    if (deployedIds.lockbox.length) {
+      const onPosts = await prisma.installationLockbox.findMany({
+        where: { customerLockboxId: { in: deployedIds.lockbox } },
+        select: {
+          customerLockboxId: true,
+          removedAt: true,
+          installation: {
+            select: {
+              status: true,
+              propertyAddress: true,
+              propertyCity: true,
+              removedAt: true,
+              order: { select: { orderNumber: true, createdAt: true } },
+            },
+          },
+        },
+      })
+      for (const ilb of onPosts) {
+        if (!ilb.customerLockboxId) continue
+        const inst = ilb.installation
+        const down = inst.status === 'removed' || ilb.removedAt !== null
+        recordUse(`lockbox:${ilb.customerLockboxId}`, inst.order.createdAt, {
+          address: inst.propertyAddress,
+          city: inst.propertyCity,
+          order_number: inst.order.orderNumber,
+          state: down ? 'picked_up' : 'up',
+          picked_up_at: (ilb.removedAt ?? inst.removedAt)?.toISOString() ?? null,
+        })
+      }
+    }
+    const locationOf = (kind: keyof typeof deployedIds, id: string) => newestUse.get(`${kind}:${id}`)?.loc ?? null
+
     const deployed = {
-      signs: signsOutOfStorage.map(s => ({ id: s.id, description: s.description, assignedToMemberId: s.assignedToMemberId ?? null })),
-      riders: ridersOutOfStorage.map(r => ({ id: r.id, rider_type: r.rider.name, assignedToMemberId: r.assignedToMemberId ?? null })),
-      lockboxes: lockboxesOutOfStorage.map(lb => ({ id: lb.id, lockbox_type: lb.lockboxType.name, lockbox_code: lb.code, assignedToMemberId: lb.assignedToMemberId ?? null })),
-      brochureBoxes: brochureBoxesOutOfStorage.map(b => ({ id: b.id, description: b.description, assignedToMemberId: b.assignedToMemberId ?? null })),
+      signs: signsOutOfStorage.map(s => ({ id: s.id, description: s.description, assignedToMemberId: s.assignedToMemberId ?? null, location: locationOf('sign', s.id) })),
+      riders: ridersOutOfStorage.map(r => ({ id: r.id, rider_type: r.rider.name, assignedToMemberId: r.assignedToMemberId ?? null, location: locationOf('rider', r.id) })),
+      lockboxes: lockboxesOutOfStorage.map(lb => ({ id: lb.id, lockbox_type: lb.lockboxType.name, lockbox_code: lb.code, assignedToMemberId: lb.assignedToMemberId ?? null, location: locationOf('lockbox', lb.id) })),
+      brochureBoxes: brochureBoxesOutOfStorage.map(b => ({ id: b.id, description: b.description, assignedToMemberId: b.assignedToMemberId ?? null, location: locationOf('brochure_box', b.id) })),
     }
 
     // Transform orders to match frontend expectations

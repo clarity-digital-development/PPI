@@ -236,6 +236,14 @@ export async function PATCH(
         default:
           return NextResponse.json({ error: 'Invalid type for return_to_storage' }, { status: 400 })
       }
+      await audit({
+        actor: { id: user.id, email: user.email, role: user.role },
+        action: AuditAction.InventoryReturnToStorage,
+        targetType: type,
+        targetId: item_id,
+        metadata: { customerId },
+        request,
+      })
       return NextResponse.json({ success: true })
     }
 

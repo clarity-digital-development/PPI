@@ -147,6 +147,11 @@ export async function GET(request: NextRequest) {
             ? {
                 OR: [
                   { lockboxType: { name: { contains: search, mode: 'insensitive' } } },
+                  // The code is printed in the row's description, so admins
+                  // search by it (Ryan 2026-11-05: "Code: 2093048" came back
+                  // "No inventory items found"). Serial too — same lookup.
+                  { code: { contains: search, mode: 'insensitive' } },
+                  { serialNumber: { contains: search, mode: 'insensitive' } },
                   { user: { fullName: { contains: search, mode: 'insensitive' } } },
                   { user: { email: { contains: search, mode: 'insensitive' } } },
                 ],

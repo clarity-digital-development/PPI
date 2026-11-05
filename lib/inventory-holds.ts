@@ -563,16 +563,22 @@ export async function releaseOrderHoldsAndRestoreInventory(
 ): Promise<void> {
   if (killed()) return
 
-  await prisma.$transaction(async (tx) => {
+  const keptOnPost = await prisma.$transaction(async (tx) => {
     const order = await tx.order.findUnique({
       where: { id: orderId },
-      include: { orderItems: true },
+      include: { orderItems: true, installation: { select: { status: true } } },
     })
-    if (!order) return
+    if (!order) return false
+
+    // A cancel or refund doesn't take a standing post down: its sign, rider
+    // and lockbox are still out there. Putting them back in storage made the
+    // count wrong and let the next order pick an item that's on a post. They
+    // come back the normal way when the post is picked up.
+    const postStillUp = !!order.installation && order.installation.status !== 'removed'
 
     // Restore inStorage = true on each item, but ONLY if no other live order
     // points at it and no live hold owns it.
-    for (const item of order.orderItems) {
+    for (const item of postStillUp ? [] : order.orderItems) {
       if (item.customerSignId) {
         await restoreIfSafe(tx, 'sign', item.customerSignId, orderId)
       }
@@ -595,6 +601,7 @@ export async function releaseOrderHoldsAndRestoreInventory(
     await tx.inventoryHold.deleteMany({
       where: { consumedByOrderId: orderId },
     })
+    return postStillUp
   }, { timeout: 15_000 })
 
   await audit({
@@ -602,7 +609,7 @@ export async function releaseOrderHoldsAndRestoreInventory(
     action: AuditAction.InventoryHoldReleased,
     targetType: 'order',
     targetId: orderId,
-    metadata: { reason, source: 'release_order_holds' },
+    metadata: { reason, source: 'release_order_holds', ...(keptOnPost ? { inventoryKeptOnPost: true } : {}) },
     request,
   })
 }
@@ -895,7 +902,13 @@ async function restoreIfSafe(
     where: {
       [col]: itemId,
       orderId: { not: excludeOrderId },
-      order: { paymentStatus: { in: ['succeeded', 'processing', 'pending'] } },
+      // pending_invoice is live too: invoice-billed orders sit in it until
+      // the invoice is paid, often long after install. A cancelled order
+      // keeps whatever paymentStatus it had, so it's excluded explicitly.
+      order: {
+        status: { not: 'cancelled' },
+        paymentStatus: { in: ['succeeded', 'processing', 'pending', 'pending_invoice'] },
+      },
     },
     select: { id: true },
   })

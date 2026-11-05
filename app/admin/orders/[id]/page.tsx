@@ -328,7 +328,7 @@ export default function AdminOrderDetailPage() {
 
   async function handleCancelOrder() {
     if (!order) return
-    const confirmMsg = `Cancel order ${order.orderNumber}?\n\nThis will:\n• Cancel the Stripe payment attempt\n• Restore any inventory items linked to this order\n• Mark the order as cancelled\n\nThis cannot be undone.`
+    const confirmMsg = `Cancel order ${order.orderNumber}?\n\nThis will:\n• Cancel the Stripe payment attempt\n• Restore any inventory items linked to this order (unless its post is still up)\n• Mark the order as cancelled\n\nThis cannot be undone.`
     if (!confirm(confirmMsg)) return
 
     try {

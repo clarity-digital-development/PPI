@@ -74,6 +74,10 @@ export const AuditAction = {
   OrderRefundFail: 'order.refund.fail',
   OrderRefundWebhook: 'order.refund.webhook',
   InventoryAssign: 'inventory.assign',
+  // Admin "Return to inventory" on a deployed item. Unlogged until
+  // 2026-11-05, when items still on live posts turned up back in storage and
+  // there was no record of who returned them or when.
+  InventoryReturnToStorage: 'inventory.return_to_storage',
   // Linking an agent login to a brokerage so they can order from the
   // brokerage's inventory pool. Inventory-only: this NEVER touches billing.
   AgentLinkedToBrokerage: 'user.brokerage_link',
