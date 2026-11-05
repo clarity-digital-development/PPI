@@ -211,6 +211,9 @@ export default function CustomerDetailPage() {
   const [rowReassigning, setRowReassigning] = useState<Record<string, boolean>>({})
   // Filter-by-agent: '' = all agents, 'unassigned' = team pool, else a memberId.
   const [agentFilter, setAgentFilter] = useState<string>('')
+  // Same choices for the Currently Deployed list (Ryan 2026-11-05), kept
+  // separate so narrowing one list doesn't silently narrow the other.
+  const [deployedAgentFilter, setDeployedAgentFilter] = useState<string>('')
 
   // Opens Add Inventory modal — pre-seeds assignee from agentFilter when a specific agent is selected.
   function openAddModal(type: 'sign' | 'rider' | 'lockbox' | 'brochure_box' | 'other') {
@@ -691,6 +694,23 @@ export default function CustomerDetailPage() {
       otherItems: (items.otherItems ?? []).filter(o => matches(o.assignedToMemberId)),
     }
   }, [data, agentFilter])
+
+  // Currently Deployed rows narrowed by deployedAgentFilter. Keyed on the
+  // item's assigned agent, like the in-storage filter above.
+  const filteredDeployed = useMemo(() => {
+    const d = data?.inventory.deployed
+    if (!d) return null
+    const matches = (memberId: string | null) =>
+      deployedAgentFilter === '' ? true
+      : deployedAgentFilter === 'unassigned' ? memberId === null
+      : memberId === deployedAgentFilter
+    return {
+      signs: d.signs.filter(i => matches(i.assignedToMemberId)),
+      riders: d.riders.filter(i => matches(i.assignedToMemberId)),
+      lockboxes: d.lockboxes.filter(i => matches(i.assignedToMemberId)),
+      brochureBoxes: d.brochureBoxes.filter(i => matches(i.assignedToMemberId)),
+    }
+  }, [data, deployedAgentFilter])
 
   // Per-agent grouping only makes sense when the customer's team has agents to assign to.
   const useGroupedView = !!(data?.team && data.team.members.length > 0)
@@ -1747,11 +1767,29 @@ export default function CustomerDetailPage() {
       ) && (
         <Card className="mt-6 border-amber-200 bg-amber-50/40">
           <CardContent className="p-6">
-            <div className="flex items-center gap-2 mb-3">
-              <h2 className="font-semibold text-gray-900">Currently Deployed</h2>
-              <span className="text-xs text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full font-medium">
-                Out of inventory
-              </span>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
+              <div className="flex items-center gap-2">
+                <h2 className="font-semibold text-gray-900">Currently Deployed</h2>
+                <span className="text-xs text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full font-medium">
+                  Out of inventory
+                </span>
+              </div>
+              {/* Pick one agent off the roster to see only what's out under
+                  their name (Ryan 2026-11-05). Starts on All agents. */}
+              {useGroupedView && data.team && (
+                <div className="w-full sm:w-64">
+                  <SearchableSelect
+                    options={[
+                      { value: '', label: 'All agents' },
+                      ...data.team.members.map((m) => ({ value: m.id, label: m.name })),
+                      { value: 'unassigned', label: 'Unassigned' },
+                    ]}
+                    value={deployedAgentFilter}
+                    onChange={(next) => setDeployedAgentFilter(next)}
+                    searchPlaceholder="Search agents..."
+                  />
+                </div>
+              )}
             </div>
             <p className="text-sm text-gray-600 mb-4">
               These items are out on a property. Click &quot;Return to inventory&quot; once the customer has them back.
@@ -1759,15 +1797,18 @@ export default function CustomerDetailPage() {
             {/* Scroll cutoff after 5 items so a customer with dozens of
                 deployed items doesn't push the rest of the page below the
                 fold. Matches the same treatment the in-storage lists use. */}
-            {(() => {
+            {filteredDeployed && (() => {
               const deployedCount =
-                data.inventory.deployed.signs.length +
-                data.inventory.deployed.riders.length +
-                data.inventory.deployed.lockboxes.length +
-                data.inventory.deployed.brochureBoxes.length
+                filteredDeployed.signs.length +
+                filteredDeployed.riders.length +
+                filteredDeployed.lockboxes.length +
+                filteredDeployed.brochureBoxes.length
+              if (deployedCount === 0) {
+                return <p className="text-sm text-gray-500">Nothing out for this agent right now.</p>
+              }
               return (
             <div className={deployedCount > 5 ? 'space-y-2 max-h-[280px] overflow-y-auto pr-1 -mr-1' : 'space-y-2'}>
-              {data.inventory.deployed.signs.map(item => (
+              {filteredDeployed.signs.map(item => (
                 <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-lg border border-amber-200">
                   <div className="text-sm flex items-center flex-wrap gap-y-1">
                     <span className="text-xs text-amber-700 font-medium uppercase mr-2">Sign</span>
@@ -1780,7 +1821,7 @@ export default function CustomerDetailPage() {
                   </Button>
                 </div>
               ))}
-              {data.inventory.deployed.riders.map(item => (
+              {filteredDeployed.riders.map(item => (
                 <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-lg border border-amber-200">
                   <div className="text-sm flex items-center flex-wrap gap-y-1">
                     <span className="text-xs text-amber-700 font-medium uppercase mr-2">Rider</span>
@@ -1793,7 +1834,7 @@ export default function CustomerDetailPage() {
                   </Button>
                 </div>
               ))}
-              {data.inventory.deployed.lockboxes.map(item => (
+              {filteredDeployed.lockboxes.map(item => (
                 <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-lg border border-amber-200">
                   <div className="text-sm flex items-center flex-wrap gap-y-1">
                     <span className="text-xs text-amber-700 font-medium uppercase mr-2">Lockbox</span>
@@ -1808,7 +1849,7 @@ export default function CustomerDetailPage() {
                   </Button>
                 </div>
               ))}
-              {data.inventory.deployed.brochureBoxes.map(item => (
+              {filteredDeployed.brochureBoxes.map(item => (
                 <div key={item.id} className="flex items-center justify-between p-3 bg-white rounded-lg border border-amber-200">
                   <div className="text-sm flex items-center flex-wrap gap-y-1">
                     <span className="text-xs text-amber-700 font-medium uppercase mr-2">Brochure Box</span>
