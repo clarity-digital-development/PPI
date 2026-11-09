@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { refundPaymentIntent, getStripeErrorMessage } from '@/lib/stripe/server'
+import { refundPaymentIntent, findOrderRefund, getStripeErrorMessage } from '@/lib/stripe/server'
 import { releaseOrderHoldsAndRestoreInventory } from '@/lib/inventory-holds'
 import { resolveRefundRecipient } from '@/lib/orders/refund-recipient'
 import { sendRefundConfirmationEmail } from '@/lib/email'
@@ -33,6 +33,13 @@ export interface RefundOrderOptions {
   auto: boolean
   /** Webhook path sets true when it has already sent the email. */
   skipEmail?: boolean
+  /**
+   * Admin partial refund, in cents. Omit for a full refund. The route
+   * validates 0 < amountCents < the order total and that the order is the
+   * only one on its PaymentIntent (a partial on a shared charge can't be
+   * attributed to one order by the charge.refunded webhook).
+   */
+  amountCents?: number
 }
 
 export type RefundOrderResult =
@@ -83,6 +90,31 @@ export async function refundOrder(
 ): Promise<RefundOrderResult> {
   const actorId = options.actor && 'id' in options.actor ? options.actor.id : null
 
+  // Pre-reserve snapshot of the columns Step 0 overwrites, so a refund that
+  // Stripe definitively rejects can be rolled back to exactly this state
+  // (e.g. an order an admin had already cancelled without a refund keeps
+  // its original cancel attribution).
+  const preReserve = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: { cancelReason: true, cancelledByUserId: true, refundReason: true, paymentIntentId: true },
+  })
+
+  // A cart checkout charges several orders in ONE PaymentIntent, and Step 2
+  // refunds a PI in full — so refunding one cart order here refunded every
+  // order in the cart (and the webhook then cancelled or zeroed the others).
+  // Same hazard as the invoiceId exclusion below; covers the customer
+  // self-cancel path too. Those are refunded by hand in Stripe instead.
+  if (preReserve?.paymentIntentId) {
+    const onCharge = await prisma.order.count({ where: { paymentIntentId: preReserve.paymentIntentId } })
+    if (onCharge > 1) {
+      return {
+        ok: false,
+        error: 'This order was paid together with other orders in one payment, so it can\'t be refunded on its own here. Contact Pink Posts to cancel it.',
+        code: 'NOT_REFUNDABLE',
+      }
+    }
+  }
+
   // ── Step 0: RESERVE the refund slot via conditional update ──
   // updateMany returns count > 0 only if a row matched the WHERE; this
   // turns the read-then-write window into one atomic DB operation.
@@ -92,6 +124,10 @@ export async function refundOrder(
       refundInitiatedAt: null,
       refundId: null,
       paymentStatus: 'succeeded',
+      // No PI (e.g. a $0 order) = nothing to refund. Without this the
+      // reserve stamped refundInitiatedAt and Step 1 bailed, leaving the
+      // order stuck as "refund processing" forever.
+      paymentIntentId: { not: null },
       // An order paid through a bundled invoice carries the INVOICE's PI (the
       // webhook stamps it on every order it settles), and Step 2 refunds a PI
       // in full — so refunding one order here refunded every order, service
@@ -139,8 +175,17 @@ export async function refundOrder(
     include: { user: true, orderItems: true },
   })
   if (!order || !order.paymentIntentId) {
-    // Belt-and-suspenders: the reserve only matches paymentStatus='succeeded'
-    // which implies paymentIntentId is set, but defend anyway.
+    // Belt-and-suspenders: the reserve requires a paymentIntentId, but if
+    // we ever get here release the reservation so the order isn't stuck.
+    await prisma.order.updateMany({
+      where: { id: orderId, refundId: null },
+      data: {
+        refundInitiatedAt: null,
+        cancelReason: preReserve?.cancelReason ?? null,
+        cancelledByUserId: preReserve?.cancelledByUserId ?? null,
+        refundReason: preReserve?.refundReason ?? null,
+      },
+    })
     return { ok: false, error: 'Order has no payment to refund', code: 'NOT_REFUNDABLE' }
   }
 
@@ -155,28 +200,80 @@ export async function refundOrder(
       paymentIntentId: order.paymentIntentId,
       orderId: order.id,
       reason: 'requested_by_customer',
+      ...(options.amountCents !== undefined ? { amountCents: options.amountCents } : {}),
     })
     refundId = result.refundId
     refundAmountCents = result.amount
   } catch (err) {
-    await audit({
-      actor: options.actor,
-      action: AuditAction.OrderRefundFail,
-      targetType: 'order',
-      targetId: order.id,
-      metadata: { reason: options.reason, error: getStripeErrorMessage(err) ?? String(err) },
-      request: options.request,
-    })
-    return { ok: false, error: getStripeErrorMessage(err) ?? 'Refund failed', code: 'STRIPE_ERROR' }
+    const message = getStripeErrorMessage(err) ?? String(err)
+    // Before releasing the reservation, make sure Stripe really didn't make
+    // the refund (a lost response on a refund that went through must NOT
+    // be retried — that would refund twice). Without this, the reservation
+    // stayed set forever after any failure: the order showed "Refund
+    // processing" indefinitely and every retry answered "already refunded".
+    let existing: Awaited<ReturnType<typeof findOrderRefund>> | undefined
+    try {
+      existing = await findOrderRefund(order.paymentIntentId, order.id)
+    } catch {
+      existing = undefined // couldn't reach Stripe — state unknown
+    }
+
+    if (existing) {
+      refundId = existing.id
+      refundAmountCents = existing.amount
+    } else {
+      if (existing === null) {
+        // Stripe confirms no refund exists for this order: release the
+        // reservation so the admin can retry, restoring the pre-reserve
+        // cancel attribution.
+        await prisma.order.updateMany({
+          where: { id: order.id, refundId: null },
+          data: {
+            refundInitiatedAt: null,
+            cancelReason: preReserve?.cancelReason ?? null,
+            cancelledByUserId: preReserve?.cancelledByUserId ?? null,
+            refundReason: preReserve?.refundReason ?? null,
+          },
+        })
+      }
+      await audit({
+        actor: options.actor,
+        action: AuditAction.OrderRefundFail,
+        targetType: 'order',
+        targetId: order.id,
+        metadata: {
+          reason: options.reason,
+          error: message,
+          amountCents: options.amountCents ?? null,
+          released: existing === null,
+        },
+        request: options.request,
+      })
+      return {
+        ok: false,
+        error:
+          existing === null
+            ? getStripeErrorMessage(err) ?? 'Refund failed'
+            : "Couldn't confirm the refund with Stripe. Check the payment in Stripe before trying again.",
+        code: 'STRIPE_ERROR',
+      }
+    }
   }
 
   // ── Step 3: stamp refundId + cancellation. Step 0 reserved us; no race. ──
+  // A partial refund also stamps refundedAmount now: the charge.refunded
+  // webhook never flips a partial to paymentStatus='refunded', and both the
+  // customer's "refund processing" line and the revenue stats read this
+  // column to show/subtract the right amount.
   await prisma.order.update({
     where: { id: order.id },
     data: {
       refundId,
       status: 'cancelled',
-      cancelledAt: new Date(),
+      // Keep the original cancel time when refunding an order that was
+      // already cancelled without a refund.
+      cancelledAt: order.cancelledAt ?? new Date(),
+      ...(options.amountCents !== undefined ? { refundedAmount: refundAmountCents / 100 } : {}),
     },
   })
 
@@ -186,7 +283,13 @@ export async function refundOrder(
     action: AuditAction.OrderRefundCreate,
     targetType: 'order',
     targetId: order.id,
-    metadata: { refundId, amountCents: refundAmountCents, reason: options.reason, auto: options.auto },
+    metadata: {
+      refundId,
+      amountCents: refundAmountCents,
+      partial: options.amountCents !== undefined,
+      reason: options.reason,
+      auto: options.auto,
+    },
     request: options.request,
   })
 
@@ -337,6 +440,82 @@ export async function cancelUnpaidOrder(
     targetType: 'order',
     targetId: orderId,
     metadata: { reason: options.reason, refunded: false, paymentStatus: 'pending_invoice' },
+    request: options.request,
+  })
+
+  return { ok: true }
+}
+
+export interface CancelPaidOrderOptions {
+  /** Internal note from the admin (optional, max 500 chars). */
+  note?: string | null
+  actor: AuditActor
+  request?: NextRequest | Request | null
+}
+
+export type CancelPaidOrderResult =
+  | { ok: true }
+  | { ok: false; error: string; code: 'NOT_CANCELLABLE' | 'ALREADY_CANCELLED' | 'ALREADY_REFUNDED' }
+
+/**
+ * Admin: cancel a PAID order and keep the payment (no refund). The
+ * deliberate version of what the status dropdown used to do silently —
+ * now stamped with who/when/why, audited, and with inventory released.
+ *
+ * paymentStatus stays 'succeeded' (the money was kept). Leaves refundId /
+ * refundInitiatedAt null, so the order can still be refunded later from
+ * the admin Refund button if the admin changes their mind.
+ */
+export async function cancelPaidOrderWithoutRefund(
+  orderId: string,
+  options: CancelPaidOrderOptions
+): Promise<CancelPaidOrderResult> {
+  const actorId = options.actor && 'id' in options.actor ? options.actor.id : null
+
+  const claimed = await prisma.order.updateMany({
+    where: {
+      id: orderId,
+      paymentStatus: 'succeeded',
+      status: { not: 'cancelled' },
+      refundId: null,
+      refundInitiatedAt: null,
+    },
+    data: {
+      status: 'cancelled',
+      cancelledAt: new Date(),
+      cancelReason: 'admin_cancel',
+      cancelledByUserId: actorId,
+      refundReason: options.note ?? null,
+    },
+  })
+
+  if (claimed.count === 0) {
+    const existing = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: { status: true, paymentStatus: true, refundId: true, refundInitiatedAt: true },
+    })
+    if (!existing) return { ok: false, error: 'Order not found', code: 'NOT_CANCELLABLE' }
+    if (existing.refundId || existing.refundInitiatedAt) {
+      return { ok: false, error: 'Order already refunded', code: 'ALREADY_REFUNDED' }
+    }
+    if (existing.status === 'cancelled') {
+      return { ok: false, error: 'Order already cancelled', code: 'ALREADY_CANCELLED' }
+    }
+    return { ok: false, error: 'Only paid orders can be cancelled this way', code: 'NOT_CANCELLABLE' }
+  }
+
+  try {
+    await releaseOrderHoldsAndRestoreInventory(orderId, 'admin_cancel', options.actor, options.request)
+  } catch (err) {
+    console.error(`[cancelPaidOrderWithoutRefund] inventory restore failed for ${orderId}:`, err)
+  }
+
+  await audit({
+    actor: options.actor,
+    action: AuditAction.OrderCancel,
+    targetType: 'order',
+    targetId: orderId,
+    metadata: { reason: 'admin_cancel', refunded: false, paid: true, note: options.note ?? null },
     request: options.request,
   })
 

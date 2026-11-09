@@ -387,7 +387,7 @@ export default function OrderDetailsPage() {
                   ) : order.cancelledAt && order.refundInitiatedAt ? (
                     <p className="text-red-700">
                       Cancelled on {formatDate(order.cancelledAt)} — Refund of $
-                      {Number(order.total).toFixed(2)} processing (5-10 business days)
+                      {Number(order.refundedAmount ?? order.total).toFixed(2)} processing (5-10 business days)
                     </p>
                   ) : (
                     <p className="text-red-700">

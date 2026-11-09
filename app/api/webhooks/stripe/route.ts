@@ -442,13 +442,27 @@ export async function POST(request: NextRequest) {
         const refundedCents = charge.amount_refunded
         const isFullRefund = refundedCents === charge.amount
         if (!isFullRefund) {
-          // v1 only acts on full refunds. We still persist refundedAmount so
-          // the audit trail accurately reflects what the customer's bank shows
+          // Partial refunds never flip paymentStatus to 'refunded' (part of
+          // the payment was kept). We still persist refundedAmount so the
+          // audit trail accurately reflects what the customer's bank shows
           // and so a later full-refund event can compute a correct delta
           // (avoids overstating the email amount on the cumulative event).
+          //
+          // A partial we started ourselves (admin partial refund via
+          // refundOrder — refundInitiatedAt set; the route only allows it
+          // when this order is alone on the charge) also gets refundedAt, so
+          // the "Refund processing" badge clears and the customer sees the
+          // refund as processed. refundOrder already sent the email.
+          const ownPartial = !!order.refundInitiatedAt && ordersOnCharge.length === 1
           await prisma.order.update({
             where: { id: order.id },
-            data: { refundedAmount: refundedCents / 100 },
+            data: {
+              refundedAmount: refundedCents / 100,
+              ...(ownPartial && !order.refundedAt ? { refundedAt: new Date() } : {}),
+              ...(ownPartial && !order.refundId && charge.refunds?.data?.[0]?.id
+                ? { refundId: charge.refunds.data[0].id }
+                : {}),
+            },
           })
           await audit({
             actor: { system: true },
@@ -459,7 +473,7 @@ export async function POST(request: NextRequest) {
               partial: true,
               refunded_cents: refundedCents,
               charge_amount: charge.amount,
-              note: 'partial refunds not handled in v1',
+              admin_partial: ownPartial,
             },
             request,
           })

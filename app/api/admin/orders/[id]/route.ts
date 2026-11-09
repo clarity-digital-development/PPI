@@ -131,6 +131,20 @@ export async function PUT(
     const updateData: Record<string, any> = {}
 
     if (body.status) {
+      // Cancelling is never a bare status flip: a paid order cancelled here
+      // was never refunded (and the Refund button then hid itself), which
+      // became a bank dispute (Ryan, 2026-11-09); an unpaid one skipped the
+      // Stripe/inventory cleanup and could still be swept onto an invoice.
+      // The Cancel Order / Refund Order flows handle both properly.
+      if (body.status === 'cancelled') {
+        return NextResponse.json(
+          { error: 'Use Cancel Order or Refund Order to cancel an order.', code: 'USE_CANCEL_FLOW' },
+          { status: 400 }
+        )
+      }
+      if (!['pending', 'confirmed', 'scheduled', 'in_progress', 'completed'].includes(body.status)) {
+        return NextResponse.json({ error: 'Invalid status' }, { status: 400 })
+      }
       updateData.status = body.status
     }
 

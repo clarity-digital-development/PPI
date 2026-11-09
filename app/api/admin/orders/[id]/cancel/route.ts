@@ -54,9 +54,24 @@ export async function POST(
     // guarded/idempotent) but writes a duplicate audit log entry and shows
     // the admin a false "Order cancelled" success message for an action
     // that already happened.
+    //
+    // An order whose money was already refunded (e.g. a cart sibling of a
+    // refunded order, which keeps its live status) is cancelled WITHOUT
+    // touching paymentStatus — stamping 'failed' over 'refunded' erased the
+    // record that the customer was paid back. Either way the cancel is now
+    // attributed (who/when), like the refund and no-refund paths.
+    const alreadyRefunded = order.paymentStatus === 'refunded'
     const claimed = await prisma.order.updateMany({
-      where: { id, status: { not: 'cancelled' }, paymentStatus: { not: 'succeeded' } },
-      data: { status: 'cancelled', paymentStatus: 'failed' },
+      where: alreadyRefunded
+        ? { id, status: { not: 'cancelled' }, paymentStatus: 'refunded' }
+        : { id, status: { not: 'cancelled' }, paymentStatus: { notIn: ['succeeded', 'refunded'] } },
+      data: {
+        status: 'cancelled',
+        ...(alreadyRefunded ? {} : { paymentStatus: 'failed' }),
+        cancelledAt: new Date(),
+        cancelReason: 'admin_cancel',
+        cancelledByUserId: user.id,
+      },
     })
 
     if (claimed.count === 0) {
@@ -106,7 +121,11 @@ export async function POST(
     // The atomic claim above already wrote status/paymentStatus — no need for
     // a second update. Build the response from the pre-claim `order` fetch
     // (only those two fields changed).
-    const updatedOrder = { ...order, status: 'cancelled', paymentStatus: 'failed' }
+    const updatedOrder = {
+      ...order,
+      status: 'cancelled',
+      paymentStatus: alreadyRefunded ? 'refunded' : 'failed',
+    }
 
     await audit({
       actor: { id: user.id, email: user.email, role: user.role },

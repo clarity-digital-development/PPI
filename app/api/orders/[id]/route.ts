@@ -120,7 +120,16 @@ export async function PUT(
       return NextResponse.json({ error: 'Status is required' }, { status: 400 })
     }
 
-    const validStatuses = ['pending', 'confirmed', 'scheduled', 'in_progress', 'completed', 'cancelled']
+    // Cancelling goes through the order page's Cancel Order / Refund Order
+    // flows, never a bare status flip — see app/api/admin/orders/[id] PUT.
+    if (status === 'cancelled') {
+      return NextResponse.json(
+        { error: 'Use Cancel Order or Refund Order on the order page to cancel an order.', code: 'USE_CANCEL_FLOW' },
+        { status: 400 }
+      )
+    }
+
+    const validStatuses = ['pending', 'confirmed', 'scheduled', 'in_progress', 'completed']
     if (!validStatuses.includes(status)) {
       return NextResponse.json({ error: 'Invalid status' }, { status: 400 })
     }

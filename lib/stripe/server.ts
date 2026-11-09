@@ -160,6 +160,11 @@ export interface CreateRefundParams {
   orderId: string
   reason?: 'requested_by_customer' | 'duplicate' | 'fraudulent'
   metadata?: Record<string, string>
+  /**
+   * Cents. Omit for a full refund of the PaymentIntent. When set, Stripe
+   * refunds only this much (admin partial refund).
+   */
+  amountCents?: number
 }
 
 export interface CreateRefundResult {
@@ -171,12 +176,15 @@ export interface CreateRefundResult {
 }
 
 /**
- * Create a FULL refund for a PaymentIntent.
+ * Create a refund for a PaymentIntent: full by default, or `amountCents`
+ * for a partial refund.
  *
- * Idempotency: SHA-256 of `${orderId}:refund_v1` is sent as Stripe's
+ * Idempotency: SHA-256 of `${orderId}:refund_v1` (full) or
+ * `${orderId}:refund_v1:${amountCents}` (partial) is sent as Stripe's
  * idempotency key, so a retry/replay returns the same Refund object
- * instead of creating a second refund. The `_v1` suffix gives us room
- * to invalidate if we ever need to retry-with-different-params.
+ * instead of creating a second refund. The amount is part of the key so a
+ * retry with a different amount is a different request rather than a
+ * Stripe "same key, different params" 400.
  *
  * Does NOT mutate any DB state. Caller persists refundId.
  */
@@ -184,14 +192,16 @@ export async function refundPaymentIntent(
   params: CreateRefundParams
 ): Promise<CreateRefundResult> {
   const cryptoMod = await import('node:crypto')
-  const idempotencyKey = cryptoMod
-    .createHash('sha256')
-    .update(`${params.orderId}:refund_v1`)
-    .digest('hex')
+  const keySource =
+    params.amountCents !== undefined
+      ? `${params.orderId}:refund_v1:${params.amountCents}`
+      : `${params.orderId}:refund_v1`
+  const idempotencyKey = cryptoMod.createHash('sha256').update(keySource).digest('hex')
 
   const refund = await getStripe().refunds.create(
     {
       payment_intent: params.paymentIntentId,
+      ...(params.amountCents !== undefined ? { amount: params.amountCents } : {}),
       reason: params.reason ?? 'requested_by_customer',
       metadata: {
         order_id: params.orderId,
@@ -207,6 +217,26 @@ export async function refundPaymentIntent(
     status: refund.status ?? 'pending',
     raw: refund,
   }
+}
+
+/**
+ * Look for a refund we already created for this order on this
+ * PaymentIntent (matched by our `order_id` metadata). Used after a
+ * refunds.create error to tell "Stripe never made the refund" (safe to let
+ * the admin retry) from "the refund went through but the response was
+ * lost" (must not refund again). Failed/canceled refunds don't count.
+ * Throws if Stripe can't be reached — the caller treats that as unknown.
+ */
+export async function findOrderRefund(
+  paymentIntentId: string,
+  orderId: string
+): Promise<Stripe.Refund | null> {
+  const list = await getStripe().refunds.list({ payment_intent: paymentIntentId, limit: 100 })
+  return (
+    list.data.find(
+      (r) => r.metadata?.order_id === orderId && r.status !== 'failed' && r.status !== 'canceled'
+    ) ?? null
+  )
 }
 
 export async function confirmPaymentIntent(

@@ -297,6 +297,16 @@ function AdminOrdersPageInner() {
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   async function updateOrderStatus(orderId: string, newStatus: string) {
+    // Cancelling happens on the order page, where the Cancel Order box asks
+    // about the refund — a bare status flip here left a paid order
+    // unrefunded (Ryan, 2026-11-09). The select is controlled by
+    // order.status, so it snaps back if they don't go.
+    if (newStatus === 'cancelled') {
+      if (confirm('Cancelling is done on the order page so you can choose whether to refund. Open the order now?')) {
+        router.push(`/admin/orders/${orderId}`)
+      }
+      return
+    }
     try {
       const res = await fetch(`/api/orders/${orderId}`, {
         method: 'PUT',
@@ -310,6 +320,9 @@ function AdminOrdersPageInner() {
             order.id === orderId ? { ...order, status: newStatus } : order
           )
         )
+      } else {
+        const data = await res.json().catch(() => ({}))
+        alert(data?.error || 'Could not update the status.')
       }
     } catch (error) {
       console.error('Error updating order:', error)

@@ -209,6 +209,9 @@ export default function AdminOrderDetailPage() {
   const [refunding, setRefunding] = useState(false)
   const [refundError, setRefundError] = useState<string | null>(null)
   const [refundBanner, setRefundBanner] = useState<string | null>(null)
+  // Paid-order cancel/refund choice (Ryan, 2026-11-09): full, partial, or none.
+  const [refundMode, setRefundMode] = useState<'full' | 'partial' | 'none'>('full')
+  const [refundAmount, setRefundAmount] = useState('')
   const [postRental, setPostRental] = useState<PostRentalView | null>(null)
   const [retryingChargeId, setRetryingChargeId] = useState<string | null>(null)
   const [overrideSaving, setOverrideSaving] = useState(false)
@@ -285,7 +288,28 @@ export default function AdminOrderDetailPage() {
     }
   }
 
+  function openRefundModal() {
+    setRefundError(null)
+    setRefundReason('')
+    setRefundMode('full')
+    setRefundAmount('')
+    setRefundModalOpen(true)
+  }
+
   async function updateOrderStatus(newStatus: string) {
+    if (!order) return
+    // Cancelling is never a bare status flip (the old flip left a paid order
+    // unrefunded and hid the Refund button — Ryan, 2026-11-09). Route it to
+    // the flow that handles the payment; the select is controlled by
+    // order.status so it snaps back on its own.
+    if (newStatus === 'cancelled') {
+      if (order.paymentStatus === 'succeeded') {
+        if (!order.refundId && !order.refundInitiatedAt) openRefundModal()
+      } else {
+        await handleCancelOrder()
+      }
+      return
+    }
     try {
       const res = await fetch(`/api/admin/orders/${orderId}`, {
         method: 'PUT',
@@ -295,6 +319,9 @@ export default function AdminOrderDetailPage() {
 
       if (res.ok) {
         setOrder((prev) => prev ? { ...prev, status: newStatus } : null)
+      } else {
+        const data = await res.json().catch(() => ({}))
+        alert(data?.error || 'Could not update the status.')
       }
     } catch (err) {
       console.error('Error updating order status:', err)
@@ -303,13 +330,30 @@ export default function AdminOrderDetailPage() {
 
   async function handleRefundOrder() {
     if (!order) return
-    setRefunding(true)
     setRefundError(null)
+    const totalDollars = Number(order.total)
+    let amount: number | undefined
+    if (refundMode === 'partial') {
+      amount = Number(refundAmount)
+      if (!Number.isFinite(amount) || amount <= 0) {
+        setRefundError('Enter a refund amount above $0.')
+        return
+      }
+      if (Math.round(amount * 100) >= Math.round(totalDollars * 100)) {
+        setRefundError(`A partial refund has to be less than $${totalDollars.toFixed(2)}. Pick Full refund instead.`)
+        return
+      }
+    }
+    setRefunding(true)
     try {
       const res = await fetch(`/api/admin/orders/${orderId}/refund`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: refundReason.trim() || undefined }),
+        body: JSON.stringify({
+          reason: refundReason.trim() || undefined,
+          refund: refundMode,
+          ...(amount !== undefined ? { amount } : {}),
+        }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
@@ -317,7 +361,11 @@ export default function AdminOrderDetailPage() {
       }
       setRefundModalOpen(false)
       setRefundReason('')
-      setRefundBanner(`Refund of $${Number(order.total).toFixed(2)} initiated. The broker will be notified once Stripe confirms.`)
+      setRefundBanner(
+        refundMode === 'none'
+          ? 'Order cancelled. No refund was issued — the payment was kept.'
+          : `Refund of $${(typeof data.amountCents === 'number' ? data.amountCents / 100 : amount ?? totalDollars).toFixed(2)} initiated.${data.emailed ? ' A confirmation email went out.' : ''} Stripe takes 5–10 business days to return it to the card.`
+      )
       await loadOrder()
     } catch (err) {
       setRefundError(err instanceof Error ? err.message : 'Failed to refund order')
@@ -338,7 +386,7 @@ export default function AdminOrderDetailPage() {
         alert(data.error || 'Failed to cancel order')
         return
       }
-      setOrder(prev => prev ? { ...prev, status: 'cancelled', paymentStatus: 'failed' } : null)
+      setOrder(prev => prev ? { ...prev, status: 'cancelled', paymentStatus: data.order?.paymentStatus ?? 'failed' } : null)
       const msg = [
         'Order cancelled.',
         data.stripe_cancelled ? 'Stripe payment intent cancelled.' : null,
@@ -583,6 +631,12 @@ export default function AdminOrderDetailPage() {
               <Badge variant={paymentStatusVariants[order.paymentStatus] || 'warning'}>
                 {order.paymentStatus}
               </Badge>
+              {/* Partial refund — paymentStatus stays 'succeeded' */}
+              {order.paymentStatus === 'succeeded' && Number(order.refundedAmount ?? 0) > 0 && (
+                <Badge variant="neutral">
+                  ${Number(order.refundedAmount).toFixed(2)} refunded
+                </Badge>
+              )}
               {order.isExpedited && (
                 <Badge variant="warning">Expedited</Badge>
               )}
@@ -644,22 +698,21 @@ export default function AdminOrderDetailPage() {
             </Badge>
           )}
 
-          {/* Refund button — only for paid, non-cancelled, not-yet-refunded orders */}
+          {/* Paid, not-yet-refunded orders: "Cancel Order" opens the refund
+              choice (full / partial / none). Also shown on a paid order that
+              was cancelled without a refund, as "Refund Order", so it can
+              still be refunded. */}
           {order.paymentStatus === 'succeeded' &&
             !order.refundId &&
-            order.status !== 'cancelled' && (
+            !order.refundInitiatedAt && (
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => {
-                  setRefundError(null)
-                  setRefundReason('')
-                  setRefundModalOpen(true)
-                }}
+                onClick={openRefundModal}
                 className="text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300"
               >
                 <RotateCcw className="w-4 h-4 mr-2" />
-                Refund Order
+                {order.status === 'cancelled' || order.status === 'completed' ? 'Refund Order' : 'Cancel Order'}
               </Button>
             )}
 
@@ -1371,18 +1424,80 @@ export default function AdminOrderDetailPage() {
           setRefundModalOpen(false)
           setRefundError(null)
         }}
-        title="Refund Order"
+        title={order.status === 'cancelled' || order.status === 'completed' ? 'Refund Order' : 'Cancel Order'}
       >
         <div className="space-y-4">
           <p className="text-sm text-gray-700">
-            Refund <span className="font-semibold">${Number(order.total).toFixed(2)}</span> to the
-            customer&rsquo;s card? This cancels the order and notifies the broker. Refunds take
-            5&ndash;10 business days.
+            {order.status === 'cancelled'
+              ? <>This order was cancelled but never refunded. How much should go back to the customer&rsquo;s card?</>
+              : order.status === 'completed'
+                ? <>How much should go back to the customer&rsquo;s card? Refunding also marks the order cancelled.</>
+                : <>Cancel order {order.orderNumber}. The customer paid <span className="font-semibold">${Number(order.total).toFixed(2)}</span>. Do you want to refund it?</>}
           </p>
+
+          <fieldset className="space-y-2" disabled={refunding}>
+            <legend className="sr-only">Refund</legend>
+            <label className="flex items-center gap-2 text-sm text-gray-800">
+              <input
+                type="radio"
+                name="refund-mode"
+                checked={refundMode === 'full'}
+                onChange={() => setRefundMode('full')}
+              />
+              Full refund (${Number(order.total).toFixed(2)})
+            </label>
+            <label className="flex items-center gap-2 text-sm text-gray-800">
+              <input
+                type="radio"
+                name="refund-mode"
+                checked={refundMode === 'partial'}
+                onChange={() => setRefundMode('partial')}
+              />
+              Partial refund
+              {refundMode === 'partial' && (
+                <span className="flex items-center gap-1">
+                  <span className="text-gray-500">$</span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min="0.01"
+                    step="0.01"
+                    max={Number(order.total).toFixed(2)}
+                    value={refundAmount}
+                    onChange={(e) => setRefundAmount(e.target.value)}
+                    placeholder="0.00"
+                    aria-label="Refund amount"
+                    className="w-28 border border-gray-200 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-pink-500"
+                    autoFocus
+                  />
+                </span>
+              )}
+            </label>
+            {order.status !== 'cancelled' && order.status !== 'completed' && (
+              <label className="flex items-center gap-2 text-sm text-gray-800">
+                <input
+                  type="radio"
+                  name="refund-mode"
+                  checked={refundMode === 'none'}
+                  onChange={() => setRefundMode('none')}
+                />
+                No refund, keep the payment
+              </label>
+            )}
+          </fieldset>
+
+          {refundMode !== 'none' && (
+            <p className="text-xs text-gray-500">
+              Refunds take 5&ndash;10 business days to reach the card. The order is marked cancelled.
+            </p>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Reason <span className="text-gray-400 font-normal">(optional, internal note)</span>
+              Reason{' '}
+              <span className="text-gray-400 font-normal">
+                {refundMode === 'none' ? '(optional, internal note)' : "(optional, shown in the customer's refund email)"}
+              </span>
             </label>
             <textarea
               value={refundReason}
@@ -1412,22 +1527,33 @@ export default function AdminOrderDetailPage() {
               }}
               disabled={refunding}
             >
-              Cancel
+              Back
             </Button>
             <Button
               onClick={handleRefundOrder}
-              disabled={refunding}
+              disabled={
+                refunding ||
+                (refundMode === 'partial' && !(Number(refundAmount) > 0))
+              }
               className="bg-red-600 hover:bg-red-700 text-white"
             >
               {refunding ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Refunding...
+                  {refundMode === 'none' ? 'Cancelling...' : 'Refunding...'}
                 </>
+              ) : refundMode === 'none' ? (
+                <>Cancel without refund</>
               ) : (
                 <>
                   <RotateCcw className="w-4 h-4 mr-2" />
-                  Refund ${Number(order.total).toFixed(2)}
+                  Refund $
+                  {(refundMode === 'partial'
+                    ? Number(refundAmount) > 0
+                      ? Number(refundAmount)
+                      : 0
+                    : Number(order.total)
+                  ).toFixed(2)}
                 </>
               )}
             </Button>

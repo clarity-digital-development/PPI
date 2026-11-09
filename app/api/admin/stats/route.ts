@@ -57,21 +57,21 @@ export async function GET(request: NextRequest) {
           createdAt: { gte: today },
           paymentStatus: 'succeeded',
         },
-        select: { total: true },
+        select: { total: true, refundedAmount: true, refundInitiatedAt: true },
       }),
       prisma.order.findMany({
         where: {
           createdAt: { gte: startOfWeek },
           paymentStatus: 'succeeded',
         },
-        select: { total: true },
+        select: { total: true, refundedAmount: true, refundInitiatedAt: true },
       }),
       prisma.order.findMany({
         where: {
           createdAt: { gte: startOfMonth },
           paymentStatus: 'succeeded',
         },
-        select: { total: true },
+        select: { total: true, refundedAmount: true, refundInitiatedAt: true },
       }),
     ])
 
@@ -86,8 +86,21 @@ export async function GET(request: NextRequest) {
       pendingServiceRequests = 0
     }
 
-    const calculateRevenue = (orders: { total: any }[]) =>
-      orders.reduce((sum, order) => sum + Number(order.total || 0), 0)
+    // A partial refund issued from the app (admin Cancel/Refund box) leaves
+    // paymentStatus='succeeded', so subtract it. Only those (refundInitiatedAt
+    // set): refundedAmount is the Stripe charge's cumulative refund, and a
+    // refund of an edit-down credit is already reflected in the lowered
+    // order.total — subtracting it again would undercount.
+    const calculateRevenue = (
+      orders: { total: any; refundedAmount: any; refundInitiatedAt: Date | null }[]
+    ) =>
+      orders.reduce(
+        (sum, order) =>
+          sum +
+          Number(order.total || 0) -
+          (order.refundInitiatedAt ? Number(order.refundedAmount || 0) : 0),
+        0
+      )
 
     return NextResponse.json({
       totalCustomers,
