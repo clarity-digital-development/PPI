@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
+import { resolveActiveBillToBroker } from '@/lib/orders/effective-payer'
 import { sendAdminServiceRequestNotification, sendServiceRequestConfirmationEmail } from '@/lib/email'
 import { chargeSecondOutOfAreaFee } from '@/lib/orders/out-of-area-charge'
 import { closedDayReason } from '@/lib/scheduling'
@@ -93,11 +94,16 @@ export async function POST(
       )
     }
 
+    // Broker billing: billed to the broker only while this agent is still on
+    // their roster (resolveActiveBillToBroker).
+    const srBilling = await resolveActiveBillToBroker(user)
     // Create the service request
     const serviceRequest = await prisma.serviceRequest.create({
       data: {
         installationId: id,
         userId: user.id,
+        // Broker billing: frozen payer for this trip (see ServiceRequest.billedToUserId).
+        billedToUserId: srBilling?.broker.id ?? null,
         type,
         description,
         // Use the pre-parsed date from the validation guard above (already

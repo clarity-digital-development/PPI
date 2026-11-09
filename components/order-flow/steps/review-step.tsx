@@ -36,6 +36,7 @@ export function ReviewStep({
   pickupFee,
   flatFee,
   invoiceBilling,
+  billedTo,
   adminView,
   editingCartItemId,
 }: StepProps) {
@@ -285,7 +286,9 @@ export function ReviewStep({
   // screen matches what is actually charged. The pickup half goes to the card
   // at removal — or, for an invoice-billing payer, onto their next invoice
   // (Ryan, 2026-09-28), which only changes the agreement wording below.
-  const isInvoiceBillingPayer = !!invoiceBilling
+  // The PAYER's flag: the broker's for a broker-billed agent (their invoice
+  // gets the pickup half), else this account's.
+  const isInvoiceBillingPayer = billedTo ? billedTo.invoice_billing : !!invoiceBilling
   // The one exception is an EDIT of an invoice-account order placed before
   // those split: it carries the whole fee and the server re-prices it whole
   // (keepsUnsplitServiceAreaFee, lib/orders/service-area-lock.ts).
@@ -1457,9 +1460,10 @@ export function ReviewStep({
       return
     }
 
-    // Check for payment method
+    // Check for payment method — not for a broker-billed agent: the server
+    // charges the broker's invoice or card, never a card picked here.
     const selectedPaymentMethodId = formData.payment_method_id || defaultPaymentMethod?.id
-    if (!selectedPaymentMethodId) {
+    if (!billedTo && !selectedPaymentMethodId) {
       setError('Please add a payment method before placing your order')
       return
     }
@@ -1505,8 +1509,12 @@ export function ReviewStep({
           items,
           requested_date: formData.requested_date,
           is_expedited: formData.schedule_type === 'expedited',
-          payment_method_id: formData.payment_method_id || defaultPaymentMethod?.id,
-          save_payment_method: formData.save_payment_method,
+          ...(billedTo
+            ? {}
+            : {
+                payment_method_id: formData.payment_method_id || defaultPaymentMethod?.id,
+                save_payment_method: formData.save_payment_method,
+              }),
           promo_code: formData.promo_code,
           promo_code_id: formData.promo_code_id,
           fuel_surcharge_waived: fuelSurchargeWaived,
@@ -1828,7 +1836,20 @@ export function ReviewStep({
       {/* Payment Method — hidden while editing (no re-charge on edit) and
           hidden for cart accounts (team_admin / on-behalf-of), which select the
           card on the cart checkout screen for the single combined charge. */}
-      {!isEdit && !cartEnabled && (
+      {!isEdit && !cartEnabled && billedTo && (
+      <div className="bg-white border border-gray-200 rounded-xl p-6">
+        <h3 className="font-semibold text-gray-900 flex items-center gap-2 mb-2">
+          <CreditCard className="w-5 h-5" />
+          Billed to {billedTo.name}
+        </h3>
+        <p className="text-sm text-gray-600">
+          {billedTo.invoice_billing
+            ? `Your orders are billed to ${billedTo.name}. This one is added to their next invoice, with nothing charged today.`
+            : `Your orders are billed to ${billedTo.name} and charged to their card on file.`}
+        </p>
+      </div>
+      )}
+      {!isEdit && !cartEnabled && !billedTo && (
       <div className="bg-white border border-gray-200 rounded-xl p-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-semibold text-gray-900 flex items-center gap-2">
@@ -2012,7 +2033,7 @@ export function ReviewStep({
           disabled={
             isSubmitting ||
             loadingServiceAreaQuote ||
-            (!activePaymentMethods?.length && !formData.payment_method_id) ||
+            (!billedTo && !activePaymentMethods?.length && !formData.payment_method_id) ||
             serviceAreaQuote?.tier === 'out_of_area' ||
             (requiresOOAConsent && !formData.service_area_fee_agreed) ||
             blockedOnQuoteFailure

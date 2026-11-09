@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto'
 import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
+import { orderPaidByWhere, serviceRequestPaidByWhere } from '@/lib/orders/effective-payer'
 import { audit, AuditAction } from '@/lib/audit'
 import { processInvoiceSendJob } from '@/lib/invoices/send-invoice-job'
 import { invoiceDiscount } from '@/lib/invoices/discount'
@@ -41,10 +42,14 @@ import {
  * (app/api/invoices/bundle/route.ts). Matching userId alone meant a
  * brokerage's on-behalf orders could never be invoiced from /admin/invoices.
  */
-function orderOwnershipWhere(customerId: string, role: string | null | undefined): Prisma.OrderWhereInput {
-  return role === 'team_admin'
-    ? { OR: [{ userId: customerId }, { placedByUserId: customerId }] }
-    : { userId: customerId }
+//
+// Broker billing (Ryan, 2026-11-05): now the full payer rule for every role
+// — billedTo ?? placedBy ?? user (orderPaidByWhere). An agent's order billed
+// to a broker lands on the BROKER's invoice and never on the agent's, and an
+// order placed on an agent's behalf no longer also qualifies for the agent's
+// own invoice (whichever bundled first used to take it).
+function orderOwnershipWhere(customerId: string, _role: string | null | undefined): Prisma.OrderWhereInput {
+  return orderPaidByWhere(customerId)
 }
 
 function parseInclusiveRange(startRaw: string | null, endRaw: string | null) {
@@ -121,7 +126,7 @@ export async function GET(request: NextRequest) {
       // without completedAt aren't bundle-ready even if amount is set.
       prisma.serviceRequest.findMany({
         where: {
-          userId: customerId,
+          ...serviceRequestPaidByWhere(customerId),
           invoiceId: null,
           invoiceStatus: 'pending_invoice',
           invoiceAmount: { not: null },
@@ -367,7 +372,7 @@ export async function POST(request: NextRequest) {
       }),
       tx.serviceRequest.findMany({
         where: {
-          userId: customerId,
+          ...serviceRequestPaidByWhere(customerId),
           invoiceId: null,
           invoiceStatus: 'pending_invoice',
           invoiceAmount: { not: null },

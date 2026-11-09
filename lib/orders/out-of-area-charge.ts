@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { chargePaymentMethod } from '@/lib/stripe'
 import { getStripeErrorMessage } from '@/lib/stripe/server'
+import { payerIdOf } from '@/lib/orders/effective-payer'
 
 // A card charge takes seconds. A claim older than this belongs to a request
 // that died mid-charge; it may be charged (or removed) again — the Stripe
@@ -51,6 +52,7 @@ export async function chargeSecondOutOfAreaFee(
         id: true,
         userId: true,
         placedByUserId: true,
+        billedToUserId: true,
         status: true,
         serviceAreaSecondChargeCents: true,
         serviceAreaSecondChargeStatus: true,
@@ -69,10 +71,10 @@ export async function chargeSecondOutOfAreaFee(
     if (order.status === 'cancelled') return
 
     // Payer mirrors app/api/orders/route.ts's resolution at order-creation
-    // time: placedByUserId (team_admin on-behalf-of) if set, else the
-    // order's own userId — always whoever was billed for the order.
+    // time: billedTo (broker billing) ?? placedBy (team_admin on-behalf-of)
+    // ?? the order's own userId — always whoever was billed for the order.
     const payer = await prisma.user.findUnique({
-      where: { id: order.placedByUserId ?? order.userId },
+      where: { id: payerIdOf(order) },
       select: { id: true, stripeCustomerId: true, invoiceBilling: true },
     })
 

@@ -200,13 +200,28 @@ export async function POST(
       }
     })
 
+    // Broker billing rides on this link: an agent billed to a brokerage they
+    // are no longer linked to (unlinked, or moved to another) stops being
+    // billed to it. Orders already placed keep their stamped payer.
+    const billingCleared = await prisma.user.updateMany({
+      where: teamId
+        ? { id, billToBrokerUserId: { not: null }, NOT: { billToBroker: { teamId } } }
+        : { id, billToBrokerUserId: { not: null } },
+      data: { billToBrokerUserId: null },
+    })
+
     await audit({
       action: AuditAction.AgentLinkedToBrokerage,
       targetType: 'user',
       targetId: id,
       actor,
       request,
-      metadata: { from: previousTeamId, to: teamId, brokerage: team?.name ?? null },
+      metadata: {
+        from: previousTeamId,
+        to: teamId,
+        brokerage: team?.name ?? null,
+        ...(billingCleared.count > 0 ? { billToBrokerCleared: true } : {}),
+      },
     })
 
     return NextResponse.json({ success: true, teamId, brokerage: team?.name ?? null })

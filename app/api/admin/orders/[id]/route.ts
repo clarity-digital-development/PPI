@@ -51,7 +51,12 @@ export async function GET(
         // payer's CURRENT flag, so the admin page labels the button by it).
         placedBy: {
           // postRentalChargedFrom: the same payer decides post rental.
-          select: { id: true, fullName: true, email: true, invoiceBilling: true, postRentalChargedFrom: true },
+          select: { id: true, fullName: true, email: true, invoiceBilling: true, postRentalChargedFrom: true, stripeCustomerId: true },
+        },
+        // Broker billing: the broker this agent's order is billed to. When
+        // set it is the payer (billedTo ?? placedBy ?? user) everywhere.
+        billedTo: {
+          select: { id: true, fullName: true, email: true, invoiceBilling: true, postRentalChargedFrom: true, stripeCustomerId: true },
         },
         // The invoice the order itself was bundled on, and the (usually
         // later) invoice its out-of-area pickup half was billed on — Ryan,
@@ -88,13 +93,13 @@ export async function GET(
       order,
       installation: order.installation,
       user: order.user,
-      // Rental goes by the account that pays (placedBy ?? user).
+      // Rental goes by the account that pays (billedTo ?? placedBy ?? user).
       payer: (() => {
-        const p = order.placedBy ?? order.user
+        const p = order.billedTo ?? order.placedBy ?? order.user
         return {
           id: p.id,
           name: p.fullName || p.email,
-          placedForAgent: !!order.placedBy,
+          placedForAgent: !!(order.billedTo ?? order.placedBy),
           postRentalChargedFrom: p.postRentalChargedFrom,
           invoiceBilling: p.invoiceBilling,
         }

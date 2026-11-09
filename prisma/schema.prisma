@@ -125,6 +125,12 @@ model User {
   // here instead of the broker's account email. Lets a broker route bills
   // to their accountant without forwarding. Falls back to `email` when null.
   billingEmail        String?  @map("billing_email")
+  // Broker billing (Ryan, 2026-11-05): when set, every order and service
+  // trip this agent places is billed to this broker (a team_admin the agent
+  // is linked to) — onto the broker's invoice, or the broker's card. Each
+  // order / service request stamps it at creation (billedToUserId), so
+  // turning this off later never moves existing charges onto the agent.
+  billToBrokerUserId  String?  @map("bill_to_broker_user_id")
 
   // Team membership (for RE teams managed by a team_admin who places orders
   // on behalf of their agents). Both team_admins and agents have a teamId.
@@ -171,6 +177,12 @@ model User {
   // the agent; placedByUserId is the team_admin who actually placed it.
   ordersPlacedFor           Order[]                @relation("OrdersPlacedBy")
   ordersCancelled           Order[]                @relation("OrderCancelledBy")
+  // Broker billing: the broker this agent bills to, the agents billing to
+  // this broker, and the orders / service trips billed to this broker.
+  billToBroker              User?                  @relation("BillToBroker", fields: [billToBrokerUserId], references: [id])
+  billedAgents              User[]                 @relation("BillToBroker")
+  ordersBilledTo            Order[]                @relation("OrdersBilledTo")
+  serviceRequestsBilledTo   ServiceRequest[]       @relation("ServiceRequestsBilledTo")
   auditLogs                 AuditLog[]             @relation("AuditActor")
   preferenceChanges         UserPreferenceChange[]
   heldInventoryAsOwner      InventoryHold[]        @relation("InventoryHoldOwner")
@@ -178,6 +190,7 @@ model User {
   heldInventoryOnBehalfOfMe InventoryHold[]        @relation("InventoryHoldOnBehalfOf")
 
   @@index([teamId])
+  @@index([billToBrokerUserId])
   @@map("users")
 }
 
@@ -536,6 +549,13 @@ model Order {
   // Null = the agent placed it themselves.
   placedByUserId String? @map("placed_by_user_id")
 
+  // Broker billing: the broker this order is billed to, when the agent who
+  // placed it had User.billToBrokerUserId set. Stamped at creation and never
+  // changed. The payer rule everywhere is billedTo ?? placedBy ?? user
+  // (lib/orders/effective-payer.ts). Kept separate from placedByUserId so
+  // the broker gets billed without gaining edit/cancel rights over the order.
+  billedToUserId String? @map("billed_to_user_id")
+
   // Free-text name of the agent on the team who sold this property. Only
   // captured for team_admin accounts (Peggy & similar) — they manage a team
   // as one user account and label each order with the responsible agent.
@@ -635,6 +655,9 @@ model Order {
 
   user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   placedBy          User?              @relation("OrdersPlacedBy", fields: [placedByUserId], references: [id])
+  // Restrict: a broker with orders billed to them can't be deleted out from
+  // under the stamp (SetNull would silently move the charge onto the agent).
+  billedTo          User?              @relation("OrdersBilledTo", fields: [billedToUserId], references: [id], onDelete: Restrict)
   cancelledBy       User?              @relation("OrderCancelledBy", fields: [cancelledByUserId], references: [id])
   postType          PostType?          @relation(fields: [postTypeId], references: [id])
   promoCode         PromoCode?         @relation(fields: [promoCodeId], references: [id])
@@ -648,6 +671,7 @@ model Order {
   ooaPickupInvoice  Invoice?           @relation("OrderOOAPickupInvoice", fields: [serviceAreaSecondChargeInvoiceId], references: [id], onDelete: SetNull)
 
   @@index([placedByUserId])
+  @@index([billedToUserId])
   @@index([area])
   @@index([serviceAreaSecondChargeInvoiceId])
   @@index([cancelledByUserId])
@@ -976,14 +1000,20 @@ model ServiceRequest {
   // trips to an address without an order are the ones that do (Ryan,
   // 2026-10-29).
   area                   String?
+  // Broker billing: the broker this trip is billed to (stamped at creation
+  // from the requester's User.billToBrokerUserId, never changed). Payer =
+  // billedTo ?? user.
+  billedToUserId         String?              @map("billed_to_user_id")
   createdAt              DateTime             @default(now()) @map("created_at")
   updatedAt              DateTime             @updatedAt @map("updated_at")
 
   installation Installation? @relation(fields: [installationId], references: [id], onDelete: Cascade)
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  billedTo     User?         @relation("ServiceRequestsBilledTo", fields: [billedToUserId], references: [id], onDelete: Restrict)
   invoice      Invoice?      @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
 
   @@index([invoiceId])
+  @@index([billedToUserId])
   @@map("service_requests")
 }
 

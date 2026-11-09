@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { resolveServiceArea } from '@/lib/service-area'
-import { resolveEffectivePayer } from '@/lib/orders/effective-payer'
+import { resolveEffectivePayer, payerIdOf, resolveActiveBillToBroker } from '@/lib/orders/effective-payer'
 import { checkRateLimit, rateLimitPresets } from '@/lib/rate-limit'
 
 /**
@@ -68,7 +68,7 @@ export async function GET(request: NextRequest) {
     if (orderId && user.role === 'admin') {
       const order = await prisma.order.findUnique({
         where: { id: orderId },
-        select: { userId: true, placedByUserId: true },
+        select: { userId: true, placedByUserId: true, billedToUserId: true },
       })
       if (order) {
         const payer = await resolveEffectivePayer(order)
@@ -98,6 +98,37 @@ export async function GET(request: NextRequest) {
       // On any lookup failure: fall through to admin's own wallet. This
       // OVER-reports the surcharge (admin isn't exempt) rather than UNDER-
       // reporting — the safer failure mode given the bug we just fixed.
+    } else if (user.role !== 'admin') {
+      // Non-admin: the wallet is whoever PAYS, the same account the create /
+      // edit routes resolve the exemption against — the order's payer when
+      // editing their own order, else the broker they bill to (broker
+      // billing), else themselves. Otherwise a broker-billed agent would be
+      // quoted their own exemption and charged the broker's.
+      let walletId: string | null = null
+      if (orderId) {
+        const order = await prisma.order.findFirst({
+          where: { id: orderId, OR: [{ userId: user.id }, { placedByUserId: user.id }] },
+          select: { userId: true, placedByUserId: true, billedToUserId: true },
+        })
+        if (order) walletId = payerIdOf(order)
+      } else {
+        // Same roster check the order routes apply.
+        const billing = await resolveActiveBillToBroker(user)
+        if (billing) walletId = billing.broker.id
+      }
+      if (walletId && walletId !== user.id) {
+        const wallet = await prisma.user.findUnique({
+          where: { id: walletId },
+          select: { id: true, role: true, isServiceAreaExempt: true },
+        })
+        if (wallet) {
+          walletUser = {
+            id: wallet.id,
+            role: wallet.role,
+            isServiceAreaExempt: wallet.isServiceAreaExempt ?? false,
+          }
+        }
+      }
     }
 
     const address =

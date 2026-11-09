@@ -12,6 +12,7 @@ import {
 import { releaseOrderHoldsAndRestoreInventory } from '@/lib/inventory-holds'
 import { resolveRefundRecipient } from '@/lib/orders/refund-recipient'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
+import { getBilledToContact } from '@/lib/orders/effective-payer'
 import { audit, AuditAction } from '@/lib/audit'
 
 /**
@@ -247,23 +248,40 @@ export async function POST(request: NextRequest) {
             teamId: order.user.teamId,
           })
           try {
+            const confirmation = {
+              customerName: order.user.fullName || order.user.name || '',
+              customerEmail: order.user.email,
+              orderNumber: order.orderNumber,
+              propertyAddress: `${order.propertyAddress}, ${order.propertyCity}, ${order.propertyState} ${order.propertyZip}`,
+              total: Number(order.total),
+              items: order.orderItems.map((item) => ({
+                description: item.description,
+                quantity: item.quantity,
+                total_price: Number(item.totalPrice),
+              })),
+              requestedDate: order.scheduledDate?.toISOString(),
+              installationNotes: order.propertyNotes || undefined,
+              // Pref gate — order recipient is the order's userId.
+              recipientUserId: order.userId,
+            }
+            // Broker billing: agent's copy names the broker; broker gets a copy.
+            const billedTo = await getBilledToContact(order.billedToUserId)
             await Promise.all([
               sendOrderConfirmationEmail({
-                customerName: order.user.fullName || order.user.name || '',
-                customerEmail: order.user.email,
-                orderNumber: order.orderNumber,
-                propertyAddress: `${order.propertyAddress}, ${order.propertyCity}, ${order.propertyState} ${order.propertyZip}`,
-                total: Number(order.total),
-                items: order.orderItems.map((item) => ({
-                  description: item.description,
-                  quantity: item.quantity,
-                  total_price: Number(item.totalPrice),
-                })),
-                requestedDate: order.scheduledDate?.toISOString(),
-                installationNotes: order.propertyNotes || undefined,
-                // Pref gate — order recipient is the order's userId.
-                recipientUserId: order.userId,
+                ...confirmation,
+                ...(billedTo ? { billedToName: billedTo.name } : {}),
               }),
+              ...(billedTo
+                ? [
+                    sendOrderConfirmationEmail({
+                      ...confirmation,
+                      customerName: billedTo.name,
+                      customerEmail: billedTo.email,
+                      recipientUserId: billedTo.id,
+                      billedForAgentName: order.user.fullName || order.user.name || order.user.email,
+                    }),
+                  ]
+                : []),
               sendAdminOrderNotification({
                 orderNumber: order.orderNumber,
                 customerName: order.user.fullName || order.user.name || '',

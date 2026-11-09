@@ -148,6 +148,11 @@ interface OrderConfirmationEmailProps {
   // line on the change-summary block ("$5 charged to Visa ••••1234",
   // "$10 credit pending", "added to your next invoice", etc.).
   editChargeOutcome?: EditChargeOutcome
+  // Broker billing (Ryan, 2026-11-09: both the agent and the broker get the
+  // confirmation). On the AGENT's copy: the broker the order is billed to.
+  // On the BROKER's copy: the agent who placed it. Never both.
+  billedToName?: string
+  billedForAgentName?: string
 }
 
 export async function sendOrderConfirmationEmail({
@@ -167,6 +172,8 @@ export async function sendOrderConfirmationEmail({
   editorName,
   originalTotal,
   editChargeOutcome,
+  billedToName,
+  billedForAgentName,
 }: OrderConfirmationEmailProps) {
   // Pref gate — opt-out short-circuits before any Resend call.
   if (!(await shouldSendEmail(recipientUserId, 'emailOrderConfirmations', recipientPrefs))) {
@@ -223,16 +230,25 @@ export async function sendOrderConfirmationEmail({
               ? `We just updated order ${orderNumber} on your behalf. Here's the current state:`
               : isSelfEdited
                 ? `Your edits to order ${orderNumber} are saved. Here's the current state:`
-                : (isInvoiceBilling
-                    ? `This order has been added to your account and will appear on your next invoice. No payment has been collected yet.`
-                    : `Thank you for your order! We've received your request and will begin processing it shortly.`)
+                : billedForAgentName
+                  ? (isInvoiceBilling
+                      ? `${escapeHtml(billedForAgentName)} placed this order, and it's billed to your account. It will appear on your next invoice. No payment has been collected yet.`
+                      : `${escapeHtml(billedForAgentName)} placed this order, and it was charged to your card on file.`)
+                  : billedToName
+                    ? (isInvoiceBilling
+                        ? `Thank you for your order! It's billed to ${escapeHtml(billedToName)} and will appear on their next invoice.`
+                        : `Thank you for your order! It was charged to ${escapeHtml(billedToName)}'s card on file.`)
+                    : (isInvoiceBilling
+                        ? `This order has been added to your account and will appear on your next invoice. No payment has been collected yet.`
+                        : `Thank you for your order! We've received your request and will begin processing it shortly.`)
         }</p>
 
         <div style="background-color: #FFF0F3; border-radius: 8px; padding: 16px; margin: 24px 0;">
           <p style="margin: 0; color: #666;"><strong>Order Number:</strong> ${orderNumber}</p>
           <p style="margin: 8px 0 0; color: #666;"><strong>Property:</strong> ${propertyAddress}</p>
           ${requestedDate ? `<p style="margin: 8px 0 0; color: #666;"><strong>Requested Date:</strong> ${requestedDate}</p>` : ''}
-          ${isInvoiceBilling ? `<p style="margin: 8px 0 0; color: #B45309;"><strong>Billing:</strong> Pay on invoice</p>` : ''}
+          ${billedForAgentName ? `<p style="margin: 8px 0 0; color: #666;"><strong>Placed by:</strong> ${escapeHtml(billedForAgentName)}</p>` : ''}
+          ${billedToName ? `<p style="margin: 8px 0 0; color: #B45309;"><strong>Billing:</strong> Billed to ${escapeHtml(billedToName)}</p>` : isInvoiceBilling ? `<p style="margin: 8px 0 0; color: #B45309;"><strong>Billing:</strong> Pay on invoice</p>` : ''}
         </div>
 
         ${installationNotes ? `

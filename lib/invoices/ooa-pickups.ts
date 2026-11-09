@@ -19,6 +19,7 @@
  */
 import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
+import { orderPaidByWhere } from '@/lib/orders/effective-payer'
 import type { InvoicePickup } from './invoice-pdf'
 
 type Db = Prisma.TransactionClient | typeof prisma
@@ -36,7 +37,7 @@ export type PreviouslyBilledScope =
 /**
  * Queued pickup halves that belong on an invoice for `ownerId`.
  *
- * A half is billed to whoever pays for the order (placedByUserId ?? userId),
+ * A half is billed to whoever pays for the order (billedTo ?? placedBy ?? user — orderPaidByWhere),
  * once the order itself has been billed — either it's being bundled onto this
  * invoice now (`bundlingOrderIds`), or it isn't sitting unbundled on the
  * invoice queue (already invoiced, or paid by card before the account moved
@@ -54,7 +55,7 @@ export function ooaPickupSweepWhere(
       : [
           {
             AND: [
-              { OR: [{ placedByUserId: ownerId }, { placedByUserId: null, userId: ownerId }] },
+              orderPaidByWhere(ownerId),
               { OR: [{ invoiceId: { not: null } }, { paymentStatus: { not: 'pending_invoice' } }] },
               ...(scope.kind === 'agent' ? [{ placedForAgentName: scope.agent }] : []),
             ],

@@ -91,6 +91,23 @@ export async function DELETE(
       request,
       metadata: { from: member.teamId, to: null, via: 'roster_removal', member_id: id },
     })
+
+    // Broker billing rides on the same link: an agent the broker removed is
+    // no longer billed to them. Orders already placed keep their payer.
+    const cleared = await prisma.user.updateMany({
+      where: { id: member.userId, billToBroker: { teamId: member.teamId } },
+      data: { billToBrokerUserId: null },
+    })
+    if (cleared.count > 0) {
+      await audit({
+        action: AuditAction.AgentBillToBroker,
+        targetType: 'user',
+        targetId: member.userId,
+        actor: user,
+        request,
+        metadata: { to: null, via: 'roster_removal', member_id: id },
+      })
+    }
   }
 
   return NextResponse.json({ success: true })

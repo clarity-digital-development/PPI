@@ -35,6 +35,10 @@ export async function POST(
         user: {
           select: { id: true, email: true, fullName: true, name: true, stripeCustomerId: true, invoiceBilling: true },
         },
+        // Broker billing: the broker this trip is billed to (the payer).
+        billedTo: {
+          select: { id: true, email: true, fullName: true, name: true, stripeCustomerId: true, invoiceBilling: true },
+        },
         // The removal's order — for the out-of-area pickup double-billing
         // guard below.
         installation: {
@@ -118,7 +122,11 @@ export async function POST(
     // Invoice via /admin/invoices, mirroring how invoice-billing orders flow.
     // No Stripe customer or saved card needed — collection happens later when
     // the customer pays the bundled invoice.
-    if (serviceRequest.user.invoiceBilling) {
+    // Whoever pays for this trip: the broker it's billed to, else the
+    // requester (Ryan, 2026-11-05 broker billing).
+    const srPayer = serviceRequest.billedTo ?? serviceRequest.user
+
+    if (srPayer.invoiceBilling) {
       // Conditional on the checks above still holding: a bundle that
       // attached this request since the read has already put the old amount
       // on a sent invoice (which re-reads the request live). The bundlers
@@ -145,20 +153,34 @@ export async function POST(
       }
       const updated = await prisma.serviceRequest.findUnique({ where: { id } })
       try {
+        const brokerName = serviceRequest.billedTo
+          ? serviceRequest.billedTo.fullName || serviceRequest.billedTo.name || serviceRequest.billedTo.email
+          : null
         await createNotification({
           userId: serviceRequest.userId,
           type: 'service_request_acknowledged',
-          title: 'Service trip added to your next invoice',
-          message: `A $${amount.toFixed(2)} service charge has been added to your next bundled invoice. No payment has been collected yet.`,
+          title: brokerName ? `Service trip billed to ${brokerName}` : 'Service trip added to your next invoice',
+          message: brokerName
+            ? `A $${amount.toFixed(2)} service charge has been added to ${brokerName}'s next invoice.`
+            : `A $${amount.toFixed(2)} service charge has been added to your next bundled invoice. No payment has been collected yet.`,
           link: '/dashboard/service-requests',
         })
+        if (serviceRequest.billedTo) {
+          await createNotification({
+            userId: serviceRequest.billedTo.id,
+            type: 'service_request_acknowledged',
+            title: 'Service trip added to your next invoice',
+            message: `A $${amount.toFixed(2)} service charge for ${serviceRequest.user.fullName || serviceRequest.user.name || serviceRequest.user.email} has been added to your next bundled invoice.`,
+            link: '/dashboard/invoices',
+          })
+        }
       } catch (notifErr) {
         console.error('Invoice-billing SR notification failed:', notifErr)
       }
       return NextResponse.json({ serviceRequest: updated, deferred: true })
     }
 
-    if (!serviceRequest.user.stripeCustomerId) {
+    if (!srPayer.stripeCustomerId) {
       return NextResponse.json(
         { error: 'This customer has no payment profile on file, so their card cannot be charged.' },
         { status: 400 }
@@ -167,8 +189,8 @@ export async function POST(
 
     // Prefer the customer's default card; fall back to any saved card.
     const paymentMethod =
-      (await prisma.paymentMethod.findFirst({ where: { userId: serviceRequest.userId, isDefault: true } })) ||
-      (await prisma.paymentMethod.findFirst({ where: { userId: serviceRequest.userId } }))
+      (await prisma.paymentMethod.findFirst({ where: { userId: srPayer.id, isDefault: true } })) ||
+      (await prisma.paymentMethod.findFirst({ where: { userId: srPayer.id } }))
 
     if (!paymentMethod) {
       return NextResponse.json(
@@ -181,7 +203,7 @@ export async function POST(
 
     try {
       const paymentIntent = await chargePaymentMethod(
-        serviceRequest.user.stripeCustomerId,
+        srPayer.stripeCustomerId,
         paymentMethod.stripePaymentMethodId,
         amountInCents,
         `Service trip invoice — ${serviceRequest.type}`,
@@ -216,9 +238,20 @@ export async function POST(
           userId: serviceRequest.userId,
           type: 'service_request_acknowledged',
           title: 'Service charge processed',
-          message: `A $${amount.toFixed(2)} charge for your service request was processed.`,
+          message: serviceRequest.billedTo
+            ? `A $${amount.toFixed(2)} charge for your service request was billed to ${serviceRequest.billedTo.fullName || serviceRequest.billedTo.name || serviceRequest.billedTo.email}.`
+            : `A $${amount.toFixed(2)} charge for your service request was processed.`,
           link: '/dashboard/service-requests',
         })
+        if (serviceRequest.billedTo) {
+          await createNotification({
+            userId: serviceRequest.billedTo.id,
+            type: 'service_request_acknowledged',
+            title: 'Service charge processed',
+            message: `A $${amount.toFixed(2)} service charge for ${serviceRequest.user.fullName || serviceRequest.user.name || serviceRequest.user.email} was charged to your card on file.`,
+            link: '/dashboard/service-requests',
+          })
+        }
       } catch (notifErr) {
         console.error('Invoice notification failed:', notifErr)
       }

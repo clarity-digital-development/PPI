@@ -182,7 +182,7 @@ export function computePostRentalView(args: {
       reason: user.role === 'admin'
         ? 'Internal staff account'
         : payer.placedForAgent
-          ? `Placed and paid by ${payer.name}, whose “Charge post rental” switch is off. Turn it on on ${payer.name}’s customer page to start (the agent’s own switch doesn’t apply to this order).`
+          ? `Paid by ${payer.name}, whose “Charge post rental” switch is off. Turn it on on ${payer.name}’s customer page to start (the agent’s own switch doesn’t apply to this order).`
           : 'This account isn’t charged post rental. Turn on “Charge post rental” on their customer page to start.',
       payerId: payer.id,
       payerName: payer.name,

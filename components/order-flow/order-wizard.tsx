@@ -152,6 +152,8 @@ export interface OrderWizardProps {
   // Payer is invoice-billing — words the out-of-area agreement for the
   // invoice (pickup half added to their next invoice instead of charged).
   invoiceBilling?: boolean
+  // Broker billing: orders billed to this broker (see StepProps.billedTo).
+  billedTo?: { name: string; invoice_billing: boolean } | null
   // When true, ReviewStep shows internal service-area breadcrumb info next
   // to the out-of-area fee (center name + drive minutes). Customer view
   // hides this to avoid confusion — e.g. "Bardstown ~51 min" on a
@@ -165,7 +167,7 @@ export interface OrderWizardProps {
   editingCartItemId?: string
 }
 
-export function OrderWizard({ inventory, paymentMethods, onBehalfOf, placedForMemberId, currentUserRole, mode = 'create', orderId, initialFormData, editMeta, lockboxInstallFee, pickupFee, flatFee, invoiceBilling, adminView, editingCartItemId }: OrderWizardProps) {
+export function OrderWizard({ inventory, paymentMethods, onBehalfOf, placedForMemberId, currentUserRole, mode = 'create', orderId, initialFormData, editMeta, lockboxInstallFee, pickupFee, flatFee, invoiceBilling, billedTo, adminView, editingCartItemId }: OrderWizardProps) {
   const isEdit = mode === 'edit'
   const [currentStep, setCurrentStep] = useState(0)
   // In edit mode (or cart-edit re-entry) every step has effectively been
@@ -410,6 +412,7 @@ export function OrderWizard({ inventory, paymentMethods, onBehalfOf, placedForMe
               pickupFee={pickupFee}
               flatFee={flatFee}
               invoiceBilling={invoiceBilling}
+              billedTo={billedTo}
               adminView={adminView}
               editingCartItemId={editingCartItemId}
             />

@@ -5,6 +5,7 @@ import { createPaymentIntent, confirmPaymentIntent, getStripeErrorMessage } from
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
 import { isInvoicePathOrder } from '@/lib/orders/service-area-lock'
+import { payerIdOf, getBilledToContact } from '@/lib/orders/effective-payer'
 
 export async function POST(
   request: NextRequest,
@@ -52,12 +53,19 @@ export async function POST(
     // explanation so admin knows to bundle instead. Checked on the order and
     // its payer (placedBy ?? user), not just order.user: a team_admin's
     // on-behalf order belongs to the agent but sits on the broker's invoice.
-    const payerInvoiceBilling = order.placedByUserId
-      ? !!(await prisma.user.findUnique({
-          where: { id: order.placedByUserId },
-          select: { invoiceBilling: true },
-        }))?.invoiceBilling
-      : order.user.invoiceBilling
+    //
+    // The card is the PAYER's too (billedTo ?? placedBy ?? user). This used to
+    // charge order.user's Stripe customer, so an on-behalf or broker-billed
+    // order charged the agent. The admin page now lists the payer's cards.
+    const payerId = payerIdOf(order)
+    const payerUser =
+      payerId === order.userId
+        ? order.user
+        : await prisma.user.findUnique({
+            where: { id: payerId },
+            select: { invoiceBilling: true, stripeCustomerId: true },
+          })
+    const payerInvoiceBilling = !!payerUser?.invoiceBilling
     if (isInvoicePathOrder(order) || payerInvoiceBilling) {
       return NextResponse.json(
         {
@@ -67,8 +75,21 @@ export async function POST(
       )
     }
 
-    if (!order.user.stripeCustomerId) {
+    const payerStripeCustomerId = payerUser?.stripeCustomerId
+    if (!payerStripeCustomerId) {
       return NextResponse.json({ error: 'Customer has no Stripe account' }, { status: 400 })
+    }
+
+    // The card must be one of the payer's own saved cards.
+    const ownsCard = await prisma.paymentMethod.findFirst({
+      where: { userId: payerId, stripePaymentMethodId: payment_method_id },
+      select: { id: true },
+    })
+    if (!ownsCard) {
+      return NextResponse.json(
+        { error: "That card isn't on file for the account that pays for this order." },
+        { status: 400 }
+      )
     }
 
     try {
@@ -81,7 +102,7 @@ export async function POST(
         // Create and confirm a new payment intent
         paymentIntent = await createPaymentIntent(
           Number(order.total),
-          order.user.stripeCustomerId,
+          payerStripeCustomerId,
           payment_method_id
         )
       }
@@ -109,22 +130,39 @@ export async function POST(
             teamId: order.user.teamId,
           })
           try {
+            const confirmation = {
+              customerName: order.user.fullName || order.user.name || '',
+              customerEmail: order.user.email,
+              orderNumber: order.orderNumber,
+              propertyAddress: `${order.propertyAddress}, ${order.propertyCity}, ${order.propertyState} ${order.propertyZip}`,
+              total: Number(order.total),
+              items: order.orderItems.map((item) => ({
+                description: item.description,
+                quantity: item.quantity,
+                total_price: Number(item.totalPrice),
+              })),
+              installationNotes: order.propertyNotes || undefined,
+              // Pref gate — order recipient is the order's userId.
+              recipientUserId: order.userId,
+            }
+            // Broker billing: agent's copy names the broker; broker gets a copy.
+            const billedTo = await getBilledToContact(order.billedToUserId)
             await Promise.all([
               sendOrderConfirmationEmail({
-                customerName: order.user.fullName || order.user.name || '',
-                customerEmail: order.user.email,
-                orderNumber: order.orderNumber,
-                propertyAddress: `${order.propertyAddress}, ${order.propertyCity}, ${order.propertyState} ${order.propertyZip}`,
-                total: Number(order.total),
-                items: order.orderItems.map((item) => ({
-                  description: item.description,
-                  quantity: item.quantity,
-                  total_price: Number(item.totalPrice),
-                })),
-                installationNotes: order.propertyNotes || undefined,
-                // Pref gate — order recipient is the order's userId.
-                recipientUserId: order.userId,
+                ...confirmation,
+                ...(billedTo ? { billedToName: billedTo.name } : {}),
               }),
+              ...(billedTo
+                ? [
+                    sendOrderConfirmationEmail({
+                      ...confirmation,
+                      customerName: billedTo.name,
+                      customerEmail: billedTo.email,
+                      recipientUserId: billedTo.id,
+                      billedForAgentName: order.user.fullName || order.user.name || order.user.email,
+                    }),
+                  ]
+                : []),
               sendAdminOrderNotification({
                 orderNumber: order.orderNumber,
                 customerName: order.user.fullName || order.user.name || '',

@@ -55,6 +55,8 @@ export function ScheduleTripModal({
   // Admin-set on the user — when true, swap the trip-fee notice for an
   // invoice-billing message ("added to your next invoice, no payment now").
   const [invoiceBilling, setInvoiceBilling] = useState(false)
+  // Broker billing: this account's trips are billed to their broker.
+  const [billedTo, setBilledTo] = useState<{ name: string; invoice_billing: boolean } | null>(null)
 
   // Fetch user's installations + invoice-billing flag from profile
   useEffect(() => {
@@ -70,6 +72,7 @@ export function ScheduleTripModal({
       if (res.ok) {
         const data = await res.json()
         setInvoiceBilling(!!data.user?.invoice_billing)
+        setBilledTo(data.user?.billed_to ?? null)
       }
     } catch {
       // Default (false) preserves today's trip-fee notice on any failure.
@@ -240,7 +243,19 @@ export function ScheduleTripModal({
         <form onSubmit={handleSubmit}>
           <div className="space-y-4">
             {/* Trip Fee / Invoice-Billing Notice */}
-            {invoiceBilling ? (
+            {billedTo ? (
+              <div className="p-4 bg-pink-50 rounded-lg border border-pink-200">
+                <div className="flex items-center gap-2">
+                  <DollarSign className="w-5 h-5 text-pink-600" />
+                  <span className="font-semibold text-pink-900">Billed to {billedTo.name}</span>
+                </div>
+                <p className="text-sm text-pink-700 mt-1">
+                  {billedTo.invoice_billing
+                    ? `This service trip and any items are billed to ${billedTo.name} and added to their next invoice.`
+                    : `This service trip and any items are billed to ${billedTo.name} and charged to their card on file.`}
+                </p>
+              </div>
+            ) : invoiceBilling ? (
               <div className="p-4 bg-pink-50 rounded-lg border border-pink-200">
                 <div className="flex items-center gap-2">
                   <DollarSign className="w-5 h-5 text-pink-600" />

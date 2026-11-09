@@ -5,6 +5,7 @@ import { sendInstallationCompleteEmail } from '@/lib/email'
 import { createOrderNotification } from '@/lib/notifications'
 import { chargePaymentMethod } from '@/lib/stripe'
 import { isInvoicePathOrder, keepsLockedServiceAreaFee, keepsUnsplitServiceAreaFee } from '@/lib/orders/service-area-lock'
+import { payerIdOf } from '@/lib/orders/effective-payer'
 
 export async function GET(
   request: NextRequest,
@@ -53,7 +54,7 @@ export async function GET(
     // a broker's order saw the admin's (empty) perks and previewed prices the
     // server wouldn't charge. The edit route resolves the same payer.
     const payer = await prisma.user.findUnique({
-      where: { id: order.placedByUserId ?? order.userId },
+      where: { id: payerIdOf(order) },
       select: {
         freeLockboxInstall: true,
         // Picks the out-of-area consent wording on the edit screen (pickup
@@ -190,12 +191,20 @@ export async function PUT(
       // payer. Gating on the agent's flag charged the agent's card for an
       // order sitting on the broker's invoice and knocked it off the invoice
       // path — its out-of-area pickup half would then go to a card too.
-      const payerInvoiceBilling = order.placedByUserId
-        ? !!(await prisma.user.findUnique({
-            where: { id: order.placedByUserId },
-            select: { invoiceBilling: true },
-          }))?.invoiceBilling
-        : order.user.invoiceBilling
+      //
+      // The card charged below is the PAYER's too (billedTo ?? placedBy ??
+      // user). It used to be order.user's, so a team_admin's on-behalf order —
+      // or a broker-billed agent's — whose payer isn't invoice-billed charged
+      // the AGENT's card on completion.
+      const payerId = payerIdOf(order)
+      const payerUser =
+        payerId === order.userId
+          ? order.user
+          : await prisma.user.findUnique({
+              where: { id: payerId },
+              select: { invoiceBilling: true, stripeCustomerId: true },
+            })
+      const payerInvoiceBilling = !!payerUser?.invoiceBilling
       if (isInvoicePathOrder(order) || payerInvoiceBilling) {
         console.log(
           `Order ${order.orderNumber}: skipping auto-charge — billed by invoice. ` +
@@ -203,21 +212,21 @@ export async function PUT(
         )
       } else if (order.paymentStatus !== 'succeeded') {
         try {
-          // Get customer's default payment method
+          // Get the payer's default payment method
           const defaultPaymentMethod = await prisma.paymentMethod.findFirst({
             where: {
-              userId: order.userId,
+              userId: payerId,
               isDefault: true,
             },
           })
 
-          if (defaultPaymentMethod && order.user.stripeCustomerId) {
+          if (defaultPaymentMethod && payerUser?.stripeCustomerId) {
             // Convert total to cents for Stripe
             const amountInCents = Math.round(Number(order.total) * 100)
 
             // Charge the payment method
             const paymentIntent = await chargePaymentMethod(
-              order.user.stripeCustomerId,
+              payerUser.stripeCustomerId,
               defaultPaymentMethod.stripePaymentMethodId,
               amountInCents,
               `Order ${order.orderNumber} - ${order.propertyAddress}`,

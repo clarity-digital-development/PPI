@@ -16,6 +16,7 @@ import {
 } from '@/lib/invoices/ooa-pickups'
 import { attachPostRentals, findSweepablePostRentals, postRentalCents } from '@/lib/invoices/post-rental-lines'
 import { createInvoiceCheckoutSession } from '@/lib/stripe/server'
+import { orderPaidByWhere, serviceRequestPaidByWhere } from '@/lib/orders/effective-payer'
 
 /**
  * Broker self-serve bundler.
@@ -109,9 +110,12 @@ export async function POST(request: NextRequest) {
   // team_admin owns both orders they placed themselves AND orders they
   // placed on behalf of an agent (the agent is `userId`, the team_admin is
   // `placedByUserId`). Customers only see their own.
-  const orderOwnership = profile.role === 'team_admin'
-    ? { OR: [{ userId: user.id }, { placedByUserId: user.id }] }
-    : { userId: user.id }
+  //
+  // Broker billing (Ryan, 2026-11-05): the full payer rule for every role —
+  // billedTo ?? placedBy ?? user (orderPaidByWhere). A linked agent's orders
+  // billed to this broker are bundled here; an agent never bundles orders
+  // billed to their broker.
+  const orderOwnership = orderPaidByWhere(user.id)
 
   // Post-invoice adjustments sweep ONLY on unfiltered bundles: the agent /
   // price filters slice invoices deliberately (e.g. one invoice per agent),
@@ -162,7 +166,7 @@ export async function POST(request: NextRequest) {
     })
 
     const srWhere: Record<string, unknown> = {
-      userId: user.id,
+      ...serviceRequestPaidByWhere(user.id),
       invoiceId: null,
       invoiceStatus: 'pending_invoice' as const,
       completedAt: { gte: startDate, lte: endDate },
@@ -177,6 +181,20 @@ export async function POST(request: NextRequest) {
       }
     } else {
       srWhere.invoiceAmount = { not: null }
+    }
+    // Agent-filtered bundle: a trip billed to this broker by one of their
+    // agents only rides on THAT agent's invoice (matched by the agent's
+    // roster name, the same name their orders carry in placedForAgentName).
+    // The broker's own trips keep their old behavior.
+    if (agent) {
+      srWhere.AND = [
+        {
+          OR: [
+            { billedToUserId: null, userId: user.id },
+            { billedToUserId: user.id, user: { teamMember: { is: { name: agent } } } },
+          ],
+        },
+      ]
     }
 
     const serviceRequests = await tx.serviceRequest.findMany({

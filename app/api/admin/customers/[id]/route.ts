@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { getCurrentUser, isAdminOrTeamAdmin, canActOnBehalfOf } from '@/lib/auth-utils'
 import { audit, AuditAction } from '@/lib/audit'
 import { ensureTeamFor } from '@/lib/teams/ensure-team'
+import { orderPaidByWhere } from '@/lib/orders/effective-payer'
 
 const ALLOWED_ROLES = ['customer', 'admin', 'team_admin'] as const
 type AllowedRole = (typeof ALLOWED_ROLES)[number]
@@ -320,6 +321,13 @@ export async function GET(
       where: { userId: id, removedAt: null },
       select: { teamId: true },
     })
+    // Broker billing: the brokerage login this agent's orders are billed to.
+    const billToBroker = customer.billToBrokerUserId
+      ? await prisma.user.findUnique({
+          where: { id: customer.billToBrokerUserId },
+          select: { id: true, fullName: true, name: true, email: true, team: { select: { name: true } } },
+        })
+      : null
 
     return NextResponse.json({
       customer: {
@@ -351,6 +359,14 @@ export async function GET(
         // refund-routing and billing-fallback authority. See
         // app/api/admin/customers/[id]/brokerage/route.ts.
         brokerage_team_id: brokerageLink?.teamId ?? null,
+        // Broker billing (Ryan, 2026-11-05): who this agent's orders are
+        // billed to, if anyone. Set via ./bill-to-broker.
+        bill_to_broker: billToBroker
+          ? {
+              id: billToBroker.id,
+              name: billToBroker.team?.name || billToBroker.fullName || billToBroker.name || billToBroker.email,
+            }
+          : null,
       },
       team,
       inventory: {
@@ -777,6 +793,42 @@ export async function PUT(
           metadata: { from: priorLink.teamId, to: null, via: 'role_change', member_id: priorLink.id },
         })
       }
+      // Broker billing rides on that link (and on being an ordinary agent):
+      // an account promoted out of 'customer' is no longer billed to a broker.
+      const cleared = await prisma.user.updateMany({
+        where: { id, billToBrokerUserId: { not: null } },
+        data: { billToBrokerUserId: null },
+      })
+      if (cleared.count > 0) {
+        await audit({
+          action: AuditAction.AgentBillToBroker,
+          targetType: 'user',
+          targetId: id,
+          actor: user,
+          request,
+          metadata: { to: null, via: 'role_change' },
+        })
+      }
+    }
+
+    // Broker billing: a brokerage login demoted out of team_admin is no longer
+    // a brokerage — agents billed to it go back to paying for themselves
+    // (orders already placed keep their payer).
+    if (roleChangeAudit && roleChangeAudit.from === 'team_admin' && customer.role !== 'team_admin') {
+      const agents = await prisma.user.updateMany({
+        where: { billToBrokerUserId: id },
+        data: { billToBrokerUserId: null },
+      })
+      if (agents.count > 0) {
+        await audit({
+          action: AuditAction.AgentBillToBroker,
+          targetType: 'user',
+          targetId: id,
+          actor: user,
+          request,
+          metadata: { to: null, via: 'broker_role_change', agentsCleared: agents.count },
+        })
+      }
     }
 
     if (roleChangeAudit) {
@@ -812,7 +864,7 @@ export async function PUT(
           where: {
             invoiceId: null,
             status: { in: ['pending_invoice', 'scheduled', 'failed'] },
-            order: { OR: [{ placedByUserId: customer.id }, { placedByUserId: null, userId: customer.id }] },
+            order: orderPaidByWhere(customer.id),
           },
           data: {
             status: 'skipped',
@@ -922,6 +974,22 @@ export async function DELETE(
     // Prevent deleting yourself
     if (id === user.id) {
       return NextResponse.json({ error: 'Cannot delete your own account' }, { status: 400 })
+    }
+
+    // Broker billing: orders and service trips billed to this account are
+    // its to pay. Deleting it would leave them with no payer (the database
+    // refuses — Restrict), and must never shift them onto the agents.
+    const [billedOrders, billedTrips] = await Promise.all([
+      prisma.order.count({ where: { billedToUserId: id } }),
+      prisma.serviceRequest.count({ where: { billedToUserId: id } }),
+    ])
+    if (billedOrders + billedTrips > 0) {
+      return NextResponse.json(
+        {
+          error: `This account has ${billedOrders} order${billedOrders === 1 ? '' : 's'}${billedTrips ? ` and ${billedTrips} service trip${billedTrips === 1 ? '' : 's'}` : ''} billed to it by its agents, so it can't be deleted.`,
+        },
+        { status: 409 }
+      )
     }
 
     const removed = await prisma.user.delete({

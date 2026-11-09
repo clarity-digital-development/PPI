@@ -12,6 +12,7 @@ export interface RefundRecipient {
 interface OrderForRecipient {
   userId: string
   placedByUserId: string | null
+  billedToUserId?: string | null
   user: {
     id: string
     email: string
@@ -38,6 +39,23 @@ interface OrderForRecipient {
 export async function resolveRefundRecipient(
   order: OrderForRecipient
 ): Promise<RefundRecipient> {
+  // (0) broker billing: the order is billed to a broker (their invoice or
+  // card), so the refund is theirs.
+  if (order.billedToUserId) {
+    const broker = await prisma.user.findUnique({
+      where: { id: order.billedToUserId },
+      select: { id: true, email: true, fullName: true, name: true },
+    })
+    if (broker) {
+      return {
+        id: broker.id,
+        email: broker.email,
+        fullName: broker.fullName || broker.name || broker.email,
+        role: 'broker',
+      }
+    }
+  }
+
   // (1) placed-on-behalf-of: the placer IS the broker.
   if (order.placedByUserId) {
     const placer = await prisma.user.findUnique({

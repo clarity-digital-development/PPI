@@ -60,9 +60,13 @@ export async function GET(request: NextRequest) {
         { invoiceBilling: true },
         // Own orders only when nobody else placed them — an on-behalf order's
         // invoice work belongs to the team_admin who placed it (next line).
-        { orders: { some: { placedByUserId: null, OR: [unbundledOrder, queuedPickup, queuedRental] } } },
-        { ordersPlacedFor: { some: { OR: [unbundledOrder, queuedPickup, queuedRental] } } },
-        { serviceRequests: { some: { invoiceStatus: 'pending_invoice', invoiceId: null } } },
+        // Broker billing: likewise an order billed to a broker is the broker's
+        // (billedTo ?? placedBy ?? user), so it doesn't put the agent here.
+        { orders: { some: { placedByUserId: null, billedToUserId: null, OR: [unbundledOrder, queuedPickup, queuedRental] } } },
+        { ordersPlacedFor: { some: { billedToUserId: null, OR: [unbundledOrder, queuedPickup, queuedRental] } } },
+        { ordersBilledTo: { some: { OR: [unbundledOrder, queuedPickup, queuedRental] } } },
+        { serviceRequests: { some: { billedToUserId: null, invoiceStatus: 'pending_invoice', invoiceId: null } } },
+        { serviceRequestsBilledTo: { some: { invoiceStatus: 'pending_invoice', invoiceId: null } } },
       ],
     }
     const searchScope = {

@@ -118,14 +118,14 @@ export type EligibilityResult =
   | { eligible: false; reason: EligibilityReason }
 
 export interface EligibilityInput {
-  order: Order & { user: User; placedBy: User | null; installation: Installation | null }
+  order: Order & { user: User; placedBy: User | null; billedTo?: User | null; installation: Installation | null }
   now: Date
   billingStartAt: Date
 }
 
 /**
  * The account a post's rental is billed to: whoever pays for the order
- * (placedBy ?? user) — the same rule as the out-of-area fee. Its
+ * (billedTo ?? placedBy ?? user) — the same rule as the out-of-area fee. Its
  * postRentalChargedFrom decides WHETHER rental is charged and from when, and
  * its invoiceBilling decides HOW: card on file, or the next bundled invoice
  * (Ryan, 2026-09-28).
@@ -133,8 +133,9 @@ export interface EligibilityInput {
 export function rentalPayer<U extends { postRentalChargedFrom: Date | null; invoiceBilling: boolean }>(order: {
   user: U
   placedBy: U | null
+  billedTo?: U | null
 }): U {
-  return order.placedBy ?? order.user
+  return order.billedTo ?? order.placedBy ?? order.user
 }
 
 /**

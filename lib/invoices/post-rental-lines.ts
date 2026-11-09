@@ -18,6 +18,7 @@
  */
 import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
+import { orderPaidByWhere } from '@/lib/orders/effective-payer'
 import type { InvoiceRental } from './invoice-pdf'
 import type { PreviouslyBilledScope } from './ooa-pickups'
 
@@ -25,7 +26,7 @@ type Db = Prisma.TransactionClient | typeof prisma
 
 /**
  * Queued rentals that belong on an invoice for `ownerId`: billed to whoever
- * pays for the order (placedByUserId ?? userId), once the order itself has
+ * pays for the order (billedTo ?? placedBy ?? user — orderPaidByWhere), once the order itself has
  * been billed — it's being bundled onto this invoice now, or it isn't sitting
  * unbundled on the invoice queue. `scope` slices them exactly as it slices
  * pickups (an agent-filtered broker bundle takes that agent's only; a
@@ -42,7 +43,7 @@ export function postRentalSweepWhere(
       : [
           {
             AND: [
-              { OR: [{ placedByUserId: ownerId }, { placedByUserId: null, userId: ownerId }] },
+              orderPaidByWhere(ownerId),
               { OR: [{ invoiceId: { not: null } }, { paymentStatus: { not: 'pending_invoice' } }] },
               ...(scope.kind === 'agent' ? [{ placedForAgentName: scope.agent }] : []),
             ],

@@ -70,6 +70,12 @@ export async function GET(request: NextRequest) {
               invoiceBilling: true,
             },
           },
+          // Broker billing: the broker this trip is billed to. When set it is
+          // the payer — the modal reads ITS invoiceBilling flag, the same one
+          // the invoice route routes on (billedTo ?? user).
+          billedTo: {
+            select: { id: true, email: true, fullName: true, invoiceBilling: true },
+          },
           installation: {
             select: {
               id: true,

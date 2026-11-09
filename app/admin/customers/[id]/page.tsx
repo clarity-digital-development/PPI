@@ -33,6 +33,8 @@ interface CustomerData {
     /** Brokerage whose inventory pool this agent may order from. Derived from
      *  the roster row, NOT User.teamId -- see the brokerage route header. */
     brokerage_team_id?: string | null
+    /** Broker billing: the brokerage this agent's orders are billed to. */
+    bill_to_broker?: { id: string; name: string } | null
   }
   team: {
     id: string
@@ -201,6 +203,9 @@ export default function CustomerDetailPage() {
   // and must never ride along with a billing PUT.
   const [brokerages, setBrokerages] = useState<{ teamId: string; name: string }[]>([])
   const [brokerageTeamId, setBrokerageTeamId] = useState<string>('')
+  // Broker billing (Ryan, 2026-11-05): bill this agent's orders to the
+  // brokerage they're linked to. Saved through its own endpoint, after the link.
+  const [billToBroker, setBillToBroker] = useState(false)
   // Per-row selection for the agent-grouped bulk-reassign action bar.
   // Maps a composite key `${type}:${id}` to {type, id} so we can both
   // dedupe and serialize to the bulk endpoint without losing the type.
@@ -270,6 +275,7 @@ export default function CustomerDetailPage() {
           ),
         })
         setBrokerageTeamId(data.customer.brokerage_team_id || '')
+        setBillToBroker(!!data.customer.bill_to_broker)
       }
     } catch (error) {
       console.error('Error fetching customer:', error)
@@ -340,6 +346,27 @@ export default function CustomerDetailPage() {
           alert(
             (err.error || 'The brokerage link failed to update.') +
               ' The rest of the profile was saved. Your brokerage selection is still here — press Save to try that part again.'
+          )
+          return
+        }
+      }
+
+      // Broker billing — after the link, because it bills the brokerage the
+      // agent is linked to (and changing the link clears it server-side).
+      const wasBilled = !!data?.customer.bill_to_broker
+      const wantBilled = editData.role === 'customer' && !!brokerageTeamId && billToBroker
+      const linkChanged = brokerageTeamId !== (data?.customer.brokerage_team_id || '')
+      if (wantBilled !== wasBilled || (wantBilled && linkChanged)) {
+        const billRes = await fetch(`/api/admin/customers/${id}/bill-to-broker`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: wantBilled }),
+        }).catch(() => null)
+        if (!billRes || !billRes.ok) {
+          const err = billRes ? await billRes.json().catch(() => ({})) : {}
+          alert(
+            ((err as { error?: string }).error || 'Broker billing could not be updated.') +
+              ' The rest of the profile was saved. Press Save to try that part again.'
           )
           return
         }
@@ -768,6 +795,11 @@ export default function CustomerDetailPage() {
               )}
               {data.customer.invoice_billing && (
                 <Badge className="bg-pink-100 text-pink-800 border-pink-200">Invoice Billing</Badge>
+              )}
+              {data.customer.bill_to_broker && (
+                <Badge className="bg-amber-100 text-amber-800 border-amber-200">
+                  Billed to {data.customer.bill_to_broker.name}
+                </Badge>
               )}
               {data.customer.is_service_area_exempt && (
                 <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200">No Out-of-Area Fee</Badge>
@@ -1970,6 +2002,7 @@ export default function CustomerDetailPage() {
           // without this an abandoned choice survives the cancel and is
           // silently committed by the next unrelated save of this customer.
           setBrokerageTeamId(data.customer.brokerage_team_id || '')
+          setBillToBroker(!!data.customer.bill_to_broker)
           setShowEditModal(false)
         }}
         title="Edit Customer Info"
@@ -2059,9 +2092,27 @@ export default function CustomerDetailPage() {
               </select>
               <p className="mt-1 text-xs text-gray-500">
                 Lets this agent select from the brokerage&apos;s signs, riders, lockboxes and brochure
-                boxes as well as their own. Does not change who pays &mdash; the agent still pays for
-                their own orders.
+                boxes as well as their own. Does not change who pays on its own &mdash; use the box
+                below for that.
               </p>
+              {brokerageTeamId && (
+                <label className="mt-3 flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={billToBroker}
+                    onChange={(e) => setBillToBroker(e.target.checked)}
+                    className="mt-1"
+                  />
+                  <span className="text-sm text-gray-700">
+                    <span className="font-medium">Bill this agent&apos;s orders to the brokerage</span>
+                    <span className="block text-xs text-gray-500">
+                      Their orders and service trips go on the brokerage&apos;s invoice, or the
+                      brokerage&apos;s card if they pay by card. The agent isn&apos;t charged. Turning
+                      this off later doesn&apos;t move orders already placed.
+                    </span>
+                  </span>
+                </label>
+              )}
             </div>
           )}
 

@@ -46,6 +46,9 @@ export default function CartPage() {
   // Admin-set flag on the actor — when true, the "Pay now" CTA becomes
   // "Add to invoice" and we skip the payment-method requirement.
   const [invoiceBilling, setInvoiceBilling] = useState(false)
+  // Broker billing: this agent's orders are billed to their broker (their
+  // invoice or their card) — no card picker, the server charges the broker.
+  const [billedTo, setBilledTo] = useState<{ name: string; invoice_billing: boolean } | null>(null)
   // Track whether the profile fetch has completed so we don't render the
   // misleading "No payment method on file" message during the first ~200ms
   // window when invoiceBilling defaults to false but the real value is true.
@@ -104,6 +107,7 @@ export default function CartPage() {
         if (res.ok) {
           const data = await res.json()
           setInvoiceBilling(!!data.user?.invoice_billing)
+          setBilledTo(data.user?.billed_to ?? null)
           setActorRole(data.user?.role ?? null)
         }
       } catch {
@@ -117,6 +121,11 @@ export default function CartPage() {
   }, [])
 
   const grandTotal = items.reduce((sum, item) => sum + item.estimatedTotal, 0)
+  // Where this cart's money goes: the broker's invoice/card when billed to a
+  // broker, else this account's own setting. Only a self-paying card account
+  // picks a card.
+  const payByInvoice = billedTo ? billedTo.invoice_billing : invoiceBilling
+  const needsCard = !billedTo && !invoiceBilling
 
   // "Next order" → back to the place-order flow to add another order to the
   // batch, preserving the agent selection so the team_admin doesn't have to
@@ -147,8 +156,8 @@ export default function CartPage() {
 
   async function handleCheckoutAll() {
     if (items.length === 0) return
-    // Invoice-billing carts don't require a payment method.
-    if (!invoiceBilling && !selectedPaymentMethod) return
+    // Invoice-billing and broker-billed carts don't send a payment method.
+    if (needsCard && !selectedPaymentMethod) return
     setCheckingOut(true)
     setDone(false)
     setResults(items.map(i => ({ cartItemId: i.id, status: 'processing' })))
@@ -159,7 +168,7 @@ export default function CartPage() {
       // billing carts omit payment_method_id; the server saves orders as
       // pending_invoice and collection happens later via /admin/invoices.
       const batchPayload = {
-        ...(invoiceBilling ? {} : { payment_method_id: selectedPaymentMethod }),
+        ...(needsCard ? { payment_method_id: selectedPaymentMethod } : {}),
         cart_session_id: getOrCreateCartSessionId(),
         orders: items.map(cartItem => {
           const fd = cartItem.formData
@@ -507,6 +516,15 @@ export default function CartPage() {
                   <Loader2 className="w-4 h-4 animate-spin" />
                   Checking billing setup…
                 </div>
+              ) : billedTo ? (
+                <div className="text-sm text-pink-900 bg-pink-50 border border-pink-200 rounded-lg p-3">
+                  <p className="font-semibold mb-1">Billed to {billedTo.name}</p>
+                  <p>
+                    {billedTo.invoice_billing
+                      ? `Your orders are billed to ${billedTo.name}. They're added to ${billedTo.name}'s next invoice, with nothing charged today.`
+                      : `Your orders are billed to ${billedTo.name} and charged to their card on file.`}
+                  </p>
+                </div>
               ) : invoiceBilling ? (
                 <div className="text-sm text-pink-900 bg-pink-50 border border-pink-200 rounded-lg p-3">
                   <p className="font-semibold mb-1">Pay on invoice</p>
@@ -544,21 +562,23 @@ export default function CartPage() {
                   checkingOut ||
                   !profileLoaded ||
                   expiredRows.size > 0 ||
-                  (!invoiceBilling && (!selectedPaymentMethod || paymentMethods.length === 0))
+                  (needsCard && (!selectedPaymentMethod || paymentMethods.length === 0))
                 }
               >
                 {checkingOut ? (
-                  <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> {invoiceBilling ? 'Adding to invoice…' : `Placing ${items.length} orders…`}</>
-                ) : invoiceBilling ? (
+                  <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> {payByInvoice ? 'Adding to invoice…' : `Placing ${items.length} orders…`}</>
+                ) : payByInvoice ? (
                   `Add ${items.length} order${items.length === 1 ? '' : 's'} to invoice — $${grandTotal.toFixed(2)}+`
                 ) : (
                   `Place ${items.length} order${items.length === 1 ? '' : 's'} — $${grandTotal.toFixed(2)}+`
                 )}
               </Button>
               <p className="text-xs text-center text-gray-500">
-                {invoiceBilling
-                  ? 'No charge today — Pink Posts will send a consolidated invoice for collection.'
-                  : 'Single charge for the combined total — appears once on your statement.'}
+                {billedTo
+                  ? `Billed to ${billedTo.name}.`
+                  : invoiceBilling
+                    ? 'No charge today — Pink Posts will send a consolidated invoice for collection.'
+                    : 'Single charge for the combined total — appears once on your statement.'}
               </p>
               <Link href={nextOrderHref} className="block">
                 <Button variant="outline" className="w-full" disabled={checkingOut}>

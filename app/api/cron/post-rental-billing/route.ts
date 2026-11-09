@@ -147,7 +147,7 @@ export async function GET(request: NextRequest) {
         postRentalDisabled: false,
         installation: { is: { status: 'active' } },
       },
-      include: { user: true, placedBy: true, installation: true },
+      include: { user: true, placedBy: true, billedTo: true, installation: true },
     })
     summary.scanned = orders.length
 
@@ -222,7 +222,7 @@ export async function GET(request: NextRequest) {
         where: { status: 'scheduled', periodStart: { lte: now } },
         include: {
           order: {
-            include: { user: true, installation: true, placedBy: true },
+            include: { user: true, installation: true, placedBy: true, billedTo: true },
           },
         },
       })
@@ -561,6 +561,7 @@ interface OrderForPayer {
   id: string
   userId: string
   placedByUserId: string | null
+  billedToUserId: string | null
   user: { id: string; stripeCustomerId: string | null }
   placedBy: { id: string; stripeCustomerId: string | null } | null
 }
@@ -581,8 +582,14 @@ interface BillingPayer {
 async function resolveBillingPayer(order: OrderForPayer): Promise<BillingPayer | null> {
   // Build the candidate ladder.
   const candidateIds: string[] = []
-  if (order.placedByUserId) candidateIds.push(order.placedByUserId)
-  candidateIds.push(order.userId)
+  // Broker billing: an order billed to a broker charges ONLY the broker —
+  // never the agent's own card, and no team fallback (the agent's orders are
+  // billed to this broker by an admin's explicit choice).
+  if (order.billedToUserId) candidateIds.push(order.billedToUserId)
+  else {
+    if (order.placedByUserId) candidateIds.push(order.placedByUserId)
+    candidateIds.push(order.userId)
+  }
 
   for (const candidateId of candidateIds) {
     const user = await prisma.user.findUnique({
@@ -608,6 +615,8 @@ async function resolveBillingPayer(order: OrderForPayer): Promise<BillingPayer |
   }
 
   // Final fallback: walk to the agent's team_admin if the order owner is on a team.
+  // Not for a broker-billed order — it is the named broker's or nobody's.
+  if (order.billedToUserId) return null
   const owner = await prisma.user.findUnique({
     where: { id: order.userId },
     select: { teamId: true, role: true },

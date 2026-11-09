@@ -72,6 +72,13 @@ interface ServiceRequest {
     // next bundled invoice instead of charging the card on file.
     invoiceBilling: boolean
   }
+  // Broker billing: the broker this trip is billed to (the payer), if any.
+  billedTo?: {
+    id: string
+    email: string
+    fullName: string | null
+    invoiceBilling: boolean
+  } | null
   installation: {
     id: string
     propertyAddress: string
@@ -1124,7 +1131,11 @@ export default function ServiceRequestsPage() {
                 card. Backend already does this routing — the UI just has to
                 read selectedRequest.user.invoiceBilling and adapt copy. */}
             {(() => {
-              const isInvoiceBilling = !!selectedRequest.user.invoiceBilling
+              // The PAYER's flag — the broker it's billed to, else the
+              // requester — same as the invoice route (billedTo ?? user).
+              const billedTo = selectedRequest.billedTo ?? null
+              const isInvoiceBilling = !!(billedTo ?? selectedRequest.user).invoiceBilling
+              const billedToName = billedTo ? billedTo.fullName || billedTo.email : null
               const amt = Number(selectedRequest.invoiceAmount ?? 0)
               const pickup = ooaPickupOf(selectedRequest)
               // Removal whose out-of-area pickup already went on an invoice /
@@ -1151,15 +1162,21 @@ export default function ServiceRequestsPage() {
                   </span>
                 )}
               </h4>
+              {billedToName && (
+                <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1 mb-2">
+                  Billed to {billedToName}
+                  {isInvoiceBilling ? ' — goes on their invoice.' : ' — charged to their card on file.'}
+                </p>
+              )}
               {selectedRequest.invoiceStatus === 'paid' ? (
                 <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-800">
-                  Charged ${amt.toFixed(2)} to the customer&apos;s card on file
+                  Charged ${amt.toFixed(2)} to {billedToName ? `${billedToName}'s` : 'the customer’s'} card on file
                   {selectedRequest.invoicePaidAt ? ` on ${formatDate(selectedRequest.invoicePaidAt)}` : ''}.
                 </div>
               ) : selectedRequest.invoiceStatus === 'pending_invoice' ? (
                 <div className="space-y-2">
                   <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800">
-                    Added <strong>${amt.toFixed(2)}</strong> to this customer&apos;s next bundled invoice. No card has been charged.
+                    Added <strong>${amt.toFixed(2)}</strong> to {billedToName ? `${billedToName}'s` : 'this customer’s'} next bundled invoice. No card has been charged.
                     {' '}<Link href="/admin/invoices" className="underline font-medium">Bundle &amp; send invoices →</Link>
                   </div>
                   <p className="text-xs text-gray-500">
@@ -1221,9 +1238,13 @@ export default function ServiceRequestsPage() {
                     </div>
                   )}
                   <p className="text-xs text-gray-500">
-                    {isInvoiceBilling
-                      ? 'This customer pays by invoice. The amount will be added to their next bundled invoice — no card will be charged now.'
-                      : 'Enter the amount to charge the customer’s saved default card. They’ll be charged immediately.'}
+                    {billedToName
+                      ? isInvoiceBilling
+                        ? `This trip is billed to ${billedToName}. The amount goes on their next bundled invoice — no card is charged now.`
+                        : `This trip is billed to ${billedToName}. Their saved default card is charged immediately.`
+                      : isInvoiceBilling
+                        ? 'This customer pays by invoice. The amount will be added to their next bundled invoice — no card will be charged now.'
+                        : 'Enter the amount to charge the customer’s saved default card. They’ll be charged immediately.'}
                   </p>
                   {pickupWarning}
                   <div className="flex items-end gap-2">

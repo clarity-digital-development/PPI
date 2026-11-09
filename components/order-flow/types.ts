@@ -208,6 +208,10 @@ export interface StepProps {
   // else (2026-09-28); this only words the agreement box for the invoice —
   // the pickup half is added to their next invoice, not charged.
   invoiceBilling?: boolean
+  // Broker billing: this account's orders are billed to their broker (the
+  // broker's invoice or card). Review shows "Billed to [broker]" instead of
+  // the card picker and sends no card — the server charges the broker.
+  billedTo?: { name: string; invoice_billing: boolean } | null
   // When true, the review step shows internal distance-check breadcrumb info
   // alongside the out-of-area fee (which service center triggered it + the
   // estimated drive time). Customer view hides this since seeing "Bardstown

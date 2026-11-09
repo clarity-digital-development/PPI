@@ -8,7 +8,7 @@ import { sendAdminOrderNotification, sendOrderConfirmationEmail } from '@/lib/em
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
 import { audit, AuditAction } from '@/lib/audit'
 import { chargePaymentMethod, isDetachedPaymentMethodError } from '@/lib/stripe'
-import { resolveEffectivePayer } from '@/lib/orders/effective-payer'
+import { resolveEffectivePayer, payerIdOf } from '@/lib/orders/effective-payer'
 import { computeFlatFeePricing, computeOrderPricing, discountForExistingOrder, lockedFlatBase, NO_POST_SURCHARGE, postRentalApplies, type OrderItemForPricing } from '@/lib/orders/pricing'
 import { keepsLockedServiceAreaFee, keepsUnsplitServiceAreaFee } from '@/lib/orders/service-area-lock'
 import { applyPickupFeePolicy, lockedPickupFeeDecision } from '@/lib/orders/pickup-fee'
@@ -166,7 +166,7 @@ export async function PATCH(
     const pickupPolicy = applyPickupFeePolicy(
       editData.items,
       lockedPickupFeeDecision(existingOrder.orderItems) ?? {
-        waived: await isPickupFeeWaivedForPayer(existingOrder.placedByUserId ?? existingOrder.userId),
+        waived: await isPickupFeeWaivedForPayer(payerIdOf(existingOrder)),
       },
     )
     if (pickupPolicy.error) {
@@ -339,7 +339,7 @@ export async function PATCH(
     // For self-edits actor === payer; for admin-editing-other the OOA exemption
     // still belongs to the WALLET, not the acting admin.
     const payerForOOA = await prisma.user.findUnique({
-      where: { id: existingOrder.placedByUserId ?? existingOrder.userId },
+      where: { id: payerIdOf(existingOrder) },
       // Whether the fee splits is decided from the order itself (see
       // keepsUnsplitServiceAreaFee below), not from the payer's flag.
       select: { id: true, role: true, isServiceAreaExempt: true, flatFeeBilling: true },
@@ -682,6 +682,8 @@ export async function PATCH(
     const payer = await resolveEffectivePayer({
       userId: existingOrder.userId,
       placedByUserId: existingOrder.placedByUserId,
+      // Broker billing: a broker-billed order's diff charges hit the broker.
+      billedToUserId: existingOrder.billedToUserId,
     })
 
     // INVENTORY OWNERSHIP — same gate as the create route. An edit can attach

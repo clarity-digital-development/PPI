@@ -112,6 +112,11 @@ export async function createPaymentIntent(
      * AND in webhook payloads. Used to route the webhook (orders vs invoices).
      */
     metadata?: Record<string, string>
+    /**
+     * Charge the saved card as merchant-initiated (off_session, no redirects).
+     * For charging someone else's stored card — see the comment below.
+     */
+    offSession?: boolean
   }
 ) {
   const params: Stripe.PaymentIntentCreateParams = {
@@ -135,7 +140,17 @@ export async function createPaymentIntent(
   if (paymentMethodId) {
     params.payment_method = paymentMethodId
     params.confirm = true
-    params.return_url = `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/order-confirmation`
+    if (opts?.offSession) {
+      // Merchant-initiated charge on a stored card whose holder isn't the one
+      // at checkout (broker billing: the agent checks out, the BROKER's saved
+      // card pays). No redirect/3DS can be completed here, so Stripe either
+      // charges it or fails it (authentication_required) — never a
+      // requires_action handed to the wrong person's browser.
+      params.off_session = true
+      params.automatic_payment_methods = { enabled: true, allow_redirects: 'never' }
+    } else {
+      params.return_url = `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/order-confirmation`
+    }
   }
 
   // CRITICAL: do NOT pass an empty options object as the 2nd arg — the

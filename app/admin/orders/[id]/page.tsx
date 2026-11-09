@@ -158,6 +158,15 @@ interface Order {
     fullName: string | null
     email: string
     invoiceBilling: boolean
+    stripeCustomerId?: string | null
+  } | null
+  // Broker billing: the broker this agent's order is billed to (the payer).
+  billedTo?: {
+    id: string
+    fullName: string | null
+    email: string
+    invoiceBilling: boolean
+    stripeCustomerId?: string | null
   } | null
   postType: {
     name: string
@@ -237,8 +246,11 @@ export default function AdminOrderDetailPage() {
     setOrder(data.order)
     if (data.postRental) setPostRental(data.postRental as PostRentalView)
 
-    if (data.order.user?.stripeCustomerId) {
-      const pmRes = await fetch(`/api/admin/customers/${data.order.user.id}/payment-methods`)
+    // Cards for the account that PAYS for this order (billedTo ?? placedBy ??
+    // user) — the charge route only accepts one of the payer's own cards.
+    const cardOwner = data.order.billedTo ?? data.order.placedBy ?? data.order.user
+    if (cardOwner?.stripeCustomerId) {
+      const pmRes = await fetch(`/api/admin/customers/${cardOwner.id}/payment-methods`)
       if (pmRes.ok) {
         const pmData = await pmRes.json()
         setPaymentMethods(pmData.paymentMethods || [])
@@ -766,6 +778,15 @@ export default function AdminOrderDetailPage() {
                   </div>
                 </div>
               </div>
+              {order.billedTo && (
+                <p className="mt-4 text-sm text-gray-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  Billed to{' '}
+                  <Link href={`/admin/customers/${order.billedTo.id}`} className="font-semibold text-pink-600 hover:text-pink-700 underline">
+                    {order.billedTo.fullName || order.billedTo.email}
+                  </Link>{' '}
+                  ({order.billedTo.invoiceBilling ? 'their invoice' : 'their card on file'}).
+                </p>
+              )}
             </CardContent>
           </Card>
 
@@ -1138,10 +1159,10 @@ export default function AdminOrderDetailPage() {
                   const ooaStatus = order.serviceAreaSecondChargeStatus
                   const ooaAmount = `$${((order.serviceAreaSecondChargeCents ?? 0) / 100).toFixed(2)}`
                   // lib/orders/out-of-area-charge.ts routes on the PAYER's
-                  // current invoiceBilling flag (placedBy ?? user), so that
-                  // flag predicts where a still-pending half will go. Fall
-                  // back to the order's own billing path when it's missing.
-                  const payer = order.placedBy ?? order.user
+                  // current invoiceBilling flag (billedTo ?? placedBy ?? user),
+                  // so that flag predicts where a still-pending half will go.
+                  // Fall back to the order's own billing path when it's missing.
+                  const payer = order.billedTo ?? order.placedBy ?? order.user
                   const payerInvoiceBilling =
                     typeof payer?.invoiceBilling === 'boolean' ? payer.invoiceBilling : null
                   const orderOnInvoicePath = !!order.invoiceId || order.paymentStatus === 'pending_invoice'

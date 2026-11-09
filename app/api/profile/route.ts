@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
+import { resolveActiveBillToBroker } from '@/lib/orders/effective-payer'
 import { z } from 'zod'
 
 const updateProfileSchema = z.object({
@@ -54,14 +55,47 @@ export async function GET() {
       },
     })
 
+    // Broker billing (Ryan, 2026-11-05): an agent whose orders are billed to
+    // their broker checks out on the BROKER's terms — the order routes charge
+    // the broker's invoice or card and apply the broker's perks (they're the
+    // wallet). `billed_to` tells checkout to show "Billed to [broker]" and
+    // which way it goes; the pricing perks below follow the same wallet so
+    // the preview matches the charge. `invoice_billing` stays the account's
+    // OWN flag — it also drives the agent's own invoice tools, and the
+    // broker's invoice isn't theirs to bundle.
+    // Same roster check the order routes apply (resolveActiveBillToBroker),
+    // so the preview never claims a broker the server won't bill.
+    const billing = await resolveActiveBillToBroker(user)
+    const broker = billing
+      ? await prisma.user.findUnique({
+          where: { id: billing.broker.id },
+          select: {
+            fullName: true,
+            name: true,
+            email: true,
+            invoiceBilling: true,
+            flatFeeBilling: true,
+            freeLockboxInstall: true,
+            team: { select: { pickupFeeWaived: true, freeLockboxInstall: true } },
+          },
+        })
+      : null
+    const wallet = broker ?? profile
+
     // Expose the admin-set invoice flag under a stable snake_case key so the
     // cart can detect it without coupling to Prisma's column naming.
-    const exposed = profile && {
+    const exposed = profile && wallet && {
       ...profile,
       invoice_billing: profile.invoiceBilling,
-      flat_fee_billing: profile.flatFeeBilling,
-      pickup_fee_waived: !!profile.team?.pickupFeeWaived,
-      free_lockbox_install: !!(profile.freeLockboxInstall || profile.team?.freeLockboxInstall),
+      flat_fee_billing: wallet.flatFeeBilling,
+      pickup_fee_waived: !!wallet.team?.pickupFeeWaived,
+      free_lockbox_install: !!(wallet.freeLockboxInstall || wallet.team?.freeLockboxInstall),
+      billed_to: broker
+        ? {
+            name: broker.fullName || broker.name || broker.email,
+            invoice_billing: broker.invoiceBilling,
+          }
+        : null,
     }
 
     // `user` mirrors `profile` for callers that want either shape

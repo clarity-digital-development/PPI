@@ -115,6 +115,8 @@ function PlaceOrderPageInner() {
   // everyone else; this words the agreement box for the invoice (pickup half
   // added to their next invoice instead of charged to a card).
   const [invoiceBilling, setInvoiceBilling] = useState(false)
+  // Broker billing: this account's orders are billed to their broker.
+  const [billedTo, setBilledTo] = useState<{ name: string; invoice_billing: boolean } | null>(null)
   const [selectedMember, setSelectedMember] = useState<TeamMember | null>(null)
   const [memberInventory, setMemberInventory] = useState<Inventory | undefined>()
   const [memberInventoryLoading, setMemberInventoryLoading] = useState(false)
@@ -188,6 +190,7 @@ function PlaceOrderPageInner() {
           setCurrentUserRole(role)
           setFlatFee(!!data.user?.flat_fee_billing)
           setInvoiceBilling(!!data.user?.invoice_billing)
+          setBilledTo(data.user?.billed_to ?? null)
           setPickupFeeWaived(!!data.user?.pickup_fee_waived)
           setFreeLockboxInstall(!!data.user?.free_lockbox_install)
         }
@@ -337,6 +340,7 @@ function PlaceOrderPageInner() {
                   pickupFee={pickupFeeWaived ? 0 : undefined}
                   flatFee={flatFee}
                   invoiceBilling={invoiceBilling}
+                  billedTo={billedTo}
                 />
               )}
             </>
@@ -512,6 +516,7 @@ function PlaceOrderPageInner() {
               pickupFee={pickupFeeWaived ? 0 : undefined}
               flatFee={flatFee}
               invoiceBilling={invoiceBilling}
+              billedTo={billedTo}
             />
           </>
         )}

@@ -14,6 +14,7 @@ import { resolveServiceArea, type ResolveResult } from '@/lib/service-area'
 import type { HoldItemType } from '@prisma/client'
 import { sendOrderConfirmationEmail, sendAdminOrderNotification } from '@/lib/email'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
+import { getBilledToContact, resolveActiveBillToBroker } from '@/lib/orders/effective-payer'
 import { allowedInventoryOwnerIds, checkInventoryOwnership, describeInventoryFailures } from '@/lib/orders/inventory-ownership'
 
 type HoldConflict = {
@@ -163,16 +164,51 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json()
     const orders: BatchOrderBody[] = body.orders || []
-    const paymentMethodId: string | undefined = body.payment_method_id
+    let paymentMethodId: string | undefined = body.payment_method_id
     const cartSessionId: string | null = typeof body.cart_session_id === 'string' ? body.cart_session_id : null
+
+    // Broker billing (Ryan, 2026-11-05): an agent with "bill to broker" on is
+    // billed to that broker — the broker's invoice, or the broker's card.
+    // Every order in the cart stamps billedToUserId and never changes it.
+    // `payer` is the wallet everywhere below (invoice flag, Stripe customer,
+    // card, flat fee, pickup waiver, service-area exemption); the orders are
+    // still the actor's.
+    // Only while the agent is still on that broker's roster (see
+    // resolveActiveBillToBroker) — a removed agent pays for themselves.
+    const billing = await resolveActiveBillToBroker(actor)
+    const broker = billing?.broker ?? null
+    const payer = broker ?? actor
+    const billedToUserId: string | null = broker?.id ?? null
+    // The agent's roster name, stamped as placedForAgentName so the broker's
+    // per-agent invoices include these orders.
+    const billedAgentRosterName: string | null = billing?.rosterName ?? null
 
     // Invoice-billing accounts (admin-toggled at /admin/customers/[id]) skip
     // the Stripe charge at checkout entirely. Orders are saved as
     // pending_invoice and bundled later by an admin from /admin/invoices.
-    const isInvoiceBilling = !!actor.invoiceBilling
+    const isInvoiceBilling = !!payer.invoiceBilling
 
     if (!Array.isArray(orders) || orders.length === 0) {
       return NextResponse.json({ error: 'Batch must contain at least one order' }, { status: 400 })
+    }
+    // Broker-billed card cart: charge the BROKER's default card. The agent's
+    // own cards belong to the agent's Stripe customer, so any client-sent
+    // payment_method_id is ignored. No default card = refuse up front.
+    if (broker && !isInvoiceBilling) {
+      const brokerCard = await prisma.paymentMethod.findFirst({
+        where: { userId: broker.id, isDefault: true },
+        select: { stripePaymentMethodId: true },
+      })
+      if (!brokerCard || !broker.stripeCustomerId) {
+        return NextResponse.json(
+          {
+            error: `Your orders are billed to ${broker.fullName || broker.name || 'your broker'}, but there's no card on file for them. Please contact Pink Posts.`,
+            code: 'broker_no_card',
+          },
+          { status: 400 }
+        )
+      }
+      paymentMethodId = brokerCard.stripePaymentMethodId
     }
     if (!isInvoiceBilling && !paymentMethodId) {
       return NextResponse.json({ error: 'payment_method_id is required' }, { status: 400 })
@@ -208,8 +244,8 @@ export async function POST(request: NextRequest) {
       orderUserId: actor.id,
       actorId: actor.id,
     })
-    // The actor is the wallet for every row, so the pickup-fee waiver is too.
-    const pickupFeeWaived = await isPickupFeeWaivedForPayer(actor.id)
+    // The payer is the wallet for every row, so the pickup-fee waiver is too.
+    const pickupFeeWaived = await isPickupFeeWaivedForPayer(payer.id)
 
     for (let i = 0; i < orders.length; i++) {
       const o = orders[i]
@@ -265,11 +301,12 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      // Service-area gate. Actor is the wallet → exemption check is on actor.
+      // Service-area gate. The payer is the wallet → exemption check is on
+      // the payer (the actor, or the broker for a broker-billed agent).
       const effectiveUser = {
-        id: actor.id,
-        role: actor.role,
-        isServiceAreaExempt: actor.isServiceAreaExempt ?? false,
+        id: payer.id,
+        role: payer.role,
+        isServiceAreaExempt: payer.isServiceAreaExempt ?? false,
       }
       const sa = await resolveServiceArea({
         zip: o.property_zip,
@@ -362,7 +399,7 @@ export async function POST(request: NextRequest) {
       // the persisted totals are all flat; real items still flow to fulfillment.
       // The out-of-area fee is charged ON TOP of the flat rate, not swallowed
       // by it (Ryan, 2026-09-27) — the same amount decided above.
-      const pricing = actor.flatFeeBilling
+      const pricing = payer.flatFeeBilling
         ? computeFlatFeePricing(undefined, undefined, surchargeItemCents / 100)
         : computeOrderPricing({
             items: o.items,
@@ -477,12 +514,12 @@ export async function POST(request: NextRequest) {
     // ---- Step 2: ensure actor has a Stripe customer (the payer) ----
     // Skipped for invoice-billing accounts; the Stripe customer is created
     // lazily on the customer-facing invoice page when the customer pays.
-    let stripeCustomerId = actor.stripeCustomerId
+    let stripeCustomerId = payer.stripeCustomerId
     if (!isInvoiceBilling && !stripeCustomerId) {
       try {
-        const c = await createCustomer(actor.email, actor.fullName || actor.name || '')
+        const c = await createCustomer(payer.email, payer.fullName || payer.name || '')
         stripeCustomerId = c.id
-        await prisma.user.update({ where: { id: actor.id }, data: { stripeCustomerId } })
+        await prisma.user.update({ where: { id: payer.id }, data: { stripeCustomerId } })
       } catch (err) {
         console.error('Batch: could not create Stripe customer:', err)
         return NextResponse.json(
@@ -526,7 +563,8 @@ export async function POST(request: NextRequest) {
             data: {
               orderNumber: generateOrderNumber(),
               userId: actor.id, // batch is always under the actor (no on-behalf-of in cart)
-              placedForAgentName: o.placed_for_agent_name?.trim() || null,
+              billedToUserId, // broker billing: frozen payer, see top of POST
+              placedForAgentName: o.placed_for_agent_name?.trim() || billedAgentRosterName || null,
               postTypeId: c.postTypeId,
               propertyType: o.property_type as any,
               propertyAddress: o.property_address,
@@ -554,9 +592,9 @@ export async function POST(request: NextRequest) {
               tax: c.pricing.tax,
               total: c.pricing.total,
               // CR4: mark flat-fee orders so edits recompute as flat (no diff).
-              flatFeeApplied: !!actor.flatFeeBilling,
+              flatFeeApplied: !!payer.flatFeeBilling,
               // The flat rate itself, stored outright — see lockedFlatBase.
-              flatFeeBase: actor.flatFeeBilling ? FLAT_FEE_BASE : null,
+              flatFeeBase: payer.flatFeeBilling ? FLAT_FEE_BASE : null,
               // WHY: persist actual surcharge so reporting + invoice math match
               // what the customer paid. This MUST be what landed in the
               // OrderItem (the install half for a split order), not the
@@ -743,23 +781,40 @@ export async function POST(request: NextRequest) {
             placedForAgentName: full.placedForAgentName,
             teamId: full.user.teamId,
           })
+          const confirmation = {
+            customerName: full.user.fullName || full.user.name || '',
+            customerEmail: full.user.email,
+            orderNumber: full.orderNumber,
+            propertyAddress: `${full.propertyAddress}, ${full.propertyCity}, ${full.propertyState} ${full.propertyZip}`,
+            total: Number(full.total),
+            items: full.orderItems.map((it) => ({
+              description: it.description,
+              quantity: it.quantity,
+              total_price: Number(it.totalPrice),
+            })),
+            requestedDate: full.scheduledDate?.toISOString(),
+            installationNotes: full.propertyNotes || undefined,
+            recipientUserId: full.userId,
+            isInvoiceBilling: true,
+          }
+          // Broker billing: agent's copy names the broker; broker gets a copy.
+          const billedTo = await getBilledToContact(full.billedToUserId)
           await Promise.all([
             sendOrderConfirmationEmail({
-              customerName: full.user.fullName || full.user.name || '',
-              customerEmail: full.user.email,
-              orderNumber: full.orderNumber,
-              propertyAddress: `${full.propertyAddress}, ${full.propertyCity}, ${full.propertyState} ${full.propertyZip}`,
-              total: Number(full.total),
-              items: full.orderItems.map((it) => ({
-                description: it.description,
-                quantity: it.quantity,
-                total_price: Number(it.totalPrice),
-              })),
-              requestedDate: full.scheduledDate?.toISOString(),
-              installationNotes: full.propertyNotes || undefined,
-              recipientUserId: full.userId,
-              isInvoiceBilling: true,
+              ...confirmation,
+              ...(billedTo ? { billedToName: billedTo.name } : {}),
             }),
+            ...(billedTo
+              ? [
+                  sendOrderConfirmationEmail({
+                    ...confirmation,
+                    customerName: billedTo.name,
+                    customerEmail: billedTo.email,
+                    recipientUserId: billedTo.id,
+                    billedForAgentName: full.user.fullName || full.user.name || full.user.email,
+                  }),
+                ]
+              : []),
             sendAdminOrderNotification({
               orderNumber: full.orderNumber,
               customerName: full.user.fullName || full.user.name || '',
@@ -852,7 +907,12 @@ export async function POST(request: NextRequest) {
 
     let paymentIntent
     try {
-      paymentIntent = await createPaymentIntent(grandTotal, stripeCustomerId ?? undefined, paymentMethodId, { idempotencyKey: idemKey })
+      paymentIntent = await createPaymentIntent(grandTotal, stripeCustomerId ?? undefined, paymentMethodId, {
+        idempotencyKey: idemKey,
+        // The broker's stored card, charged while the AGENT is at checkout:
+        // merchant-initiated, so a bank check can't land on the agent.
+        ...(broker ? { offSession: true } : {}),
+      })
     } catch (err) {
       console.error('Batch: PI creation failed AFTER tx commit. Orders exist unpaid:', createdOrders.map((o) => o.id), err)
       try {
@@ -874,7 +934,9 @@ export async function POST(request: NextRequest) {
       }
       return NextResponse.json(
         {
-          error: getStripeErrorMessage(err) || 'Payment failed. Your orders were saved but not charged. Please contact support.',
+          error: broker
+            ? `We couldn't charge ${broker.fullName || broker.name || 'your broker'}'s card on file. Your orders were saved but not charged. Please contact them or Pink Posts.`
+            : getStripeErrorMessage(err) || 'Payment failed. Your orders were saved but not charged. Please contact support.',
           orders_pending_payment: createdOrders.map((o) => ({ id: o.id, orderNumber: o.orderNumber })),
         },
         { status: 502 }
@@ -949,23 +1011,40 @@ export async function POST(request: NextRequest) {
             placedForAgentName: full.placedForAgentName,
             teamId: full.user.teamId,
           })
+          const confirmation = {
+            customerName: full.user.fullName || full.user.name || '',
+            customerEmail: full.user.email,
+            orderNumber: full.orderNumber,
+            propertyAddress: `${full.propertyAddress}, ${full.propertyCity}, ${full.propertyState} ${full.propertyZip}`,
+            total: Number(full.total),
+            items: full.orderItems.map((it) => ({
+              description: it.description,
+              quantity: it.quantity,
+              total_price: Number(it.totalPrice),
+            })),
+            requestedDate: full.scheduledDate?.toISOString(),
+            installationNotes: full.propertyNotes || undefined,
+            // Pref gate — order recipient is the order's userId.
+            recipientUserId: full.userId,
+          }
+          // Broker billing: agent's copy names the broker; broker gets a copy.
+          const billedTo = await getBilledToContact(full.billedToUserId)
           await Promise.all([
             sendOrderConfirmationEmail({
-              customerName: full.user.fullName || full.user.name || '',
-              customerEmail: full.user.email,
-              orderNumber: full.orderNumber,
-              propertyAddress: `${full.propertyAddress}, ${full.propertyCity}, ${full.propertyState} ${full.propertyZip}`,
-              total: Number(full.total),
-              items: full.orderItems.map((it) => ({
-                description: it.description,
-                quantity: it.quantity,
-                total_price: Number(it.totalPrice),
-              })),
-              requestedDate: full.scheduledDate?.toISOString(),
-              installationNotes: full.propertyNotes || undefined,
-              // Pref gate — order recipient is the order's userId.
-              recipientUserId: full.userId,
+              ...confirmation,
+              ...(billedTo ? { billedToName: billedTo.name } : {}),
             }),
+            ...(billedTo
+              ? [
+                  sendOrderConfirmationEmail({
+                    ...confirmation,
+                    customerName: billedTo.name,
+                    customerEmail: billedTo.email,
+                    recipientUserId: billedTo.id,
+                    billedForAgentName: full.user.fullName || full.user.name || full.user.email,
+                  }),
+                ]
+              : []),
             sendAdminOrderNotification({
               orderNumber: full.orderNumber,
               customerName: full.user.fullName || full.user.name || '',
