@@ -657,7 +657,10 @@ export async function POST(request: NextRequest) {
         billedToUserId,
         // Team-admin-only field: free-text name of the agent who sold the
         // property. Trimmed; null if blank.
-        placedForAgentName: (body.placed_for_agent_name ?? '').toString().trim() || billedAgentRosterName || null,
+        // Broker-billed: always the agent's own roster name (it decides which
+        // of the broker's per-agent invoices the order lands on), never the
+        // client's free text.
+        placedForAgentName: billedAgentRosterName ?? ((body.placed_for_agent_name ?? '').toString().trim() || null),
         postTypeId,
         propertyType: orderData.property_type as any,
         propertyAddress: orderData.property_address,

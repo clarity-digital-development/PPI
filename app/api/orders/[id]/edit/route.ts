@@ -8,7 +8,7 @@ import { sendAdminOrderNotification, sendOrderConfirmationEmail } from '@/lib/em
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
 import { audit, AuditAction } from '@/lib/audit'
 import { chargePaymentMethod, isDetachedPaymentMethodError } from '@/lib/stripe'
-import { resolveEffectivePayer, payerIdOf } from '@/lib/orders/effective-payer'
+import { resolveEffectivePayer, payerIdOf, resolveActiveBillToBroker } from '@/lib/orders/effective-payer'
 import { computeFlatFeePricing, computeOrderPricing, discountForExistingOrder, lockedFlatBase, NO_POST_SURCHARGE, postRentalApplies, type OrderItemForPricing } from '@/lib/orders/pricing'
 import { keepsLockedServiceAreaFee, keepsUnsplitServiceAreaFee } from '@/lib/orders/service-area-lock'
 import { applyPickupFeePolicy, lockedPickupFeeDecision } from '@/lib/orders/pickup-fee'
@@ -122,6 +122,23 @@ export async function PATCH(
         { error: 'Cannot edit completed or cancelled orders' },
         { status: 400 }
       )
+    }
+
+    // Broker billing: an order billed to a broker charges any edit difference
+    // to that broker. Only while the agent is still billed to them (still on
+    // their roster) — an agent the broker removed can't keep running up the
+    // broker's card or invoice through edits. Admins edit on anyone's behalf.
+    if (existingOrder.billedToUserId && user.role !== 'admin') {
+      const billing = await resolveActiveBillToBroker(user)
+      if (billing?.broker.id !== existingOrder.billedToUserId) {
+        return NextResponse.json(
+          {
+            error: "This order is billed to a brokerage you're no longer linked to, so it can't be edited here. Contact Pink Posts to change it.",
+            code: 'BILLED_TO_UNLINKED_BROKER',
+          },
+          { status: 403 }
+        )
+      }
     }
 
     // Already-invoiced orders are EDITABLE (Ryan, 2026-07-29) but their money

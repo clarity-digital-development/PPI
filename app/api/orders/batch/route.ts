@@ -564,7 +564,10 @@ export async function POST(request: NextRequest) {
               orderNumber: generateOrderNumber(),
               userId: actor.id, // batch is always under the actor (no on-behalf-of in cart)
               billedToUserId, // broker billing: frozen payer, see top of POST
-              placedForAgentName: o.placed_for_agent_name?.trim() || billedAgentRosterName || null,
+              // Broker-billed: always the agent's own roster name (it decides which
+              // of the broker's per-agent invoices the order lands on), never the
+              // client's free text.
+              placedForAgentName: billedAgentRosterName ?? (o.placed_for_agent_name?.trim() || null),
               postTypeId: c.postTypeId,
               propertyType: o.property_type as any,
               propertyAddress: o.property_address,
