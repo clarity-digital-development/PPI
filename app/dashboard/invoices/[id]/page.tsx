@@ -194,8 +194,34 @@ export default function InvoiceDetailPage() {
           </CardContent>
         </Card>
 
+        {/* 50/50 split: each party pays their share from their own email link,
+            so no single full-amount pay form here. */}
+        {(invoice.split_shares?.length ?? 0) > 0 && (
+          <Card className="mb-6">
+            <CardContent className="p-6">
+              <h2 className="text-base font-semibold text-gray-900 mb-1">Split 50/50</h2>
+              <p className="text-sm text-gray-500 mb-4">
+                Each party received their own copy of this invoice and pays their share from the link in that email.
+              </p>
+              <div className="space-y-2">
+                {invoice.split_shares!.map((sh) => (
+                  <div key={sh.half} className="flex items-center justify-between text-sm">
+                    <span className="text-gray-800">{sh.payer_name}</span>
+                    <span className="flex items-center gap-3">
+                      <span className="font-medium text-gray-900">{formatCurrency(sh.amount)}</span>
+                      <span className={sh.status === 'paid' ? 'text-green-700' : sh.status === 'refunded' ? 'text-gray-500' : 'text-amber-700'}>
+                        {sh.status === 'paid' ? 'Paid' : sh.status === 'refunded' ? 'Refunded' : 'Outstanding'}
+                      </span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Pay area */}
-        {!isPaid && invoice.status === 'sent' && (
+        {!isPaid && invoice.status === 'sent' && !(invoice.split_shares?.length) && (
           <Card className="mb-6">
             <CardContent className="p-6">
               <h2 className="text-base font-semibold text-gray-900 mb-1">Pay this invoice</h2>

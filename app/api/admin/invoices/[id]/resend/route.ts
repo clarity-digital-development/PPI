@@ -27,6 +27,7 @@ import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { audit, AuditAction } from '@/lib/audit'
 import { processInvoiceSendJob } from '@/lib/invoices/send-invoice-job'
+import { reopenRefundedShare } from '@/lib/invoices/split-settle'
 
 export async function POST(
   request: NextRequest,
@@ -68,12 +69,39 @@ export async function POST(
   })
   if (!existing) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
 
-  // 3. Paid/void guard.
-  if (existing.status === 'paid' || existing.status === 'void') {
-    return NextResponse.json(
-      { error: `Invoice is already ${existing.status} — no email needed.` },
-      { status: 400 },
-    )
+  // 3. Paid/void guard. (A split share refunded after the invoice settled is
+  //    owed again — allowed through below.)
+  if (existing.status === 'void') {
+    return NextResponse.json({ error: 'Invoice is already void — no email needed.' }, { status: 400 })
+  }
+
+  // 50/50 split invoice (Ryan, 2026-11-09): each share is emailed to its own
+  // party. A resend re-emails the unpaid share(s) — or just `half` — and an
+  // override replaces ONE share's address (half required), since there is no
+  // single recipient.
+  const halves = await prisma.invoicePayment.findMany({
+    where: { invoiceId },
+    select: { id: true, half: true, status: true, payerName: true },
+  })
+  const isSplit = halves.length > 0
+  const splitHalf: 'A' | 'B' | undefined = body?.half === 'A' || body?.half === 'B' ? body.half : undefined
+  const owedShareOnPaidInvoice =
+    existing.status === 'paid' && isSplit && !!splitHalf && halves.some((h) => h.half === splitHalf && h.status !== 'paid')
+  if (existing.status === 'paid' && !owedShareOnPaidInvoice) {
+    return NextResponse.json({ error: 'Invoice is already paid — no email needed.' }, { status: 400 })
+  }
+  if (isSplit) {
+    if (splitHalf && !halves.some((h) => h.half === splitHalf && h.status !== 'paid')) {
+      return NextResponse.json({ error: 'That share is already paid — no email needed.' }, { status: 400 })
+    }
+    if (recipientEmailOverride && !splitHalf) {
+      return NextResponse.json(
+        { error: "This invoice is split between two parties. Pick which party's share should go to the new address." },
+        { status: 400 },
+      )
+    }
+    // The new address is saved only after the requeue claim below succeeds,
+    // so a 409 changes nothing.
   }
 
   // 4. Resolve the recipient for this resend. Explicit override > existing
@@ -109,7 +137,7 @@ export async function POST(
   const claim = await prisma.invoice.updateMany({
     where: {
       id: invoiceId,
-      status: { notIn: ['paid', 'void'] },
+      status: owedShareOnPaidInvoice ? 'paid' : { notIn: ['paid', 'void'] },
       OR: [
         { emailStatus: { in: ['failed', 'sent', 'skipped'] } },
         { emailStatus: { in: ['queued', 'sending'] }, updatedAt: { lt: staleBefore } },
@@ -120,7 +148,9 @@ export async function POST(
       emailError: null,
       invoiceEmailSentAt: null,
       sendingStartedAt: null,
-      recipientEmail: newRecipient,
+      // A split invoice has no single recipient — each share's address lives
+      // on its own row (updated just below).
+      ...(isSplit ? {} : { recipientEmail: newRecipient }),
     },
   })
   if (claim.count === 0) {
@@ -138,6 +168,22 @@ export async function POST(
     )
   }
 
+  // A refunded share is owed again: reopen it so the send mints it a fresh
+  // link (its old one was used up by the refunded payment).
+  const reopenedShare =
+    isSplit && splitHalf
+      ? await (async () => {
+          const target = halves.find((h) => h.half === splitHalf)
+          return target?.status === 'refunded' ? reopenRefundedShare(target.id) : false
+        })()
+      : false
+  if (isSplit && recipientEmailOverride && splitHalf) {
+    await prisma.invoicePayment.updateMany({
+      where: { invoiceId, half: splitHalf, status: 'pending' },
+      data: { payerEmail: recipientEmailOverride },
+    })
+  }
+
   // 6. Audit the resend — separate action from InvoiceCreated.
   await audit({
     actor: { id: user.id, email: user.email, role: user.role },
@@ -151,6 +197,7 @@ export async function POST(
       recipientSource,
       recipientEmailOverride,
       previousEmailStatus: existing.emailStatus,
+      ...(isSplit ? { split: true, half: splitHalf ?? 'both' } : {}),
     },
     request,
   })
@@ -167,6 +214,7 @@ export async function POST(
       recipientSource,
       rangeStartIso: existing.rangeStart.toISOString(),
       rangeEndIso: existing.rangeEnd.toISOString(),
+      ...(isSplit ? { splitResend: true, splitHalf, splitFreshLink: reopenedShare } : {}),
     }).catch((err) => {
       console.error('Background invoice-send resend crashed:', err)
       return prisma.invoice

@@ -609,6 +609,10 @@ interface InvoiceEmailProps {
   bannerHtml?: string
   recipientUserId?: string | null
   recipientPrefs?: UserEmailPrefs | null
+  // 50/50 split invoice (Ryan, 2026-11-09): this recipient pays only their
+  // share. The email still shows the full invoice, then "Your share" and a
+  // Pay button for that amount; payUrl is this half's own link.
+  share?: { amount: number; percent: number; otherPartyName: string } | null
 }
 
 /**
@@ -638,6 +642,7 @@ export async function sendInvoiceEmail({
   fromOverride,
   subjectOverride,
   bannerHtml,
+  share,
 }: InvoiceEmailProps) {
   // CR3 (Round 22): an invoice is a transactional billing document and must
   // ALWAYS send, even when the recipient has opted out of order/marketing
@@ -669,7 +674,7 @@ export async function sendInvoiceEmail({
   const payButton = payUrl
     ? `
         <div style="text-align: center; margin: 8px 0 32px;">
-          <a href="${payUrl}" style="background-color: #E84A7A; color: white; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block; font-size: 16px;">Pay $${total.toFixed(2)} via Stripe</a>
+          <a href="${payUrl}" style="background-color: #E84A7A; color: white; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block; font-size: 16px;">${share ? `Pay your share $${share.amount.toFixed(2)} via Stripe` : `Pay $${total.toFixed(2)} via Stripe`}</a>
           <p style="color: #999; font-size: 12px; margin: 8px 0 0;">Secure payment processed by Stripe — no account required.</p>
         </div>
     `
@@ -696,14 +701,19 @@ export async function sendInvoiceEmail({
         <div style="background-color: #FFF0F3; border-radius: 8px; padding: 20px; margin: 24px 0;">
           ${companyName ? `<p style="margin: 0 0 8px; color: #666;"><strong>${escapeHtml(companyName)}</strong></p>` : ''}
           <p style="margin: 0; color: #666;"><strong>${countLine}</strong> bundled on this invoice</p>
-          <p style="margin: 16px 0 0; font-size: 28px; font-weight: bold; color: #E84A7A;">$${total.toFixed(2)}</p>
+          ${share
+            ? `<p style="margin: 16px 0 0; color: #666;">Invoice total: <strong>$${total.toFixed(2)}</strong></p>
+          <p style="margin: 12px 0 0; color: #333;">Your share (${share.percent}%):</p>
+          <p style="margin: 4px 0 0; font-size: 28px; font-weight: bold; color: #E84A7A;">$${share.amount.toFixed(2)}</p>
+          <p style="margin: 8px 0 0; color: #666; font-size: 13px;">This invoice is split ${share.percent}/${100 - share.percent} with ${escapeHtml(share.otherPartyName)}, who receives their own copy and pays their share separately.</p>`
+            : `<p style="margin: 16px 0 0; font-size: 28px; font-weight: bold; color: #E84A7A;">$${total.toFixed(2)}</p>`}
         </div>
 
         ${viewPdfButton}
         ${payButton}
 
         ${pdfBytes ? `<p style="color: #666; font-size: 13px; text-align: center;">A PDF copy is also attached to this email for your records.</p>` : ''}
-        <p style="color: #666; font-size: 13px; text-align: center;">All bundled items will be marked paid once the Stripe payment clears.</p>
+        <p style="color: #666; font-size: 13px; text-align: center;">${share ? 'All bundled items will be marked paid once both shares are paid.' : 'All bundled items will be marked paid once the Stripe payment clears.'}</p>
 
         <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid #eee; text-align: center;">
           <p style="color: #666; margin: 0; font-size: 14px;">Questions? Contact us at contact@pinkposts.com</p>
@@ -724,7 +734,9 @@ export async function sendInvoiceEmail({
     from: fromOverride ?? 'Pink Posts Installations <orders@pinkposts.com>',
     reply_to: 'Pink Posts Installations <contact@pinkposts.com>',
     to: customerEmail,
-    subject: subjectOverride ?? `Invoice ${invoiceNumber} — $${total.toFixed(2)}`,
+    subject: subjectOverride ?? (share
+      ? `Invoice ${invoiceNumber} — your share $${share.amount.toFixed(2)}`
+      : `Invoice ${invoiceNumber} — $${total.toFixed(2)}`),
     html,
     ...(attachments ? { attachments } : {}),
   })
@@ -1541,6 +1553,44 @@ Invoices: ${appUrl}/admin/invoices`
     })
   } catch (err) {
     console.error('Failed to send duplicate invoice payment alert:', err)
+    return null
+  }
+}
+
+/**
+ * Admin alert when one party's share of a 50/50 split invoice is refunded in
+ * Stripe. The share's PI isn't on any order, so nothing else reconciles it:
+ * the invoice and its lines stay as they are, and admin decides what's next.
+ */
+export async function sendAdminSplitShareRefundAlert(props: {
+  invoiceNumber: string
+  payerName: string
+  refundedCents: number
+  shareCents: number
+  full: boolean
+}) {
+  const adminEmail = process.env.ADMIN_EMAIL
+  if (!adminEmail) {
+    console.error('ADMIN_EMAIL not configured - skipping split share refund alert')
+    return null
+  }
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://pinkposts.com'
+  const text = `${props.payerName}'s share of invoice ${props.invoiceNumber} was ${props.full ? 'fully' : 'partly'} refunded in Stripe.
+
+Refunded: $${(props.refundedCents / 100).toFixed(2)} of their $${(props.shareCents / 100).toFixed(2)} share
+${props.full ? "Their share now shows as Refunded. " : ''}The invoice and its orders were left as they are. If that money is still owed, bill them again.
+
+Invoices: ${appUrl}/admin/invoices`
+  try {
+    return await getResend().emails.send({
+      from: 'Pink Posts Installations <orders@pinkposts.com>',
+      reply_to: 'Pink Posts Installations <contact@pinkposts.com>',
+      to: adminEmail,
+      subject: `[PPI] Split invoice share refunded — ${props.invoiceNumber}`,
+      text,
+    })
+  } catch (err) {
+    console.error('Failed to send split share refund alert:', err)
     return null
   }
 }

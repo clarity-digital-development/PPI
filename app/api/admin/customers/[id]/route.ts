@@ -349,6 +349,12 @@ export async function GET(
         // has no team. The admin screen shows whichever of the two is in play.
         free_lockbox_install: customer.freeLockboxInstall,
         billing_email: customer.billingEmail,
+        // 50/50 split invoices — see PUT.
+        invoice_split_enabled: customer.invoiceSplitEnabled,
+        invoice_split_a_name: customer.invoiceSplitAName,
+        invoice_split_a_email: customer.invoiceSplitAEmail,
+        invoice_split_b_name: customer.invoiceSplitBName,
+        invoice_split_b_email: customer.invoiceSplitBEmail,
         invoice_discount_percent:
           customer.invoiceDiscountPercent !== null && customer.invoiceDiscountPercent !== undefined
             ? Number(customer.invoiceDiscountPercent)
@@ -488,6 +494,51 @@ export async function PUT(
         return NextResponse.json({ error: 'Billing email is not a valid address.' }, { status: 400 })
       }
       updateData.billingEmail = raw || null
+    }
+
+    // 50/50 split invoices (Ryan, 2026-11-09): two parties share this account
+    // and each pay half. All five fields travel together from the form. When
+    // on, both parties need a valid email (each gets their own share); names
+    // are optional (the email stands in). Only affects invoices created after
+    // the change — invoices already out keep their shape.
+    let splitAudit: Record<string, unknown> | null = null
+    if (body.invoice_split_enabled !== undefined) {
+      const enabled = Boolean(body.invoice_split_enabled)
+      const clean = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 200) : null)
+      const aName = clean(body.invoice_split_a_name)
+      const aEmail = clean(body.invoice_split_a_email)
+      const bName = clean(body.invoice_split_b_name)
+      const bEmail = clean(body.invoice_split_b_email)
+      const emailOk = (e: string | null) => !!e && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)
+      if (enabled && (!emailOk(aEmail) || !emailOk(bEmail))) {
+        return NextResponse.json(
+          { error: 'To split invoices 50/50, enter a valid email for both parties.' },
+          { status: 400 },
+        )
+      }
+      if (enabled && aEmail!.toLowerCase() === bEmail!.toLowerCase()) {
+        return NextResponse.json({ error: 'The two parties need different emails.' }, { status: 400 })
+      }
+      const cur = await prisma.user.findUnique({
+        where: { id },
+        select: { invoiceSplitEnabled: true, invoiceSplitAEmail: true, invoiceSplitBEmail: true, invoiceBilling: true },
+      })
+      if (!cur) return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
+      const willInvoice = body.invoice_billing !== undefined ? Boolean(body.invoice_billing) : cur.invoiceBilling
+      if (enabled && !willInvoice) {
+        return NextResponse.json(
+          { error: 'Splitting invoices needs invoice billing turned on for this account.' },
+          { status: 400 },
+        )
+      }
+      updateData.invoiceSplitEnabled = enabled
+      updateData.invoiceSplitAName = aName
+      updateData.invoiceSplitAEmail = aEmail
+      updateData.invoiceSplitBName = bName
+      updateData.invoiceSplitBEmail = bEmail
+      if (cur.invoiceSplitEnabled !== enabled || cur.invoiceSplitAEmail !== aEmail || cur.invoiceSplitBEmail !== bEmail) {
+        splitAudit = { from: { enabled: cur.invoiceSplitEnabled, a: cur.invoiceSplitAEmail, b: cur.invoiceSplitBEmail }, to: { enabled, a: aEmail, b: bEmail } }
+      }
     }
 
     // Mirror the exempt-flag audit pattern for the invoice-billing toggle.
@@ -891,6 +942,17 @@ export async function PUT(
         targetType: 'user',
         targetId: customer.id,
         metadata: { email: customer.email, ...invoiceBillingAudit },
+        request,
+      })
+    }
+
+    if (splitAudit) {
+      await audit({
+        actor: { id: user.id, email: user.email, role: user.role },
+        action: AuditAction.UserInvoiceSplitChange,
+        targetType: 'user',
+        targetId: customer.id,
+        metadata: { email: customer.email, ...splitAudit },
         request,
       })
     }

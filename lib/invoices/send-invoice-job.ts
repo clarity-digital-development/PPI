@@ -49,6 +49,15 @@ export interface SendInvoiceJobArgs {
   // strings are easier to pass through the job boundary.
   rangeStartIso: string
   rangeEndIso: string
+  // 50/50 split invoices: a resend re-emails the unpaid half (or both) even
+  // if it was sent before; `splitHalf` limits it to one half. Ignored for
+  // ordinary invoices.
+  splitResend?: boolean
+  splitHalf?: 'A' | 'B'
+  // The caller has already turned off (or written off) `splitHalf`'s stored
+  // link: never reuse it, always mint a new one under fresh keys, and don't
+  // email that party at all if Stripe can't make the new link.
+  splitFreshLink?: boolean
 }
 
 export async function processInvoiceSendJob(args: SendInvoiceJobArgs): Promise<void> {
@@ -98,6 +107,22 @@ export async function processInvoiceSendJob(args: SendInvoiceJobArgs): Promise<v
 
   const baseUrl =
     process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'https://pinkposts.com'
+
+  // 50/50 split invoice: each unpaid half gets its own pay link and email.
+  const halves = await prisma.invoicePayment.findMany({ where: { invoiceId }, orderBy: { half: 'asc' } })
+  if (halves.length > 0) {
+    await sendSplitHalves({
+      invoice,
+      halves,
+      baseUrl,
+      rangeStartIso,
+      rangeEndIso,
+      resend: !!args.splitResend,
+      onlyHalf: args.splitHalf,
+      freshLink: !!args.splitFreshLink && !!args.splitHalf,
+    })
+    return
+  }
 
   // 3. Stripe Payment Link (non-fatal). If this fails the email still goes
   //    out, just without a Pay button — admin can use Regenerate Pay Link
@@ -291,4 +316,220 @@ export async function processInvoiceSendJob(args: SendInvoiceJobArgs): Promise<v
       },
     }).catch(() => {})
   }
+}
+
+type SplitHalf = Awaited<ReturnType<typeof prisma.invoicePayment.findMany>>[number]
+
+/**
+ * 50/50 split send (Ryan, 2026-11-09). Each payer gets the full invoice + PDF,
+ * "your share", and a Pay button on THEIR half's own Payment Link (half-sized,
+ * metadata.half so the webhook marks only that half). Per-half state lives on
+ * InvoicePayment; the invoice's emailStatus is the roll-up the admin list
+ * shows ('sent' once every unpaid half has gone out).
+ *
+ * Link rules mirror the single-invoice path: reuse a half's live link, never
+ * mint a second one while its payment is in flight, and only replace a dead
+ * link under fresh idempotency keys.
+ */
+async function sendSplitHalves(opts: {
+  invoice: {
+    id: string
+    invoiceNumber: string
+    total: unknown
+    publicPdfToken: string | null
+    userId: string
+    user: { email: string; fullName: string | null; name: string | null; company: string | null }
+  }
+  halves: SplitHalf[]
+  baseUrl: string
+  rangeStartIso: string
+  rangeEndIso: string
+  resend: boolean
+  onlyHalf?: 'A' | 'B'
+  freshLink?: boolean
+}): Promise<void> {
+  const { invoice, halves, baseUrl, rangeStartIso, rangeEndIso } = opts
+  const targets = halves.filter(
+    (h) =>
+      h.status === 'pending' &&
+      (!opts.onlyHalf || h.half === opts.onlyHalf) &&
+      (opts.resend || h.emailStatus !== 'sent'),
+  )
+  const errors: string[] = []
+
+  let pdfBytes: Uint8Array | null = null
+  try {
+    const full = await loadInvoiceDetailForPdf(invoice.id)
+    if (full) pdfBytes = buildInvoicePdfBytes(full)
+  } catch (err) {
+    console.error(`[invoice-send] ${invoice.id} split PDF generation failed (sending without attachment):`, err)
+  }
+  const counts = await prisma.invoice.findUniqueOrThrow({
+    where: { id: invoice.id },
+    select: { _count: { select: { orders: true, serviceRequests: true, ooaPickupOrders: true, postRentalCharges: true } } },
+  })
+
+  // A share can be paid (by card, or marked paid by hand) while this job
+  // runs — the list above is a snapshot. Re-check right before touching a
+  // share so a paid one never gets a fresh link or a "pay your share" email.
+  const stillOwed = async (id: string) => {
+    const fresh = await prisma.invoicePayment.findUnique({
+      where: { id },
+      select: { status: true, invoice: { select: { status: true } } },
+    })
+    // 'paid' too: a share refunded after the invoice settled is owed again.
+    return fresh?.status === 'pending' && fresh.invoice.status !== 'void'
+  }
+
+  for (const h of targets) {
+    if (!(await stillOwed(h.id))) continue
+    const other = halves.find((x) => x.half !== h.half)
+    let payUrl: string | null = null
+    let skipReason: string | null = null
+    let stripeError: string | null = null
+
+    const fresh = !!opts.freshLink && h.half === opts.onlyHalf
+    const priorLinkId = !fresh && h.checkoutSessionId?.startsWith('plink_') ? h.checkoutSessionId : null
+    if (priorLinkId) {
+      try {
+        const link = await stripe().paymentLinks.retrieve(priorLinkId)
+        if (link.active) payUrl = link.url
+        else {
+          const inFlight = await paymentLinkPaymentInFlight(priorLinkId)
+          if (inFlight) skipReason = paymentInFlightMessage(inFlight)
+        }
+      } catch (err) {
+        console.error(`[invoice-send] ${invoice.id} half ${h.half}: couldn't check the stored link; reusing it:`, err)
+        payUrl = h.checkoutUrl
+      }
+    }
+    if (skipReason) {
+      errors.push(`${h.payerName}: ${skipReason}`)
+      await prisma.invoicePayment
+        .update({ where: { id: h.id }, data: { emailStatus: 'failed', emailError: skipReason.slice(0, 500) } })
+        .catch(() => {})
+      continue
+    }
+    if (!payUrl) {
+      try {
+        const link = await createInvoiceCheckoutSession({
+          invoiceId: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
+          amountInCents: h.amountCents,
+          customerEmail: h.payerEmail,
+          description: `Invoice ${invoice.invoiceNumber} (50% share) — ${rangeStartIso.slice(0, 10)} to ${rangeEndIso.slice(0, 10)}`,
+          successUrl: `${baseUrl}/invoice-paid?invoice=${invoice.invoiceNumber}`,
+          cancelUrl: `${baseUrl}/invoice-cancelled?invoice=${invoice.invoiceNumber}`,
+          half: h.half,
+          // Fresh keys whenever this share has had a link or an email before
+          // (a reopened share has its link cleared but keeps emailSentAt):
+          // the original keys would replay the old, used-up link.
+          idempotencySuffix:
+            fresh || h.checkoutSessionId || h.emailSentAt ? `resend-${Date.now().toString(36)}` : undefined,
+        })
+        // Save the link only while the share is still unpaid. If it was paid
+        // meanwhile, turn the new link straight off and skip this share.
+        const saved = await prisma.invoicePayment.updateMany({
+          where: { id: h.id, status: 'pending' },
+          data: { checkoutSessionId: link.id, checkoutUrl: link.url },
+        })
+        if (saved.count === 0) {
+          await stripe().paymentLinks.update(link.id, { active: false }).catch((e) =>
+            console.error(`[invoice-send] ${invoice.id} half ${h.half}: couldn't deactivate unused link ${link.id}:`, e),
+          )
+          continue
+        }
+        payUrl = link.url
+      } catch (err) {
+        stripeError = err instanceof Error ? err.message : String(err)
+        console.error(`[invoice-send] ${invoice.id} half ${h.half}: Stripe Payment Link failed (sending without):`, err)
+      }
+    }
+    if (fresh && !payUrl) {
+      // A replacement link was the whole point — an email without one would
+      // only confuse the party. Leave it failed for the admin to retry.
+      const reason = `Couldn't make a new pay link${stripeError ? `: ${stripeError}` : ''}`
+      errors.push(`${h.payerName}: ${reason}`)
+      await prisma.invoicePayment
+        .update({ where: { id: h.id }, data: { emailStatus: 'failed', emailError: reason.slice(0, 500) } })
+        .catch(() => {})
+      continue
+    }
+
+    if (!(await stillOwed(h.id))) continue
+    try {
+      const result = await sendInvoiceEmail({
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.invoiceNumber,
+        customerName: h.payerName,
+        customerEmail: h.payerEmail,
+        companyName: invoice.user.company,
+        rangeStart: rangeStartIso.slice(0, 10),
+        rangeEnd: rangeEndIso.slice(0, 10),
+        total: Number(invoice.total),
+        orderCount: counts._count.orders,
+        serviceRequestCount: counts._count.serviceRequests,
+        pickupCount: counts._count.ooaPickupOrders,
+        rentalCount: counts._count.postRentalCharges,
+        pdfBytes,
+        pdfUrl: invoice.publicPdfToken
+          ? `${baseUrl}/api/invoices/${invoice.id}/pdf?token=${invoice.publicPdfToken}`
+          : `${baseUrl}/api/invoices/${invoice.id}/pdf`,
+        payUrl,
+        recipientUserId: invoice.userId,
+        share: { amount: h.amountCents / 100, percent: 50, otherPartyName: other?.payerName ?? 'the other party' },
+      })
+      if (result && typeof result === 'object' && 'error' in result && result.error) {
+        const e = result.error as { name?: string; message?: string }
+        throw new Error(e.message || e.name || 'Resend rejected the message')
+      }
+      await prisma.invoicePayment.update({
+        where: { id: h.id },
+        data: { emailStatus: 'sent', emailError: null, emailSentAt: new Date() },
+      })
+      await audit({
+        actor: { system: true },
+        action: AuditAction.InvoiceEmailSent,
+        targetType: 'invoice',
+        targetId: invoice.id,
+        metadata: {
+          invoiceNumber: invoice.invoiceNumber,
+          half: h.half,
+          actualRecipient: h.payerEmail,
+          recipientSource: 'split',
+          resendMessageId: (result as { data?: { id?: string } })?.data?.id ?? null,
+          stripeError,
+          pdfAttached: pdfBytes !== null,
+        },
+      }).catch(() => {})
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      errors.push(`${h.payerName}: ${reason}`)
+      await prisma.invoicePayment
+        .update({ where: { id: h.id }, data: { emailStatus: 'failed', emailError: reason.slice(0, 500) } })
+        .catch(() => {})
+      await audit({
+        actor: { system: true },
+        action: AuditAction.InvoiceEmailFailed,
+        targetType: 'invoice',
+        targetId: invoice.id,
+        metadata: { invoiceNumber: invoice.invoiceNumber, half: h.half, attemptedRecipient: h.payerEmail, error: reason.slice(0, 500), stripeError },
+      }).catch(() => {})
+    }
+  }
+
+  // Roll up: 'sent' once every still-unpaid half has had its email.
+  const after = await prisma.invoicePayment.findMany({
+    where: { invoiceId: invoice.id },
+    select: { status: true, emailStatus: true },
+  })
+  const outstanding = after.some((h) => h.status === 'pending' && h.emailStatus !== 'sent')
+  await prisma.invoice
+    .update({
+      where: { id: invoice.id },
+      data: outstanding
+        ? { emailStatus: 'failed', emailError: (errors.join('; ') || 'A share was not sent').slice(0, 500), sendingStartedAt: null }
+        : { emailStatus: 'sent', emailError: null, sendingStartedAt: null, invoiceEmailSentAt: new Date() },
+    })
+    .catch(() => {})
 }

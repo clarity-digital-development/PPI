@@ -8,12 +8,14 @@ import {
   sendAdminOrderNotification,
   sendRefundConfirmationEmail,
   sendAdminDuplicateInvoicePaymentAlert,
+  sendAdminSplitShareRefundAlert,
 } from '@/lib/email'
 import { releaseOrderHoldsAndRestoreInventory } from '@/lib/inventory-holds'
 import { resolveRefundRecipient } from '@/lib/orders/refund-recipient'
 import { resolveAssignedAgent } from '@/lib/orders/assigned-agent'
 import { getBilledToContact } from '@/lib/orders/effective-payer'
 import { audit, AuditAction } from '@/lib/audit'
+import { settleSplitInvoiceIfComplete } from '@/lib/invoices/split-settle'
 
 /**
  * Restore inventory items linked to an order whose payment failed/cancelled,
@@ -97,6 +99,113 @@ export async function POST(request: NextRequest) {
             console.warn(`Webhook: invoice ${invoiceId} not found for PI ${paymentIntent.id} — returning 500 for Stripe retry`)
             return NextResponse.json({ error: 'invoice_not_ready', paymentIntentId: paymentIntent.id }, { status: 500 })
           }
+
+          // 50/50 split invoice (Ryan, 2026-11-09): this PI paid ONE party's
+          // half (its link carries metadata.half). Mark that half paid; the
+          // invoice and everything on it flips to paid only once every half
+          // is. Handled before the invoice-level checks below, which would
+          // read a retried half payment on a now-paid invoice as a duplicate.
+          const splitHalf = paymentIntent.metadata.half
+          if (splitHalf) {
+            const row = await prisma.invoicePayment.findUnique({
+              where: { invoiceId_half: { invoiceId, half: splitHalf } },
+            })
+            if (!row) {
+              console.warn(`Webhook: invoice ${invoiceId} has no half ${splitHalf} for PI ${paymentIntent.id} — acking`)
+              return NextResponse.json({ received: true })
+            }
+            const shareLabel = `${invoice.invoiceNumber} (${row.payerName}'s share)`
+            const alertDuplicate = (firstPaymentIntentId: string | null) =>
+              sendAdminDuplicateInvoicePaymentAlert({
+                invoiceId: invoice.id,
+                invoiceNumber: shareLabel,
+                paymentIntentId: paymentIntent.id,
+                amountCents: paymentIntent.amount_received || paymentIntent.amount,
+                firstPaymentIntentId,
+              })
+            const halfPaidAt = new Date()
+            const isRetry = row.paymentIntentId === paymentIntent.id
+            if (row.status === 'paid' && !isRetry) {
+              // Paid already by a different payment (or marked paid by hand):
+              // money taken twice — tell admin so the extra can be refunded.
+              await alertDuplicate(row.paymentIntentId)
+              return NextResponse.json({ received: true })
+            }
+            if (!isRetry) {
+              // Unpaid — or refunded and now paid again. A retry of the SAME
+              // payment skips this and falls through to the settle check, so
+              // a failure after the share was recorded still gets finished.
+              //
+              // Ask Stripe first: a success event redelivered for a payment
+              // that has since been refunded (the share may have been reopened
+              // and re-billed, which clears its PI) must never count as paid.
+              // A Stripe error throws → 500 → Stripe retries.
+              const live = await stripe().paymentIntents.retrieve(paymentIntent.id, { expand: ['latest_charge'] })
+              const liveCharge = live.latest_charge && typeof live.latest_charge === 'object' ? live.latest_charge : null
+              if (liveCharge && liveCharge.amount > 0 && liveCharge.amount_refunded >= liveCharge.amount) {
+                console.log(`Webhook: ${shareLabel} payment ${paymentIntent.id} was fully refunded — not counting it`)
+                return NextResponse.json({ received: true })
+              }
+              let current: { status: string } = row
+              let recorded = false
+              // Conditional on the status we read. If it changed under us (an
+              // admin reopened or marked the share) re-read and try once more.
+              for (let attempt = 0; attempt < 2; attempt++) {
+                const marked = await prisma.invoicePayment.updateMany({
+                  where: { id: row.id, status: current.status },
+                  data: { status: 'paid', paidAt: halfPaidAt, paymentIntentId: paymentIntent.id },
+                })
+                if (marked.count > 0) {
+                  recorded = true
+                  break
+                }
+                const now = await prisma.invoicePayment.findUnique({ where: { id: row.id } })
+                if (!now) break
+                if (now.status === 'paid') {
+                  // Marked paid by hand, or another payment landed first.
+                  if (now.paymentIntentId !== paymentIntent.id) await alertDuplicate(now.paymentIntentId)
+                  break
+                }
+                current = now
+              }
+              if (recorded) {
+                await audit({
+                  actor: { system: true },
+                  action: AuditAction.InvoicePaid,
+                  targetType: 'invoice',
+                  targetId: invoice.id,
+                  metadata: { paidVia: 'stripe', half: splitHalf, payer: row.payerName, paymentIntentId: paymentIntent.id, amountCents: row.amountCents },
+                  request,
+                })
+              }
+            }
+            // Every share in? Settle the invoice and its lines (atomic and
+            // idempotent — see settleSplitInvoiceIfComplete).
+            const settled = await settleSplitInvoiceIfComplete(invoice.id, halfPaidAt)
+            if (!settled) {
+              console.log(`Webhook: invoice ${invoice.invoiceNumber} share ${splitHalf} recorded — not settling yet`)
+              return NextResponse.json({ received: true })
+            }
+            await audit({
+              actor: { system: true },
+              action: AuditAction.InvoicePaid,
+              targetType: 'invoice',
+              targetId: invoice.id,
+              metadata: {
+                paidVia: 'stripe',
+                split: true,
+                orderCount: settled.orderCount,
+                serviceRequestCount: settled.serviceRequestCount,
+                ooaPickupCount: settled.ooaPickupCount,
+                postRentalCount: settled.postRentalCount,
+                total: Number(invoice.total),
+              },
+              request,
+            })
+            console.log(`Webhook: split invoice ${invoice.invoiceNumber} fully paid`)
+            return NextResponse.json({ received: true })
+          }
+
           // Idempotent — if already paid, do nothing. A DIFFERENT payment for a
           // paid invoice (a second pay link, or paid after being marked paid
           // by hand) is money taken twice: tell admin so it can be refunded.
@@ -432,6 +541,47 @@ export async function POST(request: NextRequest) {
           break
         }
 
+        // 50/50 split invoice share: its PI is on the share row, never on the
+        // orders. Record a full refund on the share and alert admin either way
+        // — the invoice and its lines are left as they are for admin to decide
+        // (re-bill that party, or write it off).
+        const refundedShare = await prisma.invoicePayment.findUnique({
+          where: { paymentIntentId },
+          include: { invoice: { select: { id: true, invoiceNumber: true } } },
+        })
+        if (refundedShare) {
+          const fullShareRefund = charge.amount_refunded >= charge.amount
+          if (fullShareRefund) {
+            await prisma.invoicePayment.updateMany({
+              where: { id: refundedShare.id, status: 'paid' },
+              data: { status: 'refunded' },
+            })
+          }
+          await audit({
+            actor: { system: true },
+            action: AuditAction.InvoiceShareRefunded,
+            targetType: 'invoice',
+            targetId: refundedShare.invoiceId,
+            metadata: {
+              shareRefunded: true,
+              half: refundedShare.half,
+              payer: refundedShare.payerName,
+              paymentIntentId,
+              refundedCents: charge.amount_refunded,
+              full: fullShareRefund,
+            },
+            request,
+          })
+          await sendAdminSplitShareRefundAlert({
+            invoiceNumber: refundedShare.invoice.invoiceNumber,
+            payerName: refundedShare.payerName,
+            refundedCents: charge.amount_refunded,
+            shareCents: refundedShare.amountCents,
+            full: fullShareRefund,
+          })
+          break
+        }
+
         // paymentIntentId is NOT unique — a cart batch shares one PI across
         // every order in it, and the invoice branch above stamps the invoice's
         // PI onto every bundled order. findFirst therefore used to reconcile
@@ -447,6 +597,83 @@ export async function POST(request: NextRequest) {
         })
         const order = ordersOnCharge[0]
         if (!order) {
+          // A split-invoice share refunded before its payment_intent.succeeded
+          // was processed (that event failed and is waiting on a retry): the
+          // share isn't stamped yet, so the lookup above missed it. Record the
+          // refund on the share now, under this PI, so the late success event
+          // reads as a retry of a refunded payment and never settles the
+          // invoice on money that was given back.
+          try {
+            const pi = await stripe().paymentIntents.retrieve(paymentIntentId)
+            const md = pi.metadata ?? {}
+            if (md.kind === 'invoice' && md.invoiceId && md.half) {
+              const share = await prisma.invoicePayment.findUnique({
+                where: { invoiceId_half: { invoiceId: md.invoiceId, half: md.half } },
+                include: { invoice: { select: { invoiceNumber: true } } },
+              })
+              if (share) {
+                const fullEarlyRefund = charge.amount_refunded >= charge.amount
+                // Only when this payment came through the share's CURRENT link:
+                // a late event for a share's old, already-refunded payment must
+                // not undo a share that was reopened and re-billed since.
+                const sessions = await stripe().checkout.sessions.list({ payment_intent: paymentIntentId, limit: 1 })
+                const viaLink = sessions.data[0]?.payment_link
+                const viaLinkId = typeof viaLink === 'string' ? viaLink : viaLink?.id
+                const unrecorded =
+                  share.status === 'pending' &&
+                  !share.paymentIntentId &&
+                  !!viaLinkId &&
+                  viaLinkId === share.checkoutSessionId
+                if (fullEarlyRefund && unrecorded) {
+                  const stamped = await prisma.invoicePayment.updateMany({
+                    where: { id: share.id, status: 'pending', paymentIntentId: null },
+                    data: { status: 'refunded', paymentIntentId },
+                  })
+                  if (stamped.count === 0) {
+                    // The success event recorded this payment a moment ago —
+                    // flip it to refunded now that it has the PI.
+                    await prisma.invoicePayment.updateMany({
+                      where: { id: share.id, status: 'paid', paymentIntentId },
+                      data: { status: 'refunded' },
+                    })
+                  }
+                }
+                // Otherwise this refunds a payment the share never recorded
+                // (e.g. a duplicate payment admin was alerted about).
+                await audit({
+                  actor: { system: true },
+                  action: AuditAction.InvoiceShareRefunded,
+                  targetType: 'invoice',
+                  targetId: share.invoiceId,
+                  metadata: {
+                    half: share.half,
+                    payer: share.payerName,
+                    paymentIntentId,
+                    refundedCents: charge.amount_refunded,
+                    full: fullEarlyRefund,
+                    recordedPaymentIntentId: share.paymentIntentId,
+                    beforeShareRecorded: !share.paymentIntentId,
+                  },
+                  request,
+                })
+                if (unrecorded) {
+                  await sendAdminSplitShareRefundAlert({
+                    invoiceNumber: share.invoice.invoiceNumber,
+                    payerName: share.payerName,
+                    refundedCents: charge.amount_refunded,
+                    shareCents: share.amountCents,
+                    full: fullEarlyRefund,
+                  })
+                }
+                break
+              }
+            }
+          } catch (err) {
+            // Couldn't tell whether this was a split share's refund. Let
+            // Stripe retry rather than drop it silently.
+            console.error('Webhook charge.refunded: split share lookup by PI metadata failed', paymentIntentId, err)
+            return NextResponse.json({ error: 'split_share_refund_lookup_failed' }, { status: 500 })
+          }
           // Not every charge in the Stripe account belongs to an order in this DB
           // (e.g. test charges, deleted orders). Don't force Stripe to retry forever.
           console.warn('Webhook charge.refunded: no order for PI', paymentIntentId)

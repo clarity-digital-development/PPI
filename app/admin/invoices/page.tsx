@@ -120,6 +120,19 @@ interface InvoiceListRow {
   email_error?: string | null
   sending_started_at?: string | null
   updated_at?: string
+  // 50/50 split invoices: one entry per party (empty for a normal invoice).
+  split_shares?: SplitShareRow[]
+}
+
+interface SplitShareRow {
+  half: 'A' | 'B'
+  payer_name: string
+  payer_email: string
+  amount: number
+  status: 'pending' | 'paid' | 'refunded'
+  paid_at: string | null
+  email_status: string | null
+  email_error: string | null
 }
 
 // A queued/sending invoice untouched this long is a send that died; the
@@ -227,20 +240,36 @@ export default function AdminInvoicesPage() {
     refreshInvoices()
   }, [])
 
-  async function regeneratePaymentLink(invoiceId: string) {
+  async function regeneratePaymentLink(invoiceId: string, share?: SplitShareRow) {
     if (regenerating[invoiceId]) return
-    if (!confirm('Regenerate the Stripe Payment Link for this invoice and re-send the email to the customer?')) return
+    if (
+      !confirm(
+        share
+          ? share.status === 'refunded'
+            ? `${share.payer_name}'s payment was refunded. Bill them again — make a new pay link and email it to ${share.payer_email}?`
+            : `Make a new pay link for ${share.payer_name}'s share and email it to ${share.payer_email}? Their old link stops working.`
+          : 'Regenerate the Stripe Payment Link for this invoice and re-send the email to the customer?',
+      )
+    )
+      return
     setRegenerating((prev) => ({ ...prev, [invoiceId]: true }))
     setRegenError(null)
     setRegenSuccess(null)
     try {
-      const res = await fetch(`/api/admin/invoices/${invoiceId}/regenerate-payment-link`, { method: 'POST' })
+      const res = await fetch(`/api/admin/invoices/${invoiceId}/regenerate-payment-link`, {
+        method: 'POST',
+        ...(share
+          ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ half: share.half }) }
+          : {}),
+      })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Regenerate failed')
       setRegenSuccess(
-        data.email_resent
-          ? `New Payment Link sent to ${data.sent_to_email}.`
-          : `New Payment Link created but the email re-send failed — copy the URL from the Stripe dashboard.`,
+        share
+          ? `New pay link sent to ${share.payer_name} (${data.recipient_email || share.payer_email}).`
+          : data.email_resent
+            ? `New Payment Link sent to ${data.sent_to_email}.`
+            : `New Payment Link created but the email re-send failed — copy the URL from the Stripe dashboard.`,
       )
       refreshInvoices()
     } catch (err) {
@@ -361,13 +390,16 @@ export default function AdminInvoicesPage() {
     }
   }
 
-  async function resendInvoiceEmail(invoiceId: string, currentRecipient: string | null) {
+  async function resendInvoiceEmail(invoiceId: string, currentRecipient: string | null, share?: SplitShareRow) {
     if (resending[invoiceId]) return
     const newRecipient = window.prompt(
-      'Resend this invoice email — to what address? (Leave blank to use the existing recipient.)',
-      currentRecipient ?? '',
+      share
+        ? `Resend ${share.payer_name}'s share — to what address? (Leave as-is to use their address on file.)`
+        : 'Resend this invoice email — to what address? (Leave blank to use the existing recipient.)',
+      share ? share.payer_email : currentRecipient ?? '',
     )
     if (newRecipient === null) return // cancelled
+    const override = newRecipient.trim()
     setResending((prev) => ({ ...prev, [invoiceId]: true }))
     setResendError(null)
     setResendSuccess(null)
@@ -376,12 +408,20 @@ export default function AdminInvoicesPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          recipientEmailOverride: newRecipient.trim() || null,
+          // A split share only sends an override when the address changed.
+          recipientEmailOverride: share
+            ? override && override.toLowerCase() !== share.payer_email.toLowerCase() ? override : null
+            : override || null,
+          ...(share ? { half: share.half } : {}),
         }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Resend failed')
-      setResendSuccess(`Queued resend to ${data.recipient_email}. Status updates in a few seconds.`)
+      setResendSuccess(
+        share
+          ? `Queued resend of ${share.payer_name}'s share. Status updates in a few seconds.`
+          : `Queued resend to ${data.recipient_email}. Status updates in a few seconds.`,
+      )
       refreshInvoices()
       startTransitPolling()
     } catch (err) {
@@ -391,9 +431,16 @@ export default function AdminInvoicesPage() {
     }
   }
 
-  async function markInvoicePaid(invoiceId: string, invoiceNumber: string) {
+  async function markInvoicePaid(invoiceId: string, invoiceNumber: string, share?: SplitShareRow) {
     if (markingPaid[invoiceId]) return
-    if (!confirm(`Mark ${invoiceNumber} as paid? Use this only when payment was collected outside Stripe (e.g. ACH sent directly, check) — this can't be undone automatically.`)) return
+    if (
+      !confirm(
+        share
+          ? `Mark ${share.payer_name}'s share of ${invoiceNumber} (${formatCurrency(share.amount)}) as paid? Use this only when they paid outside Stripe (ACH, check) — this can't be undone automatically.`
+          : `Mark ${invoiceNumber} as paid? Use this only when payment was collected outside Stripe (e.g. ACH sent directly, check) — this can't be undone automatically.`,
+      )
+    )
+      return
     const note = window.prompt('How was this paid? (e.g. "ACH transfer 7/13", "check #1234") — optional', '')
     if (note === null) return // cancelled — do NOT mark paid
     setMarkingPaid((prev) => ({ ...prev, [invoiceId]: true }))
@@ -403,14 +450,52 @@ export default function AdminInvoicesPage() {
       const res = await fetch(`/api/admin/invoices/${invoiceId}/mark-paid`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ note: note.trim() || null }),
+        body: JSON.stringify({ note: note.trim() || null, ...(share ? { half: share.half } : {}) }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Mark paid failed')
-      setMarkPaidSuccess(`${invoiceNumber} marked paid.`)
+      if (Array.isArray(data.paid_online) && data.paid_online.length > 0) {
+        // The party paid by card a moment before this click — don't also
+        // deposit their check.
+        setMarkPaidError(
+          `${data.paid_online.join(' and ')} just paid online by card, so that share was already paid. Don't deposit their check too (or refund one of the two payments).`,
+        )
+      }
+      setMarkPaidSuccess(
+        share
+          ? data.partial
+            ? `${share.payer_name}'s share of ${invoiceNumber} marked paid. Still waiting on the other share.`
+            : `${share.payer_name}'s share marked paid — ${invoiceNumber} is now fully paid.`
+          : `${invoiceNumber} marked paid.`,
+      )
       refreshInvoices()
     } catch (err) {
       setMarkPaidError(err instanceof Error ? err.message : 'Mark paid failed')
+    } finally {
+      setMarkingPaid((prev) => ({ ...prev, [invoiceId]: false }))
+    }
+  }
+
+  // Split invoice whose shares are all paid but the invoice itself never
+  // closed out (a failure part-way through). Settles it and its lines.
+  async function settleSplitInvoice(invoiceId: string, invoiceNumber: string) {
+    if (markingPaid[invoiceId]) return
+    if (!confirm(`Both shares of ${invoiceNumber} are paid. Close out the invoice and mark its orders paid?`)) return
+    setMarkingPaid((prev) => ({ ...prev, [invoiceId]: true }))
+    setMarkPaidError(null)
+    setMarkPaidSuccess(null)
+    try {
+      const res = await fetch(`/api/admin/invoices/${invoiceId}/mark-paid`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note: 'Closed out after both shares were paid' }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Close out failed')
+      setMarkPaidSuccess(`${invoiceNumber} is now fully paid.`)
+      refreshInvoices()
+    } catch (err) {
+      setMarkPaidError(err instanceof Error ? err.message : 'Close out failed')
     } finally {
       setMarkingPaid((prev) => ({ ...prev, [invoiceId]: false }))
     }
@@ -850,8 +935,20 @@ export default function AdminInvoicesPage() {
                             </>
                           )}
                         </td>
-                        <td className="px-3 py-2 text-right font-medium">{formatCurrency(inv.total)}</td>
-                        <td className="px-3 py-2 text-center"><Badge variant={cfg.variant}>{cfg.label}</Badge></td>
+                        <td className="px-3 py-2 text-right font-medium">
+                          {formatCurrency(inv.total)}
+                          {(inv.split_shares?.length ?? 0) > 0 && (
+                            <div className="text-[10px] font-normal text-gray-500">split 50/50</div>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-center">
+                          <Badge variant={cfg.variant}>{cfg.label}</Badge>
+                          {(inv.split_shares?.length ?? 0) > 0 && inv.split_shares!.some((sh) => sh.status !== 'paid') && (
+                            <div className="text-[10px] text-gray-500 mt-0.5 whitespace-nowrap">
+                              {inv.split_shares!.filter((sh) => sh.status === 'paid').length} of {inv.split_shares!.length} shares paid
+                            </div>
+                          )}
+                        </td>
                         <td className="px-3 py-2 text-center">
                           {(() => {
                             const ec = inv.email_status ? EMAIL_STATUS_LABEL[inv.email_status] : null
@@ -862,14 +959,24 @@ export default function AdminInvoicesPage() {
                                   {ec.spinner && <Loader2 className="w-3 h-3 mr-1 inline animate-spin" />}
                                   {ec.label}
                                 </Badge>
-                                {inv.recipient_email && (
-                                  <span
-                                    className="text-[10px] text-gray-500 truncate max-w-[160px]"
-                                    title={inv.recipient_email}
-                                  >
-                                    to: {inv.recipient_email}
-                                  </span>
-                                )}
+                                {(inv.split_shares?.length ?? 0) > 0
+                                  ? inv.split_shares!.map((sh) => (
+                                      <span
+                                        key={sh.half}
+                                        className="text-[10px] text-gray-500 truncate max-w-[160px]"
+                                        title={sh.payer_email}
+                                      >
+                                        to: {sh.payer_email}
+                                      </span>
+                                    ))
+                                  : inv.recipient_email && (
+                                      <span
+                                        className="text-[10px] text-gray-500 truncate max-w-[160px]"
+                                        title={inv.recipient_email}
+                                      >
+                                        to: {inv.recipient_email}
+                                      </span>
+                                    )}
                                 {inv.email_status === 'failed' && inv.email_error && (
                                   <span
                                     className="text-[10px] text-red-600 max-w-[200px] mt-0.5"
@@ -886,6 +993,89 @@ export default function AdminInvoicesPage() {
                         <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{inv.sent_at ? formatDate(inv.sent_at) : '—'}</td>
                         <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{inv.paid_at ? formatDate(inv.paid_at) : '—'}</td>
                         <td className="px-3 py-2 text-center">
+                          {(inv.split_shares?.length ?? 0) > 0 ? (
+                            // 50/50 split: one block per party with that share's
+                            // status and its own Resend / New link / Mark paid.
+                            <div className="flex flex-col gap-2 text-left w-[168px]">
+                              {inv.split_shares!.map((sh) => {
+                                // A refunded share is owed again, so it gets its actions back.
+                                const open = sh.status !== 'paid' && inv.status !== 'void'
+                                const sendBusy = inv.email_status === 'queued' || inv.email_status === 'sending'
+                                return (
+                                  <div key={sh.half} className="rounded border border-gray-200 px-2 py-1.5">
+                                    <div className="text-xs font-medium text-gray-900 truncate" title={sh.payer_email}>
+                                      {sh.payer_name}
+                                    </div>
+                                    <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+                                      <span className="text-xs text-gray-700">{formatCurrency(sh.amount)}</span>
+                                      <Badge variant={sh.status === 'paid' ? 'success' : sh.status === 'refunded' ? 'neutral' : 'info'}>
+                                        {sh.status === 'paid' ? 'Paid' : sh.status === 'refunded' ? 'Refunded' : 'Unpaid'}
+                                      </Badge>
+                                      {sh.status !== 'paid' && sh.email_status === 'failed' && (
+                                        <span className="text-[10px] text-red-600" title={sh.email_error ?? ''}>
+                                          <AlertTriangle className="w-2.5 h-2.5 inline mr-0.5" />email failed
+                                        </span>
+                                      )}
+                                      {sh.status === 'paid' && sh.paid_at && (
+                                        <span className="text-[10px] text-gray-500">{formatDate(sh.paid_at)}</span>
+                                      )}
+                                    </div>
+                                    {open && (
+                                      <div className="flex flex-wrap gap-x-2 gap-y-0.5 mt-1">
+                                        {(!sendBusy || sendLooksStuck(inv)) && (
+                                          <button
+                                            type="button"
+                                            onClick={() => resendInvoiceEmail(inv.id, null, sh)}
+                                            disabled={rowBusy}
+                                            className="inline-flex items-center gap-0.5 text-[11px] text-pink-600 hover:text-pink-700 disabled:text-gray-400 disabled:cursor-not-allowed"
+                                            title={`Re-email ${sh.payer_name} their share (optionally to a different address)`}
+                                          >
+                                            <RotateCw className="w-3 h-3" />Resend
+                                          </button>
+                                        )}
+                                        {!sendBusy && (
+                                          <button
+                                            type="button"
+                                            onClick={() => regeneratePaymentLink(inv.id, sh)}
+                                            disabled={rowBusy}
+                                            className="inline-flex items-center gap-0.5 text-[11px] text-pink-600 hover:text-pink-700 disabled:text-gray-400 disabled:cursor-not-allowed"
+                                            title={`Make a new pay link for ${sh.payer_name} and email it`}
+                                          >
+                                            <Link2 className="w-3 h-3" />New link
+                                          </button>
+                                        )}
+                                        <button
+                                          type="button"
+                                          onClick={() => markInvoicePaid(inv.id, inv.invoice_number, sh)}
+                                          disabled={rowBusy}
+                                          className="inline-flex items-center gap-0.5 text-[11px] text-green-700 hover:text-green-800 disabled:text-gray-400 disabled:cursor-not-allowed"
+                                          title={`Mark ${sh.payer_name}'s share paid — for payments collected outside Stripe`}
+                                        >
+                                          <CircleDollarSign className="w-3 h-3" />Mark paid
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                )
+                              })}
+                              {inv.status === 'sent' && inv.split_shares!.every((sh) => sh.status === 'paid') && (
+                                <button
+                                  type="button"
+                                  onClick={() => settleSplitInvoice(inv.id, inv.invoice_number)}
+                                  disabled={rowBusy}
+                                  className="inline-flex items-center gap-1 text-xs text-green-700 hover:text-green-800 disabled:text-gray-400 disabled:cursor-not-allowed"
+                                  title="Both shares are paid — close out the invoice and mark its orders paid"
+                                >
+                                  <CircleDollarSign className="w-3 h-3" />Close out invoice
+                                </button>
+                              )}
+                              {rowBusy && (
+                                <span className="text-[10px] text-gray-500 inline-flex items-center gap-1">
+                                  <Loader2 className="w-3 h-3 animate-spin" />Working…
+                                </span>
+                              )}
+                            </div>
+                          ) : (
                           <div className="flex flex-col items-center gap-1">
                             {/* Resend appears for failed sends (recovery) AND for
                                 already-sent sends (admin may want to forward to a
@@ -943,6 +1133,7 @@ export default function AdminInvoicesPage() {
                               <span className="text-xs text-gray-400">—</span>
                             )}
                           </div>
+                          )}
                         </td>
                       </tr>
                     )

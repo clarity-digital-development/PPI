@@ -117,9 +117,13 @@ export const AuditAction = {
   // record (the Keller Williams offices). Either source grants it.
   UserFreeLockboxToggle:       'user.free_lockbox_install_toggle',
   UserInvoiceDiscountChange:   'user.invoice_discount_percent_change',
+  // 50/50 split invoices turned on/off or a party's email changed.
+  UserInvoiceSplitChange:      'user.invoice_split_change',
   InvoiceCreated:              'invoice.created',
   InvoicePaid:                 'invoice.paid',
   InvoiceVoided:               'invoice.voided',
+  // One party's share of a 50/50 split invoice refunded in Stripe.
+  InvoiceShareRefunded:        'invoice.share_refunded',
   // Email-send lifecycle on a bundled invoice. InvoiceCreated records the
   // admin's INTENT (which recipient they typed); the three below record the
   // worker's OUTCOME (what the customer actually saw). Splitting them keeps

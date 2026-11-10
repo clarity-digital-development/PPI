@@ -6,6 +6,8 @@ import { createInvoiceCheckoutSession, stripe, paymentInFlightMessage, paymentLi
 import { sendInvoiceEmail } from '@/lib/email'
 import { buildInvoicePdfBytes } from '@/lib/invoices/invoice-pdf'
 import { loadInvoiceDetailForPdf } from '@/lib/invoices/load-detail'
+import { processInvoiceSendJob } from '@/lib/invoices/send-invoice-job'
+import { reopenRefundedShare } from '@/lib/invoices/split-settle'
 
 /**
  * Admin: regenerate the Stripe Payment Link for an invoice.
@@ -48,11 +50,117 @@ export async function POST(
     },
   })
   if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
-  if (invoice.status === 'paid') {
-    return NextResponse.json({ error: 'Invoice is already paid — no Payment Link needed.' }, { status: 400 })
-  }
   if (invoice.status === 'void') {
     return NextResponse.json({ error: 'Invoice is voided — regenerate not allowed.' }, { status: 400 })
+  }
+
+  // 50/50 split invoice (Ryan, 2026-11-09): each share has its own link.
+  // Replace ONE share's link (`half`) and re-email just that party — the
+  // send worker mints the new link under fresh keys once the old one is off.
+  const halves = await prisma.invoicePayment.findMany({ where: { invoiceId: id } })
+  if (halves.length > 0) {
+    const regenBody = await request.json().catch(() => ({}))
+    const half = regenBody?.half === 'A' || regenBody?.half === 'B' ? (regenBody.half as 'A' | 'B') : null
+    const row = half ? halves.find((h) => h.half === half) : null
+    if (!row) {
+      return NextResponse.json({ error: "This invoice is split. Pick which party's pay link to replace." }, { status: 400 })
+    }
+    if (row.status === 'paid') {
+      return NextResponse.json({ error: `${row.payerName}'s share is already paid.` }, { status: 400 })
+    }
+    // A refunded share is owed again: its old link's one checkout was the
+    // payment that got refunded, so there's nothing to check or turn off.
+    const wasRefunded = row.status === 'refunded'
+    // Claim the send slot FIRST, so a refusal can't leave this party with
+    // their old link turned off and no new one. Released on any refusal below.
+    const priorEmailStatus = invoice.emailStatus
+    // The invoice itself may already be paid: a share refunded after it
+    // settled is owed again and gets billed the same way.
+    const claim = await prisma.invoice.updateMany({
+      where: { id, status: { in: ['sent', 'paid'] }, emailStatus: { notIn: ['queued', 'sending'] } },
+      data: { emailStatus: 'queued', emailError: null, sendingStartedAt: null },
+    })
+    if (claim.count === 0) {
+      return NextResponse.json({ error: 'This invoice is sending right now — try again in a minute.' }, { status: 409 })
+    }
+    const release = () =>
+      prisma.invoice
+        .updateMany({ where: { id, emailStatus: 'queued' }, data: { emailStatus: priorEmailStatus } })
+        .catch(() => {})
+    // Same rules as the whole-invoice path below: don't replace a link whose
+    // payment is paid or still clearing, and don't make a new one unless
+    // Stripe confirms the old one is off.
+    const oldShareLink = !wasRefunded && row.checkoutSessionId?.startsWith('plink_') ? row.checkoutSessionId : null
+    if (oldShareLink) {
+      try {
+        const old = await stripe().paymentLinks.retrieve(oldShareLink)
+        if (!old.active) {
+          const inFlight = await paymentLinkPaymentInFlight(oldShareLink)
+          if (inFlight) {
+            await release()
+            return NextResponse.json({ error: paymentInFlightMessage(inFlight) }, { status: 409 })
+          }
+        } else {
+          await stripe().paymentLinks.update(oldShareLink, { active: false })
+        }
+      } catch (err) {
+        const code = (err as { code?: string })?.code
+        if (code !== 'resource_missing') {
+          console.error(`Regenerate: could not check or turn off share ${row.half} link ${oldShareLink}:`, err)
+          await release()
+          return NextResponse.json(
+            { error: "Couldn't turn off the old Stripe pay link, so no new one was made. Please try again." },
+            { status: 502 },
+          )
+        }
+      }
+    }
+    if (wasRefunded) {
+      // Its stored link may not be the one the refunded payment used; make
+      // sure it can't take a payment alongside the new one.
+      if (row.checkoutSessionId?.startsWith('plink_')) {
+        await stripe()
+          .paymentLinks.update(row.checkoutSessionId, { active: false })
+          .catch((err) => console.warn(`Regenerate: couldn't turn off refunded share ${row.half}'s link ${row.checkoutSessionId}:`, err))
+      }
+      await reopenRefundedShare(row.id)
+    }
+    await processInvoiceSendJob({
+      invoiceId: id,
+      resolvedRecipientEmail: row.payerEmail,
+      recipientSource: 'snapshot',
+      rangeStartIso: invoice.rangeStart.toISOString(),
+      rangeEndIso: invoice.rangeEnd.toISOString(),
+      splitResend: true,
+      splitHalf: row.half as 'A' | 'B',
+      splitFreshLink: true,
+    })
+    const after = await prisma.invoicePayment.findUnique({
+      where: { id: row.id },
+      select: { checkoutSessionId: true, checkoutUrl: true, emailStatus: true, emailError: true },
+    })
+    await audit({
+      actor: { id: user.id, email: user.email, role: user.role },
+      action: AuditAction.InvoiceResent,
+      targetType: 'invoice',
+      targetId: id,
+      metadata: { invoiceNumber: invoice.invoiceNumber, half: row.half, payer: row.payerName, regeneratedLink: true, emailStatus: after?.emailStatus ?? null },
+      request,
+    })
+    // Success only when a NEW link went out — never the one just turned off.
+    const gotNewLink =
+      !!after?.checkoutSessionId?.startsWith('plink_') && after.checkoutSessionId !== row.checkoutSessionId
+    if (after?.emailStatus !== 'sent' || !gotNewLink) {
+      return NextResponse.json(
+        { error: after?.emailError || "A new pay link wasn't sent. Try New link again in a minute." },
+        { status: 502 },
+      )
+    }
+    return NextResponse.json({ ok: true, checkout_url: after.checkoutUrl, recipient_email: row.payerEmail })
+  }
+
+  if (invoice.status === 'paid') {
+    return NextResponse.json({ error: 'Invoice is already paid — no Payment Link needed.' }, { status: 400 })
   }
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'https://pinkposts.com'

@@ -33,6 +33,15 @@ export async function POST(
       { status: 400 },
     )
   }
+  // 50/50 split invoice: each party pays only their share from the link in
+  // their own email. Paying the full amount here would double-collect.
+  const splitShares = await prisma.invoicePayment.count({ where: { invoiceId: id } })
+  if (splitShares > 0) {
+    return NextResponse.json(
+      { error: "This invoice is split 50/50. Each party pays their share from the link in their own invoice email." },
+      { status: 400 },
+    )
+  }
 
   // Lazily create a Stripe customer for the invoice payer — invoice-billing
   // accounts may have never paid through Stripe before, so they might not

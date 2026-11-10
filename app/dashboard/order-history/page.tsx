@@ -25,6 +25,8 @@ interface BundleResponse {
     rental_count?: number
     pdf_url: string
     pay_url: string | null
+    // 50/50 split account: each party was emailed their own share.
+    split?: boolean
   }
   sent_to_email: string | null
 }
@@ -188,7 +190,15 @@ export default function OrderHistoryPage() {
         : '') + ((ok.invoice.rental_count ?? 0) > 0
         ? ` + ${ok.invoice.rental_count} post rental charge(s)`
         : '')
-      if (mode === 'send') {
+      const splitNote =
+        ok.invoice.split && ok.sent_to_email
+          ? ` Each party is being emailed their 50% share with their own pay link (${ok.sent_to_email}).`
+          : ''
+      if (mode === 'send' && ok.invoice.split) {
+        setGenerateSuccess(
+          `Invoice ${ok.invoice.invoice_number} created — ${ok.invoice.order_count} order(s) + ${ok.invoice.service_request_count} service trip(s)${pickupPart}, $${ok.invoice.total.toFixed(2)}.${splitNote}`,
+        )
+      } else if (mode === 'send') {
         setGenerateSuccess(
           `Invoice ${ok.invoice.invoice_number} sent to ${ok.sent_to_email} — ${ok.invoice.order_count} order(s) + ${ok.invoice.service_request_count} service trip(s)${pickupPart}, $${ok.invoice.total.toFixed(2)}.`,
         )
@@ -208,7 +218,7 @@ export default function OrderHistoryPage() {
         document.body.removeChild(a)
         URL.revokeObjectURL(url)
         setGenerateSuccess(
-          `Invoice ${ok.invoice.invoice_number} created and downloaded — ${ok.invoice.order_count} order(s) + ${ok.invoice.service_request_count} service trip(s)${pickupPart}, $${ok.invoice.total.toFixed(2)}.`,
+          `Invoice ${ok.invoice.invoice_number} created and downloaded — ${ok.invoice.order_count} order(s) + ${ok.invoice.service_request_count} service trip(s)${pickupPart}, $${ok.invoice.total.toFixed(2)}.${splitNote}`,
         )
       }
     } catch (err) {

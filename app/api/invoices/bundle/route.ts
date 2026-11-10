@@ -1,3 +1,4 @@
+import { waitUntil } from '@vercel/functions'
 import { NextRequest, NextResponse } from 'next/server'
 import { randomBytes } from 'node:crypto'
 import { prisma } from '@/lib/prisma'
@@ -16,6 +17,8 @@ import {
 } from '@/lib/invoices/ooa-pickups'
 import { attachPostRentals, findSweepablePostRentals, postRentalCents } from '@/lib/invoices/post-rental-lines'
 import { createInvoiceCheckoutSession } from '@/lib/stripe/server'
+import { splitHalvesFor, splitSettingsSelect } from '@/lib/invoices/split'
+import { processInvoiceSendJob } from '@/lib/invoices/send-invoice-job'
 import { orderPaidByWhere, serviceRequestPaidByWhere } from '@/lib/orders/effective-payer'
 
 /**
@@ -69,6 +72,8 @@ export async function POST(request: NextRequest) {
       // Same broker discount the admin bundler applies — the two paths must
       // never disagree about what this account owes.
       invoiceDiscountPercent: true,
+      // 50/50 split: same as the admin bundler.
+      ...splitSettingsSelect,
     },
   })
   if (!profile) return NextResponse.json({ error: 'User not found' }, { status: 404 })
@@ -284,6 +289,12 @@ export async function POST(request: NextRequest) {
       select: { id: true, invoiceNumber: true, total: true, publicPdfToken: true },
     })
 
+    // 50/50 split (Ryan, 2026-11-09) — same rows the admin bundler creates.
+    const halves = splitHalvesFor(Math.round(Number(invoice.total) * 100), profile)
+    if (halves) {
+      await tx.invoicePayment.createMany({ data: halves.map((h) => ({ ...h, invoiceId: invoice.id })) })
+    }
+
     // Race guard: filter UPDATE on invoiceId:null + verify count to prevent
     // two simultaneous broker clicks from double-bundling. Each order is also
     // matched on the subtotal/total summed above, so an edit or an admin
@@ -351,6 +362,7 @@ export async function POST(request: NextRequest) {
       pickupOrderNumbers: pickups.map((p) => p.orderNumber),
       rentalChargeIds: rentals.map((r) => r.id),
       publicPdfToken: invoice.publicPdfToken!,
+      isSplit: !!halves,
     }
   })
 
@@ -386,6 +398,80 @@ export async function POST(request: NextRequest) {
     await prisma.user.update({
       where: { id: user.id },
       data: { billingEmail: accountantEmail },
+    })
+  }
+
+  // 50/50 split account: no single full-amount link and no single email. The
+  // shared send worker emails each party their share with their own link.
+  // That happens on Download too: the parties can only pay from those emails,
+  // so a download-only split invoice would be unpayable.
+  if (result.isSplit) {
+    await prisma.invoice.update({
+      where: { id: result.invoice.id },
+      data: { emailStatus: 'queued' },
+    })
+    // After the response (two links + two emails is too slow to hold the
+    // broker's request open — same reason the admin bundler does this).
+    const splitInvoiceId = result.invoice.id
+    waitUntil(
+      processInvoiceSendJob({
+        invoiceId: splitInvoiceId,
+        resolvedRecipientEmail: profile.billingEmail || profile.email,
+        recipientSource: 'billing',
+        rangeStartIso: startDate.toISOString(),
+        rangeEndIso: endDate.toISOString(),
+      }).catch((err) => {
+        console.error('Background split invoice send crashed:', err)
+        return prisma.invoice
+          .update({
+            where: { id: splitInvoiceId },
+            data: { emailStatus: 'failed', emailError: String(err?.message ?? err).slice(0, 500), sendingStartedAt: null },
+          })
+          .catch(() => {})
+      }),
+    )
+    await audit({
+      actor: { id: user.id, email: user.email, role: user.role },
+      action: AuditAction.InvoiceCreated,
+      targetType: 'invoice',
+      targetId: result.invoice.id,
+      metadata: {
+        generatedBy: 'broker_self_service',
+        split: true,
+        total: result.total,
+        orderCount: result.ordersCount,
+        orderNumbers: result.orderNumbers,
+        serviceRequestCount: result.serviceRequestsCount,
+        rangeStart: startDate.toISOString(),
+        rangeEnd: endDate.toISOString(),
+        filters: { minPrice, maxPrice, agent },
+        sentEmail: true,
+        requestedSendEmail: sendEmail,
+      },
+      request,
+    })
+    const splitBaseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'https://pinkposts.com'
+    const sentHalves = await prisma.invoicePayment.findMany({
+      where: { invoiceId: result.invoice.id },
+      select: { payerEmail: true },
+      orderBy: { half: 'asc' },
+    })
+    return NextResponse.json({
+      invoice: {
+        id: result.invoice.id,
+        invoice_number: result.invoice.invoiceNumber,
+        total: Number(result.invoice.total),
+        order_count: result.ordersCount,
+        service_request_count: result.serviceRequestsCount,
+        pickup_count: result.pickupsCount,
+        rental_count: result.rentalsCount,
+        pdf_url: `${splitBaseUrl}/api/invoices/${result.invoice.id}/pdf?token=${result.publicPdfToken}`,
+        // Split: each party pays from their own emailed link, never one
+        // full-amount link.
+        pay_url: null,
+        split: true,
+      },
+      sent_to_email: sentHalves.length > 0 ? sentHalves.map((h) => h.payerEmail).join(' and ') : null,
     })
   }
 

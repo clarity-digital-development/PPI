@@ -5,6 +5,7 @@ import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth-utils'
 import { orderPaidByWhere, serviceRequestPaidByWhere } from '@/lib/orders/effective-payer'
+import { splitHalvesFor, splitSettingsSelect } from '@/lib/invoices/split'
 import { audit, AuditAction } from '@/lib/audit'
 import { processInvoiceSendJob } from '@/lib/invoices/send-invoice-job'
 import { invoiceDiscount } from '@/lib/invoices/discount'
@@ -256,6 +257,11 @@ export async function GET(request: NextRequest) {
       // service trips" alongside paid/sent dates instead of just orders;
       // ooaPickupOrders so a pickup-only invoice doesn't read as "0 orders".
       _count: { select: { orders: true, serviceRequests: true, ooaPickupOrders: true, postRentalCharges: true } },
+      // 50/50 split invoices: each party's share, for per-share status + actions.
+      splitPayments: {
+        select: { half: true, payerName: true, payerEmail: true, amountCents: true, status: true, paidAt: true, emailStatus: true, emailError: true },
+        orderBy: { half: 'asc' },
+      },
     },
     orderBy: { createdAt: 'desc' },
     take: 100,
@@ -286,6 +292,16 @@ export async function GET(request: NextRequest) {
       email_error: i.emailError,
       sending_started_at: i.sendingStartedAt?.toISOString() ?? null,
       updated_at: i.updatedAt.toISOString(),
+      split_shares: i.splitPayments.map((p) => ({
+        half: p.half,
+        payer_name: p.payerName,
+        payer_email: p.payerEmail,
+        amount: p.amountCents / 100,
+        status: p.status,
+        paid_at: p.paidAt?.toISOString() ?? null,
+        email_status: p.emailStatus,
+        email_error: p.emailError,
+      })),
     })),
   })
 }
@@ -334,6 +350,8 @@ export async function POST(request: NextRequest) {
       invoiceDiscountPercent: true,
       // Picks the order-ownership rule — see orderOwnershipWhere.
       role: true,
+      // 50/50 split: snapshotted onto the invoice as two halves below.
+      ...splitSettingsSelect,
     },
   })
   if (!customer) return NextResponse.json({ error: 'Customer not found' }, { status: 404 })
@@ -490,6 +508,14 @@ export async function POST(request: NextRequest) {
       select: { id: true, invoiceNumber: true, total: true, subtotal: true, publicPdfToken: true, recipientEmail: true, emailStatus: true },
     })
 
+    // 50/50 split (Ryan, 2026-11-09): one row per paying party, each emailed
+    // its own share by the send worker. In the same transaction as the
+    // invoice, so a split account's invoice never goes out unsplit.
+    const halves = splitHalvesFor(Math.round(Number(invoice.total) * 100), customer)
+    if (halves) {
+      await tx.invoicePayment.createMany({ data: halves.map((h) => ({ ...h, invoiceId: invoice.id })) })
+    }
+
     // Race guard: filter the UPDATE on `invoiceId: null` too, then verify
     // the affected count matches what we read. If a parallel admin send
     // grabbed any of these rows between the SELECT and the UPDATE, the
@@ -597,6 +623,17 @@ export async function POST(request: NextRequest) {
     )
   }
 
+  // 50/50 split: the two parties are emailed their shares at their own
+  // addresses; any "Send to" override doesn't apply. Report who actually
+  // gets it.
+  const splitShares = await prisma.invoicePayment.findMany({
+    where: { invoiceId: result.invoice.id },
+    select: { payerEmail: true },
+    orderBy: { half: 'asc' },
+  })
+  const actualRecipient =
+    splitShares.length > 0 ? splitShares.map((h) => h.payerEmail).join(' and ') : resolvedRecipientEmail
+
   // Audit log INTENT — which recipient the admin queued the invoice for.
   // The worker writes a SEPARATE outcome event (InvoiceEmailSent / Failed /
   // Skipped) at send time so the trail records both what was queued and
@@ -610,9 +647,10 @@ export async function POST(request: NextRequest) {
       customerId,
       customerEmail: customer.email,
       // Snapshotted recipient — what the admin TYPED (or the default).
-      sentToEmail: resolvedRecipientEmail,
-      recipientSource,
+      sentToEmail: actualRecipient,
+      recipientSource: splitShares.length > 0 ? 'split' : recipientSource,
       recipientEmailOverride,
+      ...(splitShares.length > 0 ? { split: true, overrideIgnoredForSplit: !!recipientEmailOverride } : {}),
       usedBillingEmailOverride: recipientSource === 'billing',
       usedRecipientOverride: recipientSource === 'override',
       orderCount: result.ordersCount,
@@ -669,7 +707,8 @@ export async function POST(request: NextRequest) {
       pickup_count: result.pickupsCount,
       rental_count: result.rentalsCount,
       email_status: 'queued',
-      recipient_email: resolvedRecipientEmail,
+      recipient_email: actualRecipient,
+      split: splitShares.length > 0,
     },
   })
 }

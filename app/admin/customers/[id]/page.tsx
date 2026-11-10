@@ -29,6 +29,12 @@ interface CustomerData {
     post_rental_charged_from?: string | null
     free_lockbox_install?: boolean
     billing_email?: string | null
+    // 50/50 split invoices (Ryan, 2026-11-09).
+    invoice_split_enabled?: boolean
+    invoice_split_a_name?: string | null
+    invoice_split_a_email?: string | null
+    invoice_split_b_name?: string | null
+    invoice_split_b_email?: string | null
     invoice_discount_percent?: number | null
     /** Brokerage whose inventory pool this agent may order from. Derived from
      *  the roster row, NOT User.teamId -- see the brokerage route header. */
@@ -178,6 +184,11 @@ export default function CustomerDetailPage() {
     flat_fee_billing: boolean
     post_rental_charged: boolean
     billing_email: string
+    invoice_split_enabled: boolean
+    invoice_split_a_name: string
+    invoice_split_a_email: string
+    invoice_split_b_name: string
+    invoice_split_b_email: string
     invoice_discount_percent: string
     // Team perks — only sent when the account has a team.
     team_pickup_fee_waived: boolean
@@ -193,6 +204,11 @@ export default function CustomerDetailPage() {
     flat_fee_billing: false,
     post_rental_charged: false,
     billing_email: '',
+    invoice_split_enabled: false,
+    invoice_split_a_name: '',
+    invoice_split_a_email: '',
+    invoice_split_b_name: '',
+    invoice_split_b_email: '',
     invoice_discount_percent: '',
     team_pickup_fee_waived: false,
     team_free_lockbox_install: false,
@@ -264,6 +280,11 @@ export default function CustomerDetailPage() {
           flat_fee_billing: data.customer.flat_fee_billing ?? false,
           post_rental_charged: data.customer.post_rental_charged ?? false,
           billing_email: data.customer.billing_email || '',
+          invoice_split_enabled: !!data.customer.invoice_split_enabled,
+          invoice_split_a_name: data.customer.invoice_split_a_name || '',
+          invoice_split_a_email: data.customer.invoice_split_a_email || '',
+          invoice_split_b_name: data.customer.invoice_split_b_name || '',
+          invoice_split_b_email: data.customer.invoice_split_b_email || '',
           invoice_discount_percent:
             data.customer.invoice_discount_percent != null ? String(data.customer.invoice_discount_percent) : '',
           team_pickup_fee_waived: data.team?.pickup_fee_waived ?? false,
@@ -301,6 +322,12 @@ export default function CustomerDetailPage() {
           flat_fee_billing: editData.flat_fee_billing,
           post_rental_charged: editData.post_rental_charged,
           billing_email: editData.billing_email,
+          // Sent as a set; the API validates both emails when it's on.
+          invoice_split_enabled: editData.invoice_billing && editData.invoice_split_enabled,
+          invoice_split_a_name: editData.invoice_split_a_name,
+          invoice_split_a_email: editData.invoice_split_a_email,
+          invoice_split_b_name: editData.invoice_split_b_name,
+          invoice_split_b_email: editData.invoice_split_b_email,
           invoice_discount_percent: editData.invoice_discount_percent,
           // The sign-pickup waiver exists only on a team; the API refuses it
           // otherwise. The lockbox perk always goes — the API writes it to the
@@ -795,6 +822,9 @@ export default function CustomerDetailPage() {
               )}
               {data.customer.invoice_billing && (
                 <Badge className="bg-pink-100 text-pink-800 border-pink-200">Invoice Billing</Badge>
+              )}
+              {data.customer.invoice_billing && data.customer.invoice_split_enabled && (
+                <Badge className="bg-pink-100 text-pink-800 border-pink-200">Split 50/50</Badge>
               )}
               {data.customer.bill_to_broker && (
                 <Badge className="bg-amber-100 text-amber-800 border-amber-200">
@@ -2287,6 +2317,58 @@ export default function CustomerDetailPage() {
               <p className="mt-1 text-xs text-gray-500">
                 Taken off the subtotal as a single line at the bottom of every invoice for this account. Tax stays as charged on each order. Leave blank for no discount.
               </p>
+            </div>
+          )}
+          {/* 50/50 split invoices (Ryan, 2026-11-09): two parties share this
+              account (e.g. a lender and a title company) and each pay half. */}
+          {editData.invoice_billing && (
+            <div className="rounded-lg border border-gray-200 p-3 space-y-3">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={editData.invoice_split_enabled}
+                  onChange={(e) => setEditData({ ...editData, invoice_split_enabled: e.target.checked })}
+                  className="mt-1"
+                />
+                <span className="text-sm text-gray-700">
+                  <span className="font-medium">Split invoices 50/50 between two parties</span>
+                  <span className="block text-xs text-gray-500">
+                    Each party gets their own copy of every invoice with the full details, their 50% share,
+                    and their own pay link. The invoice is paid once both shares are paid. Applies to new
+                    invoices only.
+                  </span>
+                </span>
+              </label>
+              {editData.invoice_split_enabled && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <Input
+                    label="First party name"
+                    placeholder="e.g. First Lender Co."
+                    value={editData.invoice_split_a_name}
+                    onChange={(e) => setEditData({ ...editData, invoice_split_a_name: e.target.value })}
+                  />
+                  <Input
+                    label="First party email"
+                    type="email"
+                    placeholder="billing@lender.com"
+                    value={editData.invoice_split_a_email}
+                    onChange={(e) => setEditData({ ...editData, invoice_split_a_email: e.target.value })}
+                  />
+                  <Input
+                    label="Second party name"
+                    placeholder="e.g. Main Street Title"
+                    value={editData.invoice_split_b_name}
+                    onChange={(e) => setEditData({ ...editData, invoice_split_b_name: e.target.value })}
+                  />
+                  <Input
+                    label="Second party email"
+                    type="email"
+                    placeholder="billing@title.com"
+                    value={editData.invoice_split_b_email}
+                    onChange={(e) => setEditData({ ...editData, invoice_split_b_email: e.target.value })}
+                  />
+                </div>
+              )}
             </div>
           )}
           <div className="flex justify-end gap-3 pt-4">

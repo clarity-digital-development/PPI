@@ -147,6 +147,9 @@ export interface InvoiceDetail {
   service_requests: InvoiceServiceRequest[]
   pickups: InvoicePickup[]
   rentals: InvoiceRental[]
+  // 50/50 split invoice (Ryan, 2026-11-09): each party's share and whether
+  // it's paid. Absent/empty for ordinary invoices.
+  split_shares?: Array<{ half: string; payer_name: string; amount: number; status: 'pending' | 'paid' | 'refunded'; paid_at: string | null }>
 }
 
 function fmtCurrency(n: number): string {
@@ -511,10 +514,12 @@ export function buildInvoicePdfDoc(invoice: InvoiceDetail): jsPDF {
   // three-way subtotal split and any adjustment rows an invoice can need
   // more. Never less than 200 so invoices that already fit keep their layout.
   // 16/row, +18 divider→Total baseline, +36 pay link, +36 footer clearance.
-  const totalsReserve = Math.max(
-    200,
-    detailLines.length * 16 + 18 + (invoice.status === 'sent' ? 36 : 0) + 36,
-  )
+  // A 50/50 split adds its heading + one line per share, and its own
+  // (shorter) pay line.
+  const splitShares = invoice.split_shares ?? []
+  const splitH = splitShares.length > 0 ? 24 + 16 * splitShares.length : 0
+  const payH = invoice.status === 'sent' ? (splitShares.length > 0 ? 30 : 36) : 0
+  const totalsReserve = Math.max(200, detailLines.length * 16 + 18 + splitH + payH + 36)
   if (tY > pageHeight - totalsReserve) {
     doc.addPage()
     tY = 80
@@ -547,8 +552,34 @@ export function buildInvoicePdfDoc(invoice: InvoiceDetail): jsPDF {
   doc.setFont('helvetica', 'normal')
   tY = totalY
 
-  // Pay-online link (only if outstanding)
-  if (invoice.status === 'sent') {
+  // 50/50 split: list each party's share and its status under the total.
+  const shares = splitShares
+  if (shares.length > 0) {
+    tY += 24
+    doc.setFontSize(10)
+    doc.setTextColor(MUTED.r, MUTED.g, MUTED.b)
+    doc.text('Split 50/50', labelX, tY, { align: 'right' })
+    for (const sh of shares) {
+      tY += 16
+      doc.setTextColor(MUTED.r, MUTED.g, MUTED.b)
+      doc.text(
+        `${sh.payer_name} — ${sh.status === 'paid' ? `paid${sh.paid_at ? ` ${fmtDate(sh.paid_at)}` : ''}` : sh.status === 'refunded' ? 'refunded' : 'outstanding'}`,
+        labelX,
+        tY,
+        { align: 'right' },
+      )
+      doc.text(fmtCurrency(sh.amount), amtX, tY, { align: 'right' })
+    }
+  }
+
+  // Pay-online link (only if outstanding). A split invoice is paid from each
+  // party's own emailed link, never one full-amount page.
+  if (invoice.status === 'sent' && shares.length > 0) {
+    tY += 30
+    doc.setFontSize(10)
+    doc.setTextColor(PINK.r, PINK.g, PINK.b)
+    doc.text('Each party pays their share from the link in their own invoice email.', pageWidth / 2, tY, { align: 'center' })
+  } else if (invoice.status === 'sent') {
     tY += 36
     doc.setFontSize(10)
     doc.setTextColor(PINK.r, PINK.g, PINK.b)

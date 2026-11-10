@@ -131,6 +131,15 @@ model User {
   // order / service request stamps it at creation (billedToUserId), so
   // turning this off later never moves existing charges onto the agent.
   billToBrokerUserId  String?  @map("bill_to_broker_user_id")
+  // 50/50 split invoices (Ryan, 2026-11-09): two parties (e.g. a lender and a
+  // title company) share this account and each pay half. When on, every new
+  // invoice is split into two halves, each emailed to its party with its own
+  // pay link. Invoices already sent keep their shape.
+  invoiceSplitEnabled Boolean  @default(false) @map("invoice_split_enabled")
+  invoiceSplitAName   String?  @map("invoice_split_a_name")
+  invoiceSplitAEmail  String?  @map("invoice_split_a_email")
+  invoiceSplitBName   String?  @map("invoice_split_b_name")
+  invoiceSplitBEmail  String?  @map("invoice_split_b_email")
 
   // Team membership (for RE teams managed by a team_admin who places orders
   // on behalf of their agents). Both team_admins and agents have a teamId.
@@ -770,6 +779,11 @@ model Invoice {
   // Post rental billed on this invoice (an invoice account's rental is never
   // charged to a card). Lines sit in `subtotal` like the pickups above.
   postRentalCharges PostRentalCharge[]
+  // 50/50 split (Ryan, 2026-11-09): when the account splits its bill, one
+  // row per half — each payer gets their own email + pay link for their
+  // share. Empty for ordinary invoices. The invoice is `paid` only once
+  // every half is.
+  splitPayments     InvoicePayment[]
 
   @@index([userId])
   @@index([status])
@@ -777,6 +791,42 @@ model Invoice {
   // queued/sending so the page can poll only the ones actively transitioning.
   @@index([emailStatus])
   @@map("invoices")
+}
+
+// One payer's half of a 50/50 split invoice (Ryan, 2026-11-09: a lender and a
+// title company share one account and each pay half). Snapshotted when the
+// invoice is created — the account's split settings can change later without
+// rewriting an invoice already out. halfA + halfB always equals the invoice
+// total (A takes the odd cent).
+model InvoicePayment {
+  id          String    @id @default(cuid())
+  invoiceId   String    @map("invoice_id")
+  // 'A' | 'B'
+  half        String
+  payerName   String    @map("payer_name")
+  payerEmail  String    @map("payer_email")
+  amountCents Int       @map("amount_cents")
+  // 'pending' | 'paid'
+  status      String    @default("pending")
+  paidAt      DateTime? @map("paid_at")
+  // The Stripe PaymentIntent that paid this half (null when marked paid by
+  // hand). Deliberately NOT stamped on the invoice's orders: a refund of one
+  // half would otherwise reconcile as a full refund of every order on it.
+  paymentIntentId   String? @unique @map("payment_intent_id")
+  // This half's own Stripe Payment Link (plink_*) and URL.
+  checkoutSessionId String? @map("checkout_session_id")
+  checkoutUrl       String? @map("checkout_url")
+  // Per-half email state: 'sent' | 'failed' (null = not sent yet).
+  emailStatus String?   @map("email_status")
+  emailError  String?   @map("email_error")
+  emailSentAt DateTime? @map("email_sent_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@unique([invoiceId, half])
+  @@map("invoice_payments")
 }
 
 enum InvoiceStatus {

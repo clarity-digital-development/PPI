@@ -21,6 +21,7 @@ export async function loadInvoiceDetailForPdf(invoiceId: string): Promise<Invoic
       },
       ooaPickupOrders: { select: ooaPickupSelect, orderBy: { createdAt: 'asc' } },
       postRentalCharges: { select: postRentalLineSelect, orderBy: [{ periodStart: 'asc' }, { id: 'asc' }] },
+      splitPayments: { orderBy: { half: 'asc' } },
     },
   })
   if (!invoice) return null
@@ -62,6 +63,13 @@ export async function loadInvoiceDetailForPdf(invoiceId: string): Promise<Invoic
     broker_discount_amount: invoice.discountAmount !== null ? Number(invoice.discountAmount) : null,
     sent_at: invoice.sentAt?.toISOString() ?? null,
     paid_at: invoice.paidAt?.toISOString() ?? null,
+    split_shares: invoice.splitPayments.map((sp) => ({
+      half: sp.half,
+      payer_name: sp.payerName,
+      amount: sp.amountCents / 100,
+      status: sp.status === 'paid' ? ('paid' as const) : sp.status === 'refunded' ? ('refunded' as const) : ('pending' as const),
+      paid_at: sp.paidAt?.toISOString() ?? null,
+    })),
     customer: {
       id: invoice.user.id,
       name: invoice.user.fullName || invoice.user.name || invoice.user.email,

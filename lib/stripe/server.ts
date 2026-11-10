@@ -433,9 +433,14 @@ export async function createInvoiceCheckoutSession(opts: {
   // and "<id>#<bump>" matched no invoice — so paying through a regenerated
   // link 500'd on every Stripe retry and the invoice never flipped to paid.
   idempotencySuffix?: string
+  // 50/50 split invoices: which half this link pays ('A' | 'B'). Rides in the
+  // PaymentIntent metadata so the webhook marks only that half paid, and in
+  // the idempotency keys so the two halves get two different links.
+  half?: string
 }) {
   const stripe = getStripe()
-  const keySuffix = opts.idempotencySuffix ? `#${opts.idempotencySuffix}` : ''
+  const keySuffix = `${opts.half ? `:${opts.half}` : ''}${opts.idempotencySuffix ? `#${opts.idempotencySuffix}` : ''}`
+  const halfMeta: Record<string, string> = opts.half ? { half: opts.half } : {}
 
   // Payment Links require a pre-existing Price (the SDK rejects inline
   // price_data even though the REST API accepts it on Checkout Sessions).
@@ -446,7 +451,9 @@ export async function createInvoiceCheckoutSession(opts: {
       currency: 'usd',
       unit_amount: opts.amountInCents,
       product_data: {
-        name: `Pink Posts Invoice ${opts.invoiceNumber}`,
+        name: opts.half
+          ? `Pink Posts Invoice ${opts.invoiceNumber} (your 50% share)`
+          : `Pink Posts Invoice ${opts.invoiceNumber}`,
       },
     },
     { idempotencyKey: `invoice-price:${opts.invoiceId}${keySuffix}` },
@@ -473,10 +480,11 @@ export async function createInvoiceCheckoutSession(opts: {
           invoiceId: opts.invoiceId,
           invoiceNumber: opts.invoiceNumber,
           kind: 'invoice',
+          ...halfMeta,
         },
       },
       // Also on the link for cross-referencing in the Stripe dashboard.
-      metadata: { invoiceId: opts.invoiceId, invoiceNumber: opts.invoiceNumber, kind: 'invoice' },
+      metadata: { invoiceId: opts.invoiceId, invoiceNumber: opts.invoiceNumber, kind: 'invoice', ...halfMeta },
     },
     {
       idempotencyKey: `invoice-payment-link:${opts.invoiceId}${keySuffix}`,
